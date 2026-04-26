@@ -1,29 +1,34 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import threading
 import time
+from typing import Any, Dict, List, Optional
 
 import requests
 
 _GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _TTL_SECONDS = 600
+_cache_lock = threading.Lock()
 _cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 
 
 def _cache_get(key: tuple[str, str]) -> Optional[dict[str, Any]]:
-    item = _cache.get(key)
+    with _cache_lock:
+        item = _cache.get(key)
     if not item:
         return None
     expires_at, value = item
     if time.time() > expires_at:
-        _cache.pop(key, None)
+        with _cache_lock:
+            _cache.pop(key, None)
         return None
     return value
 
 
 def _cache_set(key: tuple[str, str], value: dict[str, Any]) -> None:
-    _cache[key] = (time.time() + _TTL_SECONDS, value)
+    with _cache_lock:
+        _cache[key] = (time.time() + _TTL_SECONDS, value)
 
 
 def geocode_location(query: str, language: str = "ru") -> dict[str, Any]:

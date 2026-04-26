@@ -1,14 +1,25 @@
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 import xml.etree.ElementTree as ET
 
 import requests
 
 _CBR_DAILY_URL = "https://www.cbr.ru/scripts/XML_daily.asp"
+_TTL_SECONDS = 3600  # CBR updates once per day; 1h cache is sufficient
+_cache_lock = threading.Lock()
+_cache_data: dict[str, Any] | None = None
+_cache_expires: float = 0.0
 
 
 def get_rates() -> dict[str, Any]:
+    global _cache_data, _cache_expires
+    with _cache_lock:
+        if _cache_data is not None and time.time() < _cache_expires:
+            return _cache_data
+
     response = requests.get(_CBR_DAILY_URL, timeout=15)
     response.raise_for_status()
     root = ET.fromstring(response.content)
@@ -31,6 +42,10 @@ def get_rates() -> dict[str, Any]:
             "value_rub": value,
             "unit_rate_rub": value / nominal if nominal else None,
         }
+
+    with _cache_lock:
+        _cache_data = rates
+        _cache_expires = time.time() + _TTL_SECONDS
 
     return rates
 
@@ -60,6 +75,6 @@ def convert_currency(amount: float, from_code: str, to_code: str) -> dict[str, A
         "amount": amount,
         "from": from_code,
         "to": to_code,
-        "result": converted,
+        "result": round(converted, 4),
         "date": rates["date"],
     }

@@ -14,7 +14,6 @@ def run(query: str, history: list[dict]) -> str:
         {"role": "system", "content": WEB_SYSTEM},
         {"role": "system", "content": f"Результаты поиска:\n{snippets}"},
     ]
-    # Последние 2 хода для контекста уточнений
     msgs.extend(history[-(min(MAX_HISTORY, 2) * 2):])
     msgs.append({"role": "user", "content": query})
     return chat(MODEL_FAST, msgs, options={"temperature": 0.2, "num_ctx": 8192})
