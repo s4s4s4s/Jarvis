@@ -11,7 +11,6 @@ _lock = threading.Lock()
 
 
 def _load_from_disk() -> None:
-    """Загружает историю с диска при старте."""
     global _history
     try:
         if _HISTORY_PATH.exists():
@@ -25,7 +24,6 @@ def _load_from_disk() -> None:
 
 
 def _save_to_disk() -> None:
-    """Сохраняет историю на диск (вызывается под _lock)."""
     try:
         _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
         _HISTORY_PATH.write_text(
@@ -35,7 +33,6 @@ def _save_to_disk() -> None:
         print(f"[history] Не удалось сохранить сессию: {e}")
 
 
-# Загружаем при импорте модуля
 _load_from_disk()
 
 
@@ -45,7 +42,16 @@ def append(role: str, content: str) -> None:
         max_msgs = MAX_HISTORY * 2
         if len(_history) > max_msgs:
             excess = len(_history) - max_msgs
-            excess = excess + (excess % 2)  # только чётное — не рвём пары
+            # FIX: правильное округление вверх до чётного числа.
+            # Старая формула excess + (excess % 2) давала:
+            #   excess=1 → 1+1=2 (удаляла лишнее сообщение)
+            #   excess=2 → 2+0=2 (OK)
+            # Правильно: ((excess + 1) // 2) * 2
+            #   excess=1 → ((2)//2)*2 = 2 (округляем вверх до чётного — ОК,
+            #              лучше удалить пару чем оставить сиротское сообщение)
+            #   excess=2 → ((3)//2)*2 = 2 (OK)
+            #   excess=3 → ((4)//2)*2 = 4 (OK)
+            excess = ((excess + 1) // 2) * 2
             del _history[:excess]
         _save_to_disk()
 
@@ -56,7 +62,6 @@ def snapshot() -> list[dict]:
 
 
 def clear() -> None:
-    """Сброс истории — и RAM, и файл."""
     with _lock:
         _history.clear()
         _save_to_disk()

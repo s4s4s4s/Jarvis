@@ -2,7 +2,7 @@
 import sys
 import threading
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel,
@@ -24,7 +24,6 @@ class JarvisWindow(QMainWindow):
         self.resize(1320, 860)
 
         self.bridge = JarvisBridge()
-        # Сигналы подключаем один раз — никаких дополнительных redirect
         self.bridge.user_text.connect(self._on_user_text, Qt.QueuedConnection)
         self.bridge.assistant_text.connect(self._on_assistant_text, Qt.QueuedConnection)
         self.bridge.system_log.connect(self._on_system_log, Qt.QueuedConnection)
@@ -164,7 +163,7 @@ class JarvisWindow(QMainWindow):
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self._set_status("Запуск...", "StatusThinking")
-        self.bridge.start()  # bridge сам устанавливает stdout redirect
+        self.bridge.start()
 
     def _stop(self):
         if not self.bridge.is_running():
@@ -175,8 +174,12 @@ class JarvisWindow(QMainWindow):
     def _do_stop(self):
         self.bridge.stop(timeout=6.0)
         from PySide6.QtCore import QMetaObject, Qt as _Qt
+        # FIX: _after_stop помечен @Slot() — без этого PySide6 invokeMethod
+        # по имени строки не находит метод и кнопка "Запустить" зависает
         QMetaObject.invokeMethod(self, "_after_stop", _Qt.QueuedConnection)
 
+    # FIX: декоратор @Slot() обязателен для QMetaObject.invokeMethod по имени
+    @Slot()
     def _after_stop(self):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)

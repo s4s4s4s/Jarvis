@@ -7,9 +7,13 @@ from typing import Any, Dict, List
 import requests
 
 _COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
-_COINGECKO_SEARCH_URL = "https://api.coingecko.com/api/v3/search"
-_TTL_PRICE = 60    # seconds — public API rate limit protection
-_TTL_SEARCH = 300  # search results change rarely
+_COINGECKO_SEARCH_URL  = "https://api.coingecko.com/api/v3/search"
+_TTL_PRICE  = 60    # seconds — public API rate limit protection
+_TTL_SEARCH = 300   # search results change rarely
+
+# FIX: retry-параметры для обработки 429 Too Many Requests от CoinGecko
+_MAX_RETRIES   = 3
+_RETRY_DELAYS  = [2.0, 5.0, 10.0]  # экспоненциальный back-off
 
 _cache_lock = threading.Lock()
 _cache: dict[str, tuple[float, Any]] = {}  # key -> (expires_at, value)
@@ -33,19 +37,51 @@ def _set(key: str, value: Any, ttl: int) -> None:
         _cache[key] = (time.time() + ttl, value)
 
 
+def _get_with_retry(url: str, params: dict, timeout: int = 15) -> requests.Response:
+    """
+    GET-запрос с retry при 429 (rate limit) от CoinGecko public API.
+    Бросает requests.HTTPError при финальной неудаче.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            resp = requests.get(
+                url,
+                params=params,
+                timeout=timeout,
+                headers={"accept": "application/json"},
+            )
+            if resp.status_code == 429:
+                delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+                print(f"[crypto] 429 rate limit, жду {delay}s (попытка {attempt + 1}/{_MAX_RETRIES})")
+                time.sleep(delay)
+                last_exc = requests.HTTPError(f"429 Too Many Requests", response=resp)
+                continue
+            resp.raise_for_status()
+            return resp
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 429:
+                delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+                print(f"[crypto] 429 rate limit, жду {delay}s")
+                time.sleep(delay)
+                last_exc = e
+                continue
+            raise
+        except Exception as e:
+            raise
+    # Все попытки исчерпаны
+    raise ValueError(
+        "Лимит запросов к CoinGecko исчерпан. Попробуйте через минуту."
+    ) from last_exc
+
+
 def search_coin(query: str) -> list[dict[str, Any]]:
     key = f"search:{query.lower().strip()}"
     cached = _get(key)
     if cached is not None:
         return cached
 
-    response = requests.get(
-        _COINGECKO_SEARCH_URL,
-        params={"query": query},
-        timeout=15,
-        headers={"accept": "application/json"},
-    )
-    response.raise_for_status()
+    response = _get_with_retry(_COINGECKO_SEARCH_URL, params={"query": query})
     data = response.json()
     coins: List[Dict[str, Any]] = data.get("coins") or []
     result = [
@@ -67,17 +103,14 @@ def get_crypto_price(ids: list[str], vs_currency: str = "usd") -> list[dict[str,
     if cached is not None:
         return cached
 
-    response = requests.get(
+    response = _get_with_retry(
         _COINGECKO_MARKETS_URL,
         params={
             "vs_currency": vs_currency,
             "ids": ",".join(ids),
             "price_change_percentage": "24h",
         },
-        timeout=15,
-        headers={"accept": "application/json"},
     )
-    response.raise_for_status()
     data = response.json()
     result = [
         {

@@ -32,7 +32,6 @@ class AskResult:
         return self._answer
 
 
-# Эвристика filler — отдаётся немедленно, без ожидания роутера
 _QUICK_FILLERS = [
     "Позвольте уточнить...",
     "Одну секунду...",
@@ -45,7 +44,6 @@ _filler_idx = 0
 
 
 def _quick_filler(text: str) -> str:
-    """Быстрый filler по тексту запроса, не требует LLM."""
     global _filler_idx
     t = text.lower()
     if any(w in t for w in ("погода", "температура")):
@@ -125,19 +123,24 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
 
 
 def ask_llm(text: str) -> AskResult:
+    # FIX: snapshot берём ДО append(user) — это правильный контекст для агентов.
+    # append(user) тоже до executor, чтобы при параллельных вызовах (прерывание)
+    # порядок в истории был user1 → user2, а не user1 → assistant1 → user2.
+    # assistant-ответ пишется внутри _run() после получения ответа от LLM.
     history = hist.snapshot()
     hist.append("user", text)
 
-    # filler отдаётся немедленно — без ожидания роутера
     filler = _quick_filler(text)
     result = AskResult(filler=filler)
 
     def _run() -> str:
         t0 = time.monotonic()
-        # Роутер запускается внутри executor — не блокирует основной поток
         route_data = _route(text)
         answer = _dispatch(route_data, text, history)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
+        # FIX: assistant-ответ добавляется здесь, после получения,
+        # не в главном потоке — это сохраняет правильное чередование
+        # даже при быстрых последовательных вопросах
         hist.append("assistant", answer)
         log_route(
             text=text,

@@ -1,4 +1,3 @@
-# voice/assistant.py
 from __future__ import annotations
 
 import threading
@@ -72,6 +71,13 @@ def main(
         if stop_event.is_set():
             return
         _log("[assistant] Модели готовы.")
+
+        # FIX: подключаем TTS-callback для таймеров
+        # Используем замыкание на stop_event чтобы таймер не говорил
+        # когда ассистент уже остановлен
+        from tools.timer import set_fire_callback
+        set_fire_callback(lambda msg: tts.say(msg, stop_event=stop_event))
+        _log("[assistant] Timer TTS callback установлен.")
 
         wake_detector = WakeDetector()
         turn_manager = TurnManager(chunk_size=CHUNK_SIZE)
@@ -198,5 +204,14 @@ def main(
         with _running_lock:
             _is_running = False
         audio_core.stop()
+        # FIX: отменяем все активные таймеры при завершении ассистента,
+        # чтобы daemon-потоки не пытались вызвать tts.say() после остановки
+        try:
+            from tools.timer import cancel_all
+            cancelled = cancel_all()
+            if cancelled:
+                print(f"[assistant] Отменено таймеров при выходе: {cancelled}")
+        except Exception:
+            pass
         print("[assistant] AudioCore остановлен. Выход.")
         _state(AssistantState.IDLE)

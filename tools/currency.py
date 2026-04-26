@@ -12,43 +12,52 @@ _TTL_SECONDS = 86400  # ЦБ обновляет раз в сутки — кэш�
 _cache_lock = threading.Lock()
 _cache_data: dict[str, Any] | None = None
 _cache_expires: float = 0.0
+# FIX: отдельный event чтобы второй поток ждал пока первый завершит HTTP-запрос
+# вместо того чтобы запускать свой (race condition при пустом кэше)
+_fetch_lock = threading.Lock()
 
 
 def get_rates() -> dict[str, Any]:
     global _cache_data, _cache_expires
 
-    with _cache_lock:
+    # Быстрая проверка кэша без лока (double-checked)
+    if _cache_data is not None and time.time() < _cache_expires:
+        return _cache_data
+
+    # FIX: только один поток делает HTTP-запрос, остальные ждут
+    with _fetch_lock:
+        # Повторная проверка после получения лока — другой поток мог уже загрузить
         if _cache_data is not None and time.time() < _cache_expires:
             return _cache_data
 
-    response = requests.get(_CBR_DAILY_URL, timeout=15)
-    response.raise_for_status()
-    root = ET.fromstring(response.content)
+        response = requests.get(_CBR_DAILY_URL, timeout=15)
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
 
-    rates: dict[str, Any] = {
-        "date": root.attrib.get("Date"),
-        "base": "RUB",
-        "currencies": {},
-    }
-
-    for valute in root.findall("Valute"):
-        code = (valute.findtext("CharCode") or "").upper()
-        nominal = int(valute.findtext("Nominal") or "1")
-        name = valute.findtext("Name") or code
-        value_text = (valute.findtext("Value") or "0").replace(",", ".")
-        value = float(value_text)
-        rates["currencies"][code] = {
-            "name": name,
-            "nominal": nominal,
-            "value_rub": value,
-            "unit_rate_rub": value / nominal if nominal else None,
+        rates: dict[str, Any] = {
+            "date": root.attrib.get("Date"),
+            "base": "RUB",
+            "currencies": {},
         }
 
-    with _cache_lock:
-        _cache_data = rates
-        _cache_expires = time.time() + _TTL_SECONDS
+        for valute in root.findall("Valute"):
+            code = (valute.findtext("CharCode") or "").upper()
+            nominal = int(valute.findtext("Nominal") or "1")
+            name = valute.findtext("Name") or code
+            value_text = (valute.findtext("Value") or "0").replace(",", ".")
+            value = float(value_text)
+            rates["currencies"][code] = {
+                "name": name,
+                "nominal": nominal,
+                "value_rub": value,
+                "unit_rate_rub": value / nominal if nominal else None,
+            }
 
-    return rates
+        with _cache_lock:
+            _cache_data = rates
+            _cache_expires = time.time() + _TTL_SECONDS
+
+    return _cache_data
 
 
 def convert_currency(amount: float, from_code: str, to_code: str) -> dict[str, Any]:
