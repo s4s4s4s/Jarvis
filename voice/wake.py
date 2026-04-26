@@ -1,4 +1,5 @@
 # voice/wake.py
+import threading
 import time
 from collections import deque
 
@@ -18,7 +19,7 @@ from core.config import (
     WAKE_MAX_TEXT_LEN,
     WAKE_PHRASES,
     WAKE_BLOCKLIST,
-    IGNORE_PHRASES,  # единый источник истины из core.config
+    IGNORE_PHRASES,
 )
 from .stt import transcribe, vad_prob
 
@@ -50,11 +51,19 @@ class WakeDetector:
         self.in_speech = False
         self.last_vad = 0.0
 
+        # FIX: transcribe запускается в отдельном потоке, чтобы не блокировать
+        # основной аудио-цикл на время инференса Whisper (~300-500 мс)
+        self._check_lock = threading.Lock()
+        self._check_thread: threading.Thread | None = None
+        self._pending_result: bool | None = None  # True = wake найден
+        self._fired = False  # True = wake уже зафиксирован, ждём consume
+
     def reset(self):
         self.speech_streak = 0
         self.silence_streak = 0
         self.in_speech = False
         self.last_vad = 0.0
+        self._fired = False
 
     def contains_wake_word(self, text: str) -> bool:
         t = text.lower().strip()
@@ -80,40 +89,79 @@ class WakeDetector:
                 if self.silence_streak >= WAKE_MAX_SILENCE_CHUNKS:
                     self.reset()
 
+    def _run_transcribe(self, audio: np.ndarray, now: float):
+        """Запускается в отдельном потоке — не блокирует аудио-цикл."""
+        text = transcribe(audio, log=False)
+        if not text:
+            self.cooldown_until = now + WAKE_FAIL_COOLDOWN_SEC
+            with self._check_lock:
+                self._check_thread = None
+            return
+        text = clean_weird_tail(text)
+        t_low = text.lower().strip()
+        if any(p in t_low for p in IGNORE_PHRASES):
+            self.cooldown_until = now + WAKE_FAIL_COOLDOWN_SEC
+            with self._check_lock:
+                self._check_thread = None
+            return
+        if len(t_low) > WAKE_MAX_TEXT_LEN:
+            self.cooldown_until = now + WAKE_FAIL_COOLDOWN_SEC
+            with self._check_lock:
+                self._check_thread = None
+            return
+        print(
+            f"\n[wake-check vad={self.last_vad:.2f} in_speech={self.in_speech} "
+            f"speech_streak={self.speech_streak}] {text}"
+        )
+        if self.contains_wake_word(t_low):
+            with self._check_lock:
+                self._pending_result = True
+                self._check_thread = None
+        else:
+            self.cooldown_until = now + WAKE_FAIL_COOLDOWN_SEC
+            with self._check_lock:
+                self._check_thread = None
+
     def process_chunk(self, chunk) -> bool:
         self.window.append(chunk)
         if len(self.window) < self.window.maxlen:
             return False
+
+        # FIX: если transcribe-поток нашёл wake-word, возвращаем True
+        with self._check_lock:
+            if self._pending_result:
+                self._pending_result = None
+                self.reset()
+                self.cooldown_until = time.time() + WAKE_SUCCESS_COOLDOWN_SEC
+                return True
+
         now = time.time()
         if now < self.cooldown_until:
             return False
+
         prob = vad_prob(chunk)
         self._update_vad_state(prob)
         if not self.in_speech:
             return False
         if now - self.last_check_ts < WAKE_MIN_CHECK_INTERVAL_SEC:
             return False
+
+        with self._check_lock:
+            if self._check_thread is not None:
+                # Предыдущий transcribe ещё не завершился — пропускаем этот чек
+                return False
+
         self.last_check_ts = now
         audio = np.concatenate(list(self.window))
-        text = transcribe(audio, log=False)
-        if not text:
-            self.cooldown_until = now + WAKE_FAIL_COOLDOWN_SEC
-            return False
-        text = clean_weird_tail(text)
-        t_low = text.lower().strip()
-        if any(p in t_low for p in IGNORE_PHRASES):
-            self.cooldown_until = now + WAKE_FAIL_COOLDOWN_SEC
-            return False
-        if len(t_low) > WAKE_MAX_TEXT_LEN:
-            self.cooldown_until = now + WAKE_FAIL_COOLDOWN_SEC
-            return False
-        print(
-            f"\n[wake-check vad={prob:.2f} in_speech={self.in_speech} "
-            f"speech_streak={self.speech_streak}] {text}"
+
+        # FIX: запускаем transcribe в daemon-потоке, не блокируем аудио-цикл
+        t = threading.Thread(
+            target=self._run_transcribe,
+            args=(audio, now),
+            daemon=True,
+            name="wake-transcribe",
         )
-        if self.contains_wake_word(t_low):
-            self.reset()
-            self.cooldown_until = now + WAKE_SUCCESS_COOLDOWN_SEC
-            return True
-        self.cooldown_until = now + WAKE_FAIL_COOLDOWN_SEC
+        with self._check_lock:
+            self._check_thread = t
+        t.start()
         return False

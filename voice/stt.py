@@ -36,7 +36,10 @@ def transcribe(audio, log: bool = True) -> str:
     if log:
         print("[STT] Распознаю...")
     audio_len_sec = len(audio) / SAMPLE_RATE_MIC
-    beam = 1 if audio_len_sec < 3.0 else 3
+    # FIX: порог снижен с 3.0 → 1.5 сек: короткие команды ("Джарвис, который час?"
+    # ≈ 2 сек) получают beam=3 вместо beam=1, что даёт заметно лучшую точность
+    # на русском языке с Whisper large-v3
+    beam = 1 if audio_len_sec < 1.5 else 3
     segments, _ = _whisper_model.transcribe(
         audio,
         language=LANG,

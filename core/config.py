@@ -18,7 +18,10 @@ OLLAMA_RETRY_DELAY   = 1.5
 SAMPLE_RATE_MIC = 16000
 CHUNK_SIZE      = 512
 
-SILENCE_MS        = 1100
+# FIX: снижен с 1100 → 850 мс: при TURN_VAD_TRIGGER=0.48 / HOLD=0.30
+# детектор достаточно чувствителен, чтобы не ловить ложные паузы внутри фразы,
+# но 1100 мс — это заметное ожидание после каждой команды
+SILENCE_MS        = 850
 MAX_RECORD_SEC    = 15
 MIN_UTTERANCE_SEC = 0.35
 PRE_ROLL_SEC      = 2.0
@@ -40,7 +43,9 @@ TURN_VAD_TRIGGER = 0.48
 TURN_VAD_HOLD    = 0.30
 
 # ─── Режимы ───────────────────────────────────────────────────────────────────
-POST_TTS_GRACE_SEC       = 2.5
+# FIX: снижен с 2.5 → 1.5 сек: Whisper и VAD к этому моменту уже готовы,
+# нет смысла держать паузу 2.5 сек перед возвратом в режим ожидания wake-word
+POST_TTS_GRACE_SEC       = 1.5
 POST_INTERRUPT_GRACE_SEC = 0.4
 IDLE_TIMEOUT_SEC         = 5.0
 

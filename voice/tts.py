@@ -1,5 +1,5 @@
 """
-voice/tts.py — Edge TTS: цельный текст одним запросом, потом воспроизводим одинок файл.
+voice/tts.py — Edge TTS: цельный текст одним запросом, потом воспроизводим один файл.
 """
 import asyncio
 import os
@@ -14,7 +14,7 @@ from typing import Optional
 import edge_tts
 import pygame
 
-from core.config import EDGE_VOICE, EDGE_RATE, SAMPLE_RATE_MIC, TURN_VAD_TRIGGER
+from core.config import EDGE_VOICE, EDGE_RATE, SAMPLE_RATE_MIC, TURN_VAD_TRIGGER, CHUNK_SIZE
 from core.paths import TTS_CHUNKS
 
 _CHUNK_ROOT = str(TTS_CHUNKS)
@@ -27,9 +27,9 @@ _LISTENER_WAIT_TIMEOUT = 15.0
 
 
 def _set_playing(v):  global _playing;   _playing = v
-def _get_stop():      
+def _get_stop():
     with _state_lock: return _stop_flag
-def _set_stop(v):     
+def _set_stop(v):
     global _stop_flag
     with _state_lock: _stop_flag = v
 def _should_stop(ev=None):
@@ -55,6 +55,7 @@ def _cleanup(path):
 
 
 def _cleanup_orphans(keep=None):
+    """Удаляет старые сессионные директории. Вызывать только при старте _run."""
     try:
         if not os.path.exists(_CHUNK_ROOT):
             return
@@ -141,6 +142,10 @@ def _play_thread(q: Queue, stop_ev):
         path = item
         if not os.path.exists(path):
             continue
+        # FIX: проверяем stop перед загрузкой, чтобы не начать воспроизведение
+        # после того как пришёл stop (например, при перебивании во время генерации)
+        if _should_stop(stop_ev):
+            break
         try:
             _ensure_mixer()
             if not pygame.mixer.get_init():
@@ -165,7 +170,8 @@ def _play_thread(q: Queue, stop_ev):
 
 def _listen_thread(audio_core, stop_ev, interrupt_ev, audio_box):
     from voice.turn import TurnManager
-    from voice.audio_core import CHUNK_SIZE as _CS
+    # FIX: импортируем CHUNK_SIZE из core.config, а не из voice.audio_core
+    # (в audio_core нет публичного экспорта CHUNK_SIZE)
     tap = audio_core.create_tap()
     fired = threading.Event()
 
@@ -194,7 +200,7 @@ def _listen_thread(audio_core, stop_ev, interrupt_ev, audio_box):
             yield chunk
 
     try:
-        tm = TurnManager(chunk_size=_CS)
+        tm = TurnManager(chunk_size=CHUNK_SIZE)
         audio = tm.collect_utterance(_vad_iter(), stop_event=stop_ev)
         if audio is not None and len(audio) > 0:
             audio_box["audio"] = audio
@@ -210,6 +216,8 @@ def _run(text: str, stop_ev=None, allow_interrupt=False, audio_core=None):
     _set_stop(False)
     _set_playing(False)
     session_dir = _new_session_dir()
+    # FIX: _cleanup_orphans вызывается один раз при старте сессии,
+    # не нужно вызывать его повторно при каждом чанке
     _cleanup_orphans(keep=session_dir)
     _ensure_mixer()
 
