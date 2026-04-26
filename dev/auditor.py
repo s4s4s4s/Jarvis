@@ -44,16 +44,30 @@ TEMPERATURE = 0.2
 DEDUP_THRESHOLD = 80
 
 SYSTEM_PROMPT = """\
-You are a code auditor. Analyze the provided Python source files and find real bugs only.
+You are a strict code auditor. Analyze the provided Python source files and report ALL issues.
 For each finding output a JSON object on a single line with EXACTLY these keys:
   file, line, type, description, suggestion, confidence
-Types allowed: HARDCODED_STRING, RACE_CONDITION, UNHANDLED_EXCEPTION, RESOURCE_LEAK
+
+Types allowed:
+  HARDCODED_STRING   - any string literal that should not be hardcoded: fallback messages,
+                       error strings, status strings, user-facing responses, magic strings
+                       in logic. This project philosophy: ALL user-facing strings must be
+                       LLM-generated, never hardcoded.
+  RACE_CONDITION     - shared state accessed from multiple threads without synchronization
+  UNHANDLED_EXCEPTION - bare except, silent exception swallowing, missing logging on catch
+  RESOURCE_LEAK      - file handles, threads, connections not properly closed/joined
+
 confidence: float 0.0-1.0
 Do NOT output any text outside the JSON lines. Do NOT wrap in markdown fences.
 If no issues found, output nothing."""
 
 USER_TEMPLATE = """\
-Audit the following files for bugs. Output one JSON object per line, no other text.
+Audit the following files. Output one JSON object per line, no other text.
+Pay special attention to:
+- Hardcoded string literals in responses, fallbacks, error messages (HARDCODED_STRING)
+- Silent exception handlers with no logging (UNHANDLED_EXCEPTION)
+- Race conditions on shared state (RACE_CONDITION)
+- Unclosed resources (RESOURCE_LEAK)
 
 {file_blocks}"""
 
