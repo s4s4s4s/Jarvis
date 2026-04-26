@@ -120,6 +120,7 @@ def main(
     post_tts_grace_until = 0.0
 
     audio_core = AudioCore()
+    audio_core.start()
     wake_detector = WakeDetector()
     turn_manager = TurnManager(CHUNK_SIZE)
     chunk_iter = audio_core.stream_chunks(stop_event=stop_event)

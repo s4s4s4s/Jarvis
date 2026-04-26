@@ -1,6 +1,8 @@
 # voice/audio_core.py
 import queue
 import threading
+from typing import Optional
+
 import numpy as np
 import sounddevice as sd
 
@@ -13,9 +15,12 @@ class AudioCore:
     def __init__(self):
         self._taps: list[queue.Queue] = []
         self._taps_lock = threading.Lock()
-        self._pre_roll_len = int(PRE_ROLL_SEC * SAMPLE_RATE_MIC / CHUNK_SIZE)
+        self._pre_roll_len = max(1, int(PRE_ROLL_SEC * SAMPLE_RATE_MIC / CHUNK_SIZE))
         self._pre_roll: list = []
         self._stream = None
+        self._stop_requested = False
+
+    # --- tap API (используется TTS interrupt-listener) ---
 
     def create_tap(self, pre_roll: bool = False) -> queue.Queue:
         q: queue.Queue = queue.Queue()
@@ -34,6 +39,42 @@ class AudioCore:
                 pass
         q.put(_STOP_SENTINEL)
 
+    # --- stream API (используется assistant main loop) ---
+
+    def stream_chunks(self, stop_event: Optional[threading.Event] = None):
+        """
+        Генератор чанков из микрофона.
+        Создаёт личный tap и выдаёт чанки до stop_event или request_stop.
+        """
+        tap = self.create_tap(pre_roll=False)
+        try:
+            while True:
+                if self._stop_requested:
+                    return
+                if stop_event is not None and stop_event.is_set():
+                    return
+                try:
+                    item = tap.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if item is _STOP_SENTINEL:
+                    return
+                yield item
+        finally:
+            self.remove_tap(tap)
+
+    def get_pre_roll(self) -> list:
+        """Возвращает копию текущего pre-roll буфера."""
+        with self._taps_lock:
+            return list(self._pre_roll)
+
+    def request_stop(self) -> None:
+        """Сигнализирует stream_chunks завершиться."""
+        self._stop_requested = True
+        self.stop()
+
+    # --- внутренние ---
+
     def _callback(self, indata: np.ndarray, frames, time_, status):
         chunk = indata[:, 0].copy()
         self._pre_roll.append(chunk)
@@ -44,6 +85,7 @@ class AudioCore:
                 q.put(chunk)
 
     def start(self):
+        self._stop_requested = False
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE_MIC,
             blocksize=CHUNK_SIZE,
@@ -55,10 +97,14 @@ class AudioCore:
 
     def stop(self):
         if self._stream:
-            self._stream.stop()
-            self._stream.close()
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception:
+                pass
             self._stream = None
         with self._taps_lock:
             for q in self._taps:
                 q.put(_STOP_SENTINEL)
             self._taps.clear()
+# === end of file: voice/audio_core.py ===
