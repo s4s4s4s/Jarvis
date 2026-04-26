@@ -292,6 +292,7 @@ def _interrupt_listener_from_audio_core(
                     silence_counter = 0
             if len(frames) >= max_chunks:
                 break
+
         if _should_stop(stop_event) or interrupt_event.is_set():
             return
         if not speech_started or not frames:
@@ -299,10 +300,12 @@ def _interrupt_listener_from_audio_core(
         audio = np.concatenate(frames)
         if len(audio) < min_samples:
             return
+
+        # ВАЖНО: сначала останавливаем playback, потом сохраняем аудио
+        _set_stop_flag(True)          # ← playback_worker увидит это на следующем тике
+        _release_current_chunk()      # ← немедленно останавливаем pygame
         interrupted_audio_box["audio"] = audio
         interrupt_event.set()
-        _set_stop_flag(True)
-        _release_current_chunk()
         print("[TTS] Обнаружено перебивание голосом через AudioCore")
     finally:
         audio_core.remove_tap(tap_q)
