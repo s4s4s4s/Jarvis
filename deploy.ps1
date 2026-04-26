@@ -23,4 +23,5 @@ if ($status) {
 }
 
 Write-Host "`n[JARVIS] Запускаю проект..." -ForegroundColor Cyan
-python app.py
+Set-Location $ProjectDir
+& "$ProjectDir\.venv\Scripts\python.exe" "app.py"
