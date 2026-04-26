@@ -1,11 +1,10 @@
 # voice/turn.py
-
 import time
 from typing import Optional
 
 import numpy as np
 
-from .config import (
+from core.config import (
     SILENCE_MS,
     MAX_RECORD_SEC,
     MIN_UTTERANCE_SEC,
@@ -42,13 +41,10 @@ class TurnManager:
         for _ in range(self.max_chunks):
             if self._should_stop(stop_event):
                 return None
-
             chunk = self._next_chunk(chunk_iter, stop_event=stop_event)
             if chunk is None:
                 return None
-
             prob = vad_prob(chunk)
-
             if prob >= TURN_VAD_TRIGGER:
                 speech_started = True
                 silence_counter = 0
@@ -62,16 +58,11 @@ class TurnManager:
                 else:
                     silence_counter = 0
 
-        if not speech_started:
+        if not speech_started or not frames:
             return None
-
-        if not frames:
-            return None
-
         audio = np.concatenate(frames)
         if len(audio) < self.min_samples:
             return None
-
         return audio
 
     def collect_with_timeout(
@@ -88,13 +79,10 @@ class TurnManager:
         for _ in range(self.max_chunks):
             if self._should_stop(stop_event):
                 return None
-
             chunk = self._next_chunk(chunk_iter, stop_event=stop_event)
             if chunk is None:
                 return None
-
             prob = vad_prob(chunk)
-
             if prob >= TURN_VAD_TRIGGER:
                 speech_started = True
                 idle_start = time.time()
@@ -115,9 +103,7 @@ class TurnManager:
 
         if not frames:
             return None
-
         audio = np.concatenate(frames)
         if len(audio) < self.min_samples:
             return None
-
         return audio

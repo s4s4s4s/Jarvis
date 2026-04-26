@@ -1,109 +1,64 @@
 # voice/audio_core.py
-
 import queue
 import threading
-import time
-from collections import deque
-from typing import Optional
-
+import numpy as np
 import sounddevice as sd
 
-from .config import SAMPLE_RATE_MIC, CHUNK_SIZE, PRE_ROLL_SEC
-
+from core.config import SAMPLE_RATE_MIC, CHUNK_SIZE, PRE_ROLL_SEC
 
 _STOP_SENTINEL = object()
 
 
 class AudioCore:
     def __init__(self):
-        self.q = queue.Queue()
-        self.pre_roll_chunks = int((PRE_ROLL_SEC * SAMPLE_RATE_MIC) / CHUNK_SIZE)
-        self.ring = deque(maxlen=self.pre_roll_chunks)
+        self._taps: list[queue.Queue] = []
+        self._taps_lock = threading.Lock()
+        self._pre_roll_len = int(PRE_ROLL_SEC * SAMPLE_RATE_MIC / CHUNK_SIZE)
+        self._pre_roll: list = []
+        self._stream = None
 
-        self._tap_lock = threading.Lock()
-        self._tap_queues: list[queue.Queue] = []
+    def create_tap(self, pre_roll: bool = False) -> queue.Queue:
+        q: queue.Queue = queue.Queue()
+        with self._taps_lock:
+            self._taps.append(q)
+            if pre_roll and self._pre_roll:
+                for chunk in self._pre_roll:
+                    q.put(chunk)
+        return q
 
-    def callback(self, indata, frames, time_info, status):
-        chunk = indata.copy().flatten()
-
-        self.ring.append(chunk)
-        self.q.put(chunk)
-
-        with self._tap_lock:
-            dead = []
-            for tap_q in self._tap_queues:
-                try:
-                    tap_q.put_nowait(chunk)
-                except Exception:
-                    dead.append(tap_q)
-
-            if dead:
-                self._tap_queues = [q for q in self._tap_queues if q not in dead]
-
-    def request_stop(self):
-        try:
-            self.q.put_nowait(_STOP_SENTINEL)
-        except Exception:
-            pass
-
-        with self._tap_lock:
-            for tap_q in self._tap_queues:
-                try:
-                    tap_q.put_nowait(_STOP_SENTINEL)
-                except Exception:
-                    pass
-
-    def clear_queue(self):
-        while not self.q.empty():
+    def remove_tap(self, q: queue.Queue) -> None:
+        with self._taps_lock:
             try:
-                self.q.get_nowait()
-            except Exception:
-                break
+                self._taps.remove(q)
+            except ValueError:
+                pass
+        q.put(_STOP_SENTINEL)
 
-    def create_tap(self) -> queue.Queue:
-        tap_q = queue.Queue(maxsize=256)
-        with self._tap_lock:
-            self._tap_queues.append(tap_q)
-        return tap_q
+    def _callback(self, indata: np.ndarray, frames, time_, status):
+        chunk = indata[:, 0].copy()
+        self._pre_roll.append(chunk)
+        if len(self._pre_roll) > self._pre_roll_len:
+            self._pre_roll.pop(0)
+        with self._taps_lock:
+            for q in self._taps:
+                q.put(chunk)
 
-    def remove_tap(self, tap_q: queue.Queue):
-        with self._tap_lock:
-            self._tap_queues = [q for q in self._tap_queues if q is not tap_q]
+    def start(self):
+        self._stream = sd.InputStream(
+            samplerate=SAMPLE_RATE_MIC,
+            blocksize=CHUNK_SIZE,
+            channels=1,
+            dtype="float32",
+            callback=self._callback,
+        )
+        self._stream.start()
 
-    def stream_chunks(self, stop_event: Optional[object] = None):
-        while True:
-            if stop_event is not None and stop_event.is_set():
-                return
-
-            try:
-                with sd.InputStream(
-                    samplerate=SAMPLE_RATE_MIC,
-                    channels=1,
-                    dtype="float32",
-                    blocksize=CHUNK_SIZE,
-                    callback=self.callback,
-                ):
-                    while True:
-                        if stop_event is not None and stop_event.is_set():
-                            return
-
-                        try:
-                            item = self.q.get(timeout=0.20)
-                        except queue.Empty:
-                            continue
-
-                        if item is _STOP_SENTINEL:
-                            return
-
-                        yield item
-
-            except Exception as e:
-                print(f"[audio_core] Поток упал: {e}, перезапускаю...")
-                self.clear_queue()
-                time.sleep(0.5)
-
-                if stop_event is not None and stop_event.is_set():
-                    return
-
-    def get_pre_roll(self):
-        return list(self.ring)
+    def stop(self):
+        if self._stream:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
+        with self._taps_lock:
+            for q in self._taps:
+                q.put(_STOP_SENTINEL)
+            self._taps.clear()
