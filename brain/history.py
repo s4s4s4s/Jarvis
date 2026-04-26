@@ -11,7 +11,10 @@ def append(role: str, content: str) -> None:
         _history.append({"role": role, "content": content})
         max_msgs = MAX_HISTORY * 2  # каждый ход = 2 сообщения (user + assistant)
         if len(_history) > max_msgs:
-            del _history[: len(_history) - max_msgs]
+            excess = len(_history) - max_msgs
+            # Срезаем только чётное число — чтобы не разрывать пары user/assistant
+            excess = excess + (excess % 2)
+            del _history[:excess]
 
 
 def snapshot() -> list[dict]:

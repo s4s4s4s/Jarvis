@@ -1,4 +1,5 @@
 # core/config.py
+from pathlib import Path
 
 # ─── STT / Whisper ────────────────────────────────────────────────────────────
 WHISPER_MODEL_SIZE = "large-v3"
@@ -8,7 +9,8 @@ LANG = "ru"
 OLLAMA_ROUTER_MODEL  = "qwen2.5:14b-instruct-q4_K_M"
 OLLAMA_FAST_MODEL    = "llama3.1:8b-instruct-q5_K_M"
 OLLAMA_HEAVY_MODEL   = "qwen2.5:32b-instruct-q4_K_M"
-OLLAMA_TIMEOUT       = 60      # seconds per request
+OLLAMA_TIMEOUT       = 60      # seconds — router + fast models
+OLLAMA_HEAVY_TIMEOUT = 180     # seconds — heavy model (32b может думать долго)
 OLLAMA_RETRIES       = 2
 OLLAMA_RETRY_DELAY   = 1.5
 
@@ -73,13 +75,14 @@ IGNORE_PHRASES = [
     "ending theme",
 ]
 
-# ─── TTS ──────────────────────────────────────────────────────────────────────
-REFERENCE_WAV = "C:/jarvis/assets/reference.wav"
-EDGE_VOICE    = "ru-RU-DmitryNeural"
+# ─── Пути (assets через ROOT) ─────────────────────────────────────────────────
+_ROOT = Path(r"C:\jarvis")
+REFERENCE_WAV         = str(_ROOT / "assets" / "reference.wav")
+ACTIVATE_SOUND_PATH   = str(_ROOT / "assets" / "activate.wav")
+DEACTIVATE_SOUND_PATH = str(_ROOT / "assets" / "deactivate.wav")
 
-# ─── Звуки ────────────────────────────────────────────────────────────────────
-ACTIVATE_SOUND_PATH   = "C:/jarvis/assets/activate.wav"
-DEACTIVATE_SOUND_PATH = "C:/jarvis/assets/deactivate.wav"
+# ─── TTS ──────────────────────────────────────────────────────────────────────
+EDGE_VOICE = "ru-RU-DmitryNeural"
 
 # ─── Долгосрочная память ──────────────────────────────────────────────────────
 # Paths live in core/paths.py — do not duplicate here.

@@ -32,6 +32,39 @@ class AskResult:
         return self._answer
 
 
+# Эвристика filler — отдаётся немедленно, без ожидания роутера
+_QUICK_FILLERS = [
+    "Позвольте уточнить...",
+    "Одну секунду...",
+    "Съезжу и проверю.",
+    "Анализирую.",
+    "Дайте подумаю.",
+]
+
+_filler_idx = 0
+
+
+def _quick_filler(text: str) -> str:
+    """Быстрый filler по тексту запроса, не требует LLM."""
+    global _filler_idx
+    t = text.lower()
+    if any(w in t for w in ("погода", "температура")):
+        return "Смотрю текущие данные."
+    if any(w in t for w in ("курс", "валюта", "доллар", "рубль")):
+        return "Проверяю курсы."
+    if any(w in t for w in ("крипто", "биткоин", "эфир")):
+        return "Смотрю цены."
+    if any(w in t for w in ("время", "час", "сколько")):
+        return "Сейчас скажу."
+    if any(w in t for w in ("найди", "поищи", "ищи", "гугл")):
+        return "Ищу в сети."
+    if any(w in t for w in ("объясни", "почему", "как", "расскажи")):
+        return "Дайте подумаю."
+    f = _QUICK_FILLERS[_filler_idx % len(_QUICK_FILLERS)]
+    _filler_idx += 1
+    return f
+
+
 def _route(text: str) -> dict[str, Any]:
     msgs = [
         {"role": "system", "content": ROUTER_SYSTEM},
@@ -39,7 +72,6 @@ def _route(text: str) -> dict[str, Any]:
     ]
     raw = chat(MODEL_ROUTER, msgs, options={"temperature": 0.0, "num_ctx": 4096})
     raw = raw.strip()
-    # Strip markdown code fences that some models add
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1]
     if raw.endswith("```"):
@@ -88,7 +120,6 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
         from brain.agents.memory_agent import run as memory_run
         return memory_run(text, history)
 
-    # default: chat
     from brain.agents.chat import run as chat_run
     return chat_run(text, history)
 
@@ -97,12 +128,14 @@ def ask_llm(text: str) -> AskResult:
     history = hist.snapshot()
     hist.append("user", text)
 
-    route_data = _route(text)
-    filler = route_data.get("filler", "")
+    # filler отдаётся немедленно — без ожидания роутера
+    filler = _quick_filler(text)
     result = AskResult(filler=filler)
 
     def _run() -> str:
         t0 = time.monotonic()
+        # Роутер запускается внутри executor — не блокирует основной поток
+        route_data = _route(text)
         answer = _dispatch(route_data, text, history)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         hist.append("assistant", answer)
@@ -114,7 +147,6 @@ def ask_llm(text: str) -> AskResult:
             reason=route_data.get("reason", ""),
             answer_ms=elapsed_ms,
         )
-        # Async memory extraction — never blocks the answer
         try:
             from tools.memory import extract_and_save_async
             extract_and_save_async(text, answer)
