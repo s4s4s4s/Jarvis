@@ -1,5 +1,4 @@
 # voice/assistant.py
-
 import re
 import time
 import threading
@@ -9,17 +8,18 @@ from .audio_core import AudioCore
 from .wake import WakeDetector
 from .turn import TurnManager
 from .stt import transcribe
-from .llm import ask_llm
 from .tts import speak_and_handle, say, stop_speaking
-from .state import AssistantState
 from .sounds import play_activate, play_deactivate
-from .config import (
+
+from core.state import AssistantState
+from core.config import (
     WAKE_PHRASES,
     CHUNK_SIZE,
     IDLE_TIMEOUT_SEC,
     POST_TTS_GRACE_SEC,
     IGNORE_PHRASES,
 )
+from brain.ask import ask_llm
 
 FAREWELL_PATTERNS = [
     r"\bпока\b",
@@ -96,7 +96,6 @@ def _emit_status(
     on_system_log: Optional[Callable[[str], None]] = None,
 ):
     _safe_call(on_state, state)
-
     if state == AssistantState.IDLE:
         _safe_call(on_system_log, "[state] IDLE\n")
     elif state == AssistantState.LISTENING:
@@ -117,18 +116,15 @@ def main(
     on_system_log: Optional[Callable[[str], None]] = None,
 ):
     stop_event = stop_event or threading.Event()
-
     pending_audio = None
     post_tts_grace_until = 0.0
 
     audio_core = AudioCore()
     wake_detector = WakeDetector()
     turn_manager = TurnManager(CHUNK_SIZE)
-
     chunk_iter = audio_core.stream_chunks(stop_event=stop_event)
 
     _safe_call(on_system_log, "\n=== Jarvis запущен ===\n")
-
     active_mode = True
     play_activate()
     _emit_status(AssistantState.LISTENING, on_state, on_system_log)
@@ -139,19 +135,16 @@ def main(
             if not active_mode and pending_audio is None:
                 _emit_status(AssistantState.IDLE, on_state, on_system_log)
                 _safe_call(on_system_log, "💤 Жду обращения...\n")
-
                 while not stop_event.is_set():
                     try:
                         chunk = next(chunk_iter)
                     except StopIteration:
                         return
-
                     if wake_detector.process_chunk(chunk):
                         play_activate()
                         active_mode = True
                         _emit_status(AssistantState.LISTENING, on_state, on_system_log)
                         _safe_call(on_system_log, "🎙️ Активный режим. Слушаю...\n")
-
                         pre_roll = audio_core.get_pre_roll()
                         pending_audio = turn_manager.collect_utterance(
                             chunk_iter,
@@ -160,8 +153,8 @@ def main(
                         )
                         break
 
-                if stop_event.is_set():
-                    break
+            if stop_event.is_set():
+                break
 
             if active_mode:
                 if pending_audio is not None:
@@ -172,7 +165,6 @@ def main(
                     if now < post_tts_grace_until:
                         time.sleep(0.05)
                         continue
-
                     _emit_status(AssistantState.LISTENING, on_state, on_system_log)
                     audio = turn_manager.collect_with_timeout(
                         chunk_iter,
@@ -191,11 +183,10 @@ def main(
                     continue
 
                 _emit_status(AssistantState.THINKING, on_state, on_system_log)
-
                 text = transcribe(audio)
+
                 if stop_event.is_set():
                     break
-
                 if not text or len(text) < 2:
                     continue
 
@@ -227,23 +218,18 @@ def main(
                 if stop_event.is_set():
                     break
 
-                # Если router выдал filler — озвучиваем его СРАЗУ,
-                # пока downstream-агент работает в фоне
                 if result.filler:
                     _safe_call(on_system_log, f"[filler] {result.filler}\n")
                     _safe_call(on_assistant_text, result.filler)
                     _emit_status(AssistantState.SPEAKING, on_state, on_system_log)
                     say(result.filler, stop_event=stop_event)
 
-                    if stop_event.is_set():
-                        break
-
-                # Ждём основной ответ (чаще всего уже готов, пока играл filler)
-                answer = result.get_answer(timeout=120.0)
-
                 if stop_event.is_set():
                     break
 
+                answer = result.get_answer(timeout=120.0)
+                if stop_event.is_set():
+                    break
                 if not answer:
                     continue
 
@@ -279,6 +265,4 @@ def main(
         stop_speaking()
         _emit_status(AssistantState.IDLE, on_state, on_system_log)
         _safe_call(on_system_log, "Jarvis остановлен.\n")
-
-
 # === end of file: voice/assistant.py ===
