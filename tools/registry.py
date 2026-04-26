@@ -8,6 +8,7 @@ from tools.currency import convert_currency, get_rates
 from tools.time_tool import get_time
 from tools.weather import get_weather
 from tools.timer import set_timer, list_timers, cancel_timer
+from dev.auditor import AuditorAgent
 
 
 @dataclass
@@ -54,16 +55,61 @@ def _call_timer_cancel(timer_id: str) -> Any:
     return {"cancelled": ok, "id": timer_id}
 
 
+_DEFAULT_AUDIT_FILES = [
+    "brain/ask.py",
+    "brain/agents/chat.py",
+    "brain/agents/tool_agent.py",
+    "tools/registry.py",
+]
+
+
+def _call_auditor(files: list[str] | None = None) -> str:
+    """Run AuditorAgent on project files and return a plain-text summary for LLM."""
+    targets = files or _DEFAULT_AUDIT_FILES
+    agent = AuditorAgent()
+    findings = agent.audit(targets)
+
+    if not findings:
+        return "Находок не обнаружено."
+
+    confirmed   = [f for f in findings if f.status == "confirmed"]
+    needs_review = [f for f in findings if f.status == "needs_review"]
+    rejected    = [f for f in findings if f.status == "rejected"]
+
+    lines = [
+        f"Аудит {len(targets)} файл(ов): {len(findings)} находок, "
+        f"{len(confirmed)} подтверждено, "
+        f"{len(needs_review)} на проверке, "
+        f"{len(rejected)} отклонено.",
+        "",
+    ]
+
+    for f in confirmed:
+        lines.append(f"[ПОДТВЕРЖДЕНО] {f.file}:{f.line} ({f.type}, conf={f.confidence:.2f})")
+        lines.append(f"  Проблема: {f.description}")
+        lines.append(f"  Решение: {f.suggestion}")
+        lines.append("")
+
+    for f in needs_review:
+        lines.append(f"[ПРОВЕРКА] {f.file}:{f.line} ({f.type}, conf={f.confidence:.2f})")
+        lines.append(f"  Проблема: {f.description}")
+        lines.append(f"  Причина: {f.reject_reason}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 _TOOL_MAP: dict[str, Any] = {
-    "weather":         _call_weather,
-    "crypto.search":   _call_crypto_search,
-    "crypto.price":    _call_crypto_price,
-    "currency.rates":  _call_currency_rates,
+    "weather":          _call_weather,
+    "crypto.search":    _call_crypto_search,
+    "crypto.price":     _call_crypto_price,
+    "currency.rates":   _call_currency_rates,
     "currency.convert": _call_currency_convert,
-    "time":            _call_time,
-    "timer.set":       _call_timer_set,
-    "timer.list":      _call_timer_list,
-    "timer.cancel":    _call_timer_cancel,
+    "time":             _call_time,
+    "timer.set":        _call_timer_set,
+    "timer.list":       _call_timer_list,
+    "timer.cancel":     _call_timer_cancel,
+    "auditor.run":      _call_auditor,
 }
 
 
