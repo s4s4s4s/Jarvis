@@ -1,4 +1,3 @@
-# voice/tts.py
 """
 voice/tts.py — Edge TTS с параллельным streaming и перебиванием голосом через единый AudioCore.
 
@@ -281,14 +280,11 @@ def _interrupt_listener_from_audio_core(
 
             if prob >= TURN_VAD_TRIGGER:
                 if not speech_started:
-                    # ─── КЛЮЧЕВОЕ ИЗМЕНЕНИЕ ───────────────────────────────
-                    # Первый речевой фрейм → глушим TTS немедленно,
-                    # НЕ дожидаясь конца паузы после фразы.
+                    # Первый речевой фрейм → глушим TTS немедленно
                     speech_started = True
-                    _set_stop_flag(True)      # playback_worker увидит на след. тике
-                    _release_current_chunk()  # немедленно pygame.mixer.music.stop()
+                    _set_stop_flag(True)
+                    _release_current_chunk()
                     print("[TTS] Речь обнаружена — TTS остановлен немедленно")
-                    # ─────────────────────────────────────────────────────
                 silence_counter = 0
                 frames.append(chunk)
 
@@ -297,7 +293,7 @@ def _interrupt_listener_from_audio_core(
                 if prob < TURN_VAD_HOLD:
                     silence_counter += 1
                     if silence_counter >= silence_chunks_needed:
-                        break   # фраза закончена, выходим собирать результат
+                        break
                 else:
                     silence_counter = 0
 
@@ -312,8 +308,6 @@ def _interrupt_listener_from_audio_core(
         if len(audio) < min_samples:
             return
 
-        # stop_flag уже выставлен выше при первом фрейме,
-        # здесь только финализируем сигнал прерывания
         interrupted_audio_box["audio"] = audio
         interrupt_event.set()
         print("[TTS] Перебивание зафиксировано, аудио передано")
@@ -407,6 +401,7 @@ def speak_and_handle(
     - np.ndarray audio, если пользователь перебил TTS голосом
     - None, если TTS завершился штатно или был остановлен извне
     """
+    _set_stop_flag(False)  # сбрасываем флаг от предыдущего прерывания
     return _run_streaming(
         text,
         stop_event=stop_event,
@@ -424,4 +419,3 @@ def stop_speaking():
 def is_speaking() -> bool:
     with _state_lock:
         return _playing
-# === end of file: voice/tts.py ===

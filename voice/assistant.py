@@ -1,4 +1,3 @@
-# voice/assistant.py
 import re
 import time
 import threading
@@ -248,9 +247,12 @@ def main(
                     break
 
                 if interrupted is not None:
-                    _safe_call(on_system_log, "[assistant] TTS прерван голосом пользователя\n")
+                    # Пользователь перебил — сразу обрабатываем его аудио
+                    _safe_call(on_system_log, "[assistant] TTS прерван — обрабатываю реплику...\n")
+                    _emit_status(AssistantState.THINKING, on_state, on_system_log)
                     pending_audio = interrupted
                 else:
+                    # TTS доиграл штатно
                     _emit_status(AssistantState.SPEAKING, on_state, on_system_log)
                     _safe_call(on_system_log, "Говорю...\n")
                     post_tts_grace_until = time.time() + POST_TTS_GRACE_SEC
@@ -266,4 +268,3 @@ def main(
         stop_speaking()
         _emit_status(AssistantState.IDLE, on_state, on_system_log)
         _safe_call(on_system_log, "Jarvis остановлен.\n")
-# === end of file: voice/assistant.py ===
