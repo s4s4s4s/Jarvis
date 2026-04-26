@@ -22,32 +22,46 @@ _CALLBACK_ALIASES = {
 }
 
 
+class _LineBuffer:
+    """Буферизует текст и вызывает callback построчно."""
+    def __init__(self, callback: Callable[[str], None]):
+        self._cb = callback
+        self._buf = ""
+
+    def feed(self, data: str) -> None:
+        self._buf += data
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            line = line.rstrip("\r")
+            if line:
+                try:
+                    self._cb(line)
+                except Exception:
+                    pass
+
+
 class _StreamRedirector:
-    """stdout/stderr → system_log signal (буферизация по '\n')."""
+    """
+    Перехватывает один stream (stdout ИЛИ stderr).
+    Пишет в original И шлёт построчно в callback.
+    """
     def __init__(self, original, callback: Callable[[str], None]):
         self._original = original
-        self._callback = callback
-        self._buffer = ""
+        self._lb = _LineBuffer(callback)
 
     def write(self, data: str) -> int:
+        if not data:
+            return 0
         try:
             if self._original is not None:
                 try:
                     self._original.write(data)
                 except Exception:
                     pass
-            self._buffer += data
-            while "\n" in self._buffer:
-                line, self._buffer = self._buffer.split("\n", 1)
-                line = line.rstrip("\r")
-                if line:
-                    try:
-                        self._callback(line)
-                    except Exception:
-                        pass
+            self._lb.feed(data)
         except Exception:
             pass
-        return len(data) if data else 0
+        return len(data)
 
     def flush(self) -> None:
         try:
@@ -56,13 +70,18 @@ class _StreamRedirector:
         except Exception:
             pass
 
+    def fileno(self):
+        if self._original is not None:
+            return self._original.fileno()
+        raise OSError("no fileno")
+
 
 class JarvisBridge(QObject):
-    state_changed = Signal(object)
-    user_text     = Signal(str)
+    state_changed  = Signal(object)
+    user_text      = Signal(str)
     assistant_text = Signal(str)
-    system_log    = Signal(str)
-    error         = Signal(str)
+    system_log     = Signal(str)
+    error          = Signal(str)
 
     def __init__(self, parent: Optional[QObject] = None, **kwargs: Any) -> None:
         qt_parent = parent if parent is not None else kwargs.pop("parent", None)
@@ -84,7 +103,7 @@ class JarvisBridge(QObject):
             if channel and callable(value):
                 self._external_callbacks[channel].append(value)
 
-    # ---- Публичное API ----
+    # ---- Public API ----
 
     def is_running(self) -> bool:
         t = self._thread
@@ -95,30 +114,29 @@ class JarvisBridge(QObject):
 
     def start(self) -> None:
         if self.is_running():
-            self._sys_log("[bridge] already running")
             return
         self._started = True
         self._stop_event.clear()
-        # Перехватываем stdout/stderr — все print() из ассистента идут сюда
-        self._install_redirect()
+        self._install_redirect()   # stdout/stderr → system_log ОДИН раз
         self._thread = threading.Thread(
             target=self._run_assistant,
             name="JarvisAssistantThread",
             daemon=True,
         )
         self._thread.start()
-        self._sys_log("[bridge] assistant thread started")
+        # НЕ используем print здесь — redirect ещё не читается GUI
+        try:
+            self.system_log.emit("[bridge] assistant thread started\n")
+        except Exception:
+            pass
 
     def stop(self, timeout: float = 5.0) -> None:
         if not self._started:
             return
-        self._sys_log("[bridge] stopping…")
         self._stop_event.set()
         t = self._thread
         if t is not None and t.is_alive():
             t.join(timeout=timeout)
-            msg = "stopped" if not t.is_alive() else "did not stop in time"
-            self._sys_log(f"[bridge] {msg}")
         self._restore_redirect()
         self._started = False
         self._thread = None
@@ -126,7 +144,7 @@ class JarvisBridge(QObject):
     def shutdown(self, timeout: float = 5.0) -> None:
         self.stop(timeout=timeout)
 
-    # ---- Эмиттеры ----
+    # ---- Emitters ----
 
     def emit_state(self, state) -> None:
         try:
@@ -153,31 +171,28 @@ class JarvisBridge(QObject):
             pass
         self._call_external("assistant_text", str(text))
 
-    def emit_system_log(self, text: str) -> None:
-        self._sys_log(str(text))
-
-    # backward-compat aliases
+    # backward-compat
     def on_state(self, s):          self.emit_state(s)
     def on_status(self, s):         self.emit_state(s)
     def on_user_text(self, t):      self.emit_user_text(t)
     def on_assistant_text(self, t): self.emit_assistant_text(t)
-    def on_system_log(self, t):     self.emit_system_log(t)
     def start_assistant(self):      self.start()
     def stop_assistant(self, timeout=5.0): self.stop(timeout)
 
-    # ---- Внутреннее ----
+    # ---- Internal ----
 
-    def _sys_log(self, text: str) -> None:
-        msg = str(text).rstrip("\r\n")
-        if not msg:
+    def _sys_log(self, line: str) -> None:
+        """Одна строка лога → system_log signal. Вызывается из StreamRedirector."""
+        if not line:
             return
+        msg = line.rstrip("\r\n") + "\n"
         try:
-            self.system_log.emit(msg + "\n")
+            self.system_log.emit(msg)
         except Exception:
             pass
         for cb in self._external_callbacks.get("system_log", []):
             try:
-                cb(msg + "\n")
+                cb(msg)
             except Exception:
                 pass
 
@@ -193,23 +208,24 @@ class JarvisBridge(QObject):
             return  # уже установлен
         self._orig_stdout = sys.stdout
         self._orig_stderr = sys.stderr
+        # stdout и stderr используют ОДИН И ТОТ ЖЕ _sys_log callback
+        # но это один объект — нет дублей
         sys.stdout = _StreamRedirector(self._orig_stdout, self._sys_log)  # type: ignore
-        sys.stderr = _StreamRedirector(self._orig_stderr, self._sys_log)  # type: ignore
+        # stderr намеренно НЕ редиректим — pygame/warnings пишут туда мусор
+        # и они не нужны в GUI-логе
 
     def _restore_redirect(self) -> None:
         if self._orig_stdout is not None:
             sys.stdout = self._orig_stdout
             self._orig_stdout = None
-        if self._orig_stderr is not None:
-            sys.stderr = self._orig_stderr
-            self._orig_stderr = None
+        # stderr не трогали — не восстанавливаем
 
     def _run_assistant(self) -> None:
         try:
             from voice import assistant as assistant_mod
         except Exception as e:
             err = f"[bridge] import error: {e}\n{traceback.format_exc()}"
-            print(err)  # идёт через StreamRedirector
+            print(err)
             try:
                 self.error.emit(err)
             except Exception:
@@ -222,12 +238,12 @@ class JarvisBridge(QObject):
             return
 
         try:
-            # НЕ передаём on_system_log — логи идут через stdout
             main_fn(
                 stop_event=self._stop_event,
                 on_state=self.emit_state,
                 on_user_text=self.emit_user_text,
                 on_assistant_text=self.emit_assistant_text,
+                # on_system_log намеренно НЕ передаём — логи идут через stdout
             )
         except Exception as e:
             print(f"[bridge] assistant crashed: {e}\n{traceback.format_exc()}")
