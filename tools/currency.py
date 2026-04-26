@@ -16,10 +16,13 @@ _cache_expires: float = 0.0
 
 def get_rates() -> dict[str, Any]:
     global _cache_data, _cache_expires
+
+    # Fast path: check cache before making any network call
     with _cache_lock:
         if _cache_data is not None and time.time() < _cache_expires:
             return _cache_data
 
+    # Slow path: fetch from CBR (outside lock to avoid blocking other threads)
     response = requests.get(_CBR_DAILY_URL, timeout=15)
     response.raise_for_status()
     root = ET.fromstring(response.content)
@@ -43,6 +46,7 @@ def get_rates() -> dict[str, Any]:
             "unit_rate_rub": value / nominal if nominal else None,
         }
 
+    # Write back under lock
     with _cache_lock:
         _cache_data = rates
         _cache_expires = time.time() + _TTL_SECONDS

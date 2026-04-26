@@ -12,6 +12,21 @@ _TTL_SECONDS = 600
 _cache_lock = threading.Lock()
 _cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 
+# WMO Weather Interpretation Codes -> Russian description
+# https://open-meteo.com/en/docs#weathervariables
+WMO_CODES: dict[int, str] = {
+    0: "ясно",
+    1: "преимущественно ясно", 2: "переменная облачность", 3: "пасмурно",
+    45: "туман", 48: "изморозь",
+    51: "лёгкая морось", 53: "умеренная морось", 55: "густая морось",
+    61: "небольшой дождь", 63: "умеренный дождь", 65: "сильный дождь",
+    71: "небольшой снег", 73: "умеренный снег", 75: "сильный снегопад",
+    77: "снежная крупа",
+    80: "небольшой ливень", 81: "умеренный ливень", 82: "сильный ливень",
+    85: "слабая метель", 86: "сильная метель",
+    95: "гроза", 96: "гроза с небольшим градом", 99: "гроза с крупным градом",
+}
+
 
 def _cache_get(key: tuple[str, str]) -> Optional[dict[str, Any]]:
     with _cache_lock:
@@ -93,9 +108,15 @@ def get_weather(location: str, language: str = "ru") -> dict[str, Any]:
     response.raise_for_status()
     payload = response.json()
 
+    current = payload.get("current", {})
+    # Enrich weather_code with human-readable Russian description
+    wmo_code = current.get("weather_code")
+    if wmo_code is not None:
+        current["weather_description"] = WMO_CODES.get(int(wmo_code), f"код {wmo_code}")
+
     result = {
         "location": geo,
-        "current": payload.get("current", {}),
+        "current": current,
         "daily": payload.get("daily", {}),
     }
     _cache_set(key, result)

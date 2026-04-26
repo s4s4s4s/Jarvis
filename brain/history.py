@@ -19,5 +19,11 @@ def snapshot() -> list[dict]:
         return list(_history)
 
 
+def clear() -> None:
+    """Reset conversation history. Called on user command or session restart."""
+    with _lock:
+        _history.clear()
+
+
 def lock():
     return _lock

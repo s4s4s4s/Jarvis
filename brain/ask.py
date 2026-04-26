@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
@@ -24,7 +25,7 @@ class AskResult:
             try:
                 self._answer = self._future.result(timeout=timeout)
             except Exception as e:
-                self._answer = f"\u041e\u0448\u0438\u0431\u043a\u0430: {e}"
+                self._answer = f"Ошибка: {e}"
             self._future = None
         return self._answer
 
@@ -36,6 +37,7 @@ def _route(text: str) -> dict[str, Any]:
     ]
     raw = chat(MODEL_ROUTER, msgs, options={"temperature": 0.0, "num_ctx": 4096})
     raw = raw.strip()
+    # Strip markdown code fences that some models add
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1]
     if raw.endswith("```"):
@@ -64,13 +66,13 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
             msgs = [
                 {"role": "system", "content": TOOL_FORMAT_SYSTEM},
                 {"role": "user", "content": (
-                    f"\u0417\u0430\u043f\u0440\u043e\u0441: {text}\n\n"
-                    f"\u0414\u0430\u043d\u043d\u044b\u0435 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u0430 ({route_data['tool']}):\n"
+                    f"Запрос: {text}\n\n"
+                    f"Данные инструмента ({route_data['tool']}):\n"
                     f"{json.dumps(result.data, ensure_ascii=False, indent=2)}"
                 )},
             ]
             return chat(MODEL_FAST, msgs, options={"temperature": 0.2, "num_ctx": 4096})
-        return f"\u0421\u044d\u0440, \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442 \u0432\u0435\u0440\u043d\u0443\u043b \u043e\u0448\u0438\u0431\u043a\u0443: {result.error}"
+        return f"Сэр, инструмент вернул ошибку: {result.error}"
 
     if route == "web":
         from brain.agents.web_agent import run as web_run
@@ -84,12 +86,12 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
         from brain.agents.memory_agent import run as memory_run
         return memory_run(text, history)
 
+    # default: chat
     from brain.agents.chat import run as chat_run
     return chat_run(text, history)
 
 
 def ask_llm(text: str) -> AskResult:
-    import time
     history = hist.snapshot()
     hist.append("user", text)
 

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.config import ROUTER_LOG_PATH
+from core.paths import ROUTER_LOG
 
 _lock = threading.Lock()
+_MAX_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 def log_route(
@@ -31,13 +33,25 @@ def log_route(
     _write(entry)
 
 
+def _rotate_if_needed(p: Path) -> None:
+    """Rename router.jsonl -> router.jsonl.1 when file exceeds _MAX_SIZE_BYTES."""
+    try:
+        if p.exists() and os.path.getsize(p) >= _MAX_SIZE_BYTES:
+            rotated = Path(str(p) + ".1")
+            if rotated.exists():
+                rotated.unlink()
+            p.rename(rotated)
+    except Exception as e:
+        print(f"[logger] Rotation error: {e}")
+
+
 def _write(entry: dict[str, Any]) -> None:
     try:
-        p = Path(ROUTER_LOG_PATH)
-        p.parent.mkdir(parents=True, exist_ok=True)
+        p = ROUTER_LOG  # Path object from core.paths — directory already created
         line = json.dumps(entry, ensure_ascii=False)
         with _lock:
+            _rotate_if_needed(p)
             with open(p, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
     except Exception as e:
-        print(f"[logger] \u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u043f\u0438\u0441\u0438: {e}")
+        print(f"[logger] Ошибка записи: {e}")
