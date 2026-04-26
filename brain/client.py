@@ -13,17 +13,23 @@ from core.config import (
     OLLAMA_RETRY_DELAY,
 )
 
-# Re-export for consumers that import MODEL_* from brain.client
 MODEL_ROUTER = OLLAMA_ROUTER_MODEL
 MODEL_FAST   = OLLAMA_FAST_MODEL
 MODEL_HEAVY  = OLLAMA_HEAVY_MODEL
 
 _OLLAMA_BASE_URL = "http://localhost:11434"
 
-# Отдельные клиенты с разными timeout,
-# чтобы тяжёлый heavy-запрос не блокировал router/fast
 _client       = ollama.Client(host=_OLLAMA_BASE_URL, timeout=OLLAMA_TIMEOUT)
 _client_heavy = ollama.Client(host=_OLLAMA_BASE_URL, timeout=OLLAMA_HEAVY_TIMEOUT)
+
+
+def is_ollama_available() -> bool:
+    """Быстрая проверка доступности Ollama — вызывается при старте."""
+    try:
+        _client.list()
+        return True
+    except Exception:
+        return False
 
 
 def chat(model: str, messages: list[dict], options: dict | None = None) -> str:

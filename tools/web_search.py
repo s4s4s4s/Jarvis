@@ -2,14 +2,19 @@ from __future__ import annotations
 
 from duckduckgo_search import DDGS
 
+_SEARCH_TIMEOUT = 10  # секунд — защита от зависания DDG
+
 
 def web_search(query: str, max_results: int = 5) -> str:
     """
     Search DuckDuckGo and return results as a formatted string
     ready to be placed directly into an LLM prompt.
     """
-    with DDGS() as ddgs:
-        results = list(ddgs.text(query, max_results=max_results))
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results, timeout=_SEARCH_TIMEOUT))
+    except Exception as e:
+        return f"Поиск недоступен: {e}"
 
     if not results:
         return "Результатов не найдено."

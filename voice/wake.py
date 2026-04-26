@@ -18,6 +18,7 @@ from core.config import (
     WAKE_MAX_TEXT_LEN,
     WAKE_PHRASES,
     WAKE_BLOCKLIST,
+    IGNORE_PHRASES,  # единый источник истины из core.config
 )
 from .stt import transcribe, vad_prob
 
@@ -26,13 +27,6 @@ BAD_TAILS = [
     "субтитры делал dimatorzok",
     "субтитры подготовил dimatorzok",
     "subtitles by dimatorzok",
-]
-IGNORE_PHRASES = [
-    "продолжение следует",
-    "конец фильма",
-    "субтитры",
-    "перевод",
-    "to be continued",
 ]
 
 

@@ -1,15 +1,5 @@
 """
 voice/tts.py — Edge TTS с параллельным streaming и перебиванием голосом через единый AudioCore.
-
-Логика:
-1. Edge TTS генерирует чанки в отдельные файлы: /chunk_0.mp3, chunk_1.mp3...
-2. Как только первый чанк готов — начинаем воспроизведение
-3. Пока играет chunk_0 — генерируется chunk_1, chunk_2...
-4. В фоне interrupt-listener читает tap из AudioCore
-5. Если пользователь начал говорить — TTS глушится немедленно, listener дособирает всю фразу, audio возвращается наружу
-
-Каждый вызов _run_streaming использует уникальный session-подкаталог,
-чтобы избежать коллизий имён и Permission denied на Windows.
 """
 import asyncio
 import os
@@ -30,14 +20,9 @@ from core.config import (
     EDGE_VOICE,
     SAMPLE_RATE_MIC,
     CHUNK_SIZE,
-    SILENCE_MS,
-    MAX_RECORD_SEC,
-    MIN_UTTERANCE_SEC,
     TURN_VAD_TRIGGER,
-    TURN_VAD_HOLD,
 )
 from core.paths import TTS_CHUNKS
-from .stt import vad_prob
 
 _CHUNK_ROOT = str(TTS_CHUNKS)
 _STOP_SENTINEL = object()
@@ -198,6 +183,18 @@ async def _generate_chunks(
         chunk_queue.put(_STOP_SENTINEL)
 
 
+def _gen_thread_target(text: str, session_dir: str, chunk_queue: Queue,
+                       stop_event: Optional[threading.Event]):
+    """Запускает asyncio в собственном event loop — безопасно на Windows."""
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(
+            _generate_chunks(text, session_dir, chunk_queue, stop_event=stop_event)
+        )
+    finally:
+        loop.close()
+
+
 def _release_current_chunk():
     try:
         if pygame.mixer.get_init():
@@ -262,57 +259,48 @@ def _interrupt_listener_from_audio_core(
     interrupt_event: threading.Event,
     interrupted_audio_box: dict,
 ):
+    """Использует TurnManager вместо дублирующего VAD-цикла."""
+    from voice.turn import TurnManager
+    from voice.audio_core import CHUNK_SIZE as _CS
+
     tap_q = audio_core.create_tap()
-    frames = []
-    speech_started = False
-    silence_counter = 0
-    chunk_ms = int(CHUNK_SIZE / SAMPLE_RATE_MIC * 1000)
-    silence_chunks_needed = max(1, int(SILENCE_MS / chunk_ms))
-    max_chunks = max(1, int(MAX_RECORD_SEC * 1000 / chunk_ms))
-    min_samples = int(MIN_UTTERANCE_SEC * SAMPLE_RATE_MIC)
-    try:
-        while not interrupt_event.is_set() and not (stop_event is not None and stop_event.is_set()):
+
+    def _chunk_iter():
+        while not interrupt_event.is_set() and not (stop_event and stop_event.is_set()):
             try:
                 item = tap_q.get(timeout=0.20)
-            except Empty:
-                continue
-            if item is _STOP_SENTINEL:
+                if item is _STOP_SENTINEL:
+                    return
+                yield item
+            except Exception:
                 return
-            chunk = item
-            prob = vad_prob(chunk)
 
-            if prob >= TURN_VAD_TRIGGER:
-                if not speech_started:
-                    speech_started = True
+    try:
+        tm = TurnManager(chunk_size=_CS)
+        # Ждём первого речевого бёрста; как только VAD сработал — глушим TTS
+        first_chunk_seen = threading.Event()
+        _original_collect = tm.collect_utterance
+
+        def _patched_iter():
+            for chunk in _chunk_iter():
+                prob_val = None
+                try:
+                    from voice.stt import vad_prob
+                    prob_val = vad_prob(chunk)
+                except Exception:
+                    pass
+                if prob_val is not None and prob_val >= TURN_VAD_TRIGGER and not first_chunk_seen.is_set():
+                    first_chunk_seen.set()
                     _set_stop_flag(True)
                     _release_current_chunk()
                     print("[TTS] Речь обнаружена — TTS остановлен немедленно, дособираю фразу...")
-                silence_counter = 0
-                frames.append(chunk)
+                yield chunk
 
-            elif speech_started:
-                frames.append(chunk)
-                if prob < TURN_VAD_HOLD:
-                    silence_counter += 1
-                    if silence_counter >= silence_chunks_needed:
-                        break
-                else:
-                    silence_counter = 0
-
-            if len(frames) >= max_chunks:
-                break
-
-        if stop_event is not None and stop_event.is_set():
-            return
-        if not speech_started or not frames:
-            return
-        audio = np.concatenate(frames)
-        if len(audio) < min_samples:
-            return
-
-        interrupted_audio_box["audio"] = audio
-        interrupt_event.set()
-        print("[TTS] Перебивание зафиксировано, аудио передано")
+        audio = tm.collect_utterance(_patched_iter(), stop_event=stop_event)
+        if audio is not None and len(audio) > 0:
+            interrupted_audio_box["audio"] = audio
+            interrupt_event.set()
+            print("[TTS] Перебивание зафиксировано, аудио передано")
     finally:
         audio_core.remove_tap(tap_q)
 
@@ -325,8 +313,11 @@ def _run_streaming(
 ):
     if not text or not text.strip():
         return None
+
+    # Атомарный сброс флага только здесь — один источник истины
     _set_stop_flag(False)
     _set_playing(False)
+
     session_dir = _new_session_dir()
     _cleanup_orphan_sessions(keep=session_dir)
     _ensure_mixer()
@@ -334,10 +325,11 @@ def _run_streaming(
     chunk_queue = Queue()
     interrupt_event = threading.Event()
     interrupted_audio_box = {"audio": None}
+
+    # FIX: asyncio.new_event_loop() внутри _gen_thread_target — безопасно на Windows
     gen_thread = threading.Thread(
-        target=lambda: asyncio.run(
-            _generate_chunks(text, session_dir, chunk_queue, stop_event=stop_event)
-        ),
+        target=_gen_thread_target,
+        args=(text, session_dir, chunk_queue, stop_event),
         daemon=True,
     )
     play_thread = threading.Thread(
@@ -417,11 +409,10 @@ def speak_and_handle(
     audio_core=None,
 ):
     """
-    Возвращает:
-    - np.ndarray audio, если пользователь перебил TTS голосом
-    - None, если TTS завершился штатно или был остановлен извне
+    Возвращает np.ndarray audio если пользователь перебил TTS голосом,
+    None если TTS завершился штатно или остановлен извне.
     """
-    _set_stop_flag(False)
+    # _set_stop_flag(False) убран отсюда — только _run_streaming сбрасывает флаг
     return _run_streaming(
         text,
         stop_event=stop_event,

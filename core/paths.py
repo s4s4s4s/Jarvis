@@ -1,7 +1,9 @@
 # core/paths.py
+import os
 from pathlib import Path
 
-ROOT         = Path(r"C:\jarvis")
+# ROOT можно переопределить через переменную окружения JARVIS_ROOT
+ROOT         = Path(os.environ.get("JARVIS_ROOT", r"C:\jarvis"))
 LOGS_DIR     = ROOT / "logs"
 ROUTER_LOG   = LOGS_DIR / "router.jsonl"
 MEMORY_PATH  = ROOT / "data" / "memory.json"
