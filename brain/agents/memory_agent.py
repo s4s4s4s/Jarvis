@@ -1,15 +1,14 @@
-# C:\jarvis\brain\agents\memory_agent.py
+# brain/agents/memory_agent.py
 from brain.client import chat, MODEL_FAST
 from brain.prompts import MEMORY_SYSTEM
-from tools.memory import load_facts
+from tools.memory import get_memory_context
 
 
 def run(query: str, history: list[dict]) -> str:
-    facts = load_facts()
-    facts_block = "\n".join(f"- {k}: {v}" for k, v in facts.items()) or "(фактов нет)"
+    context = get_memory_context(max_facts=30) or "(фактов пока нет)"
     msgs = [
         {"role": "system", "content": MEMORY_SYSTEM},
-        {"role": "system", "content": f"Известные факты о Сэре:\n{facts_block}"},
+        {"role": "system", "content": context},
     ]
     msgs.extend(history[-6:])
     msgs.append({"role": "user", "content": query})
