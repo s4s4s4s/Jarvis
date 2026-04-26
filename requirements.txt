@@ -1,0 +1,11 @@
+sounddevice
+numpy
+requests
+torch
+faster-whisper
+silero-vad
+edge-tts
+pygame
+voxcpm
+duckduckgo-search
+PySide6
