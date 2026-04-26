@@ -77,12 +77,20 @@ def _extract_loop() -> None:
 # --- внутренние хелперы ---------------------------------------------------
 
 def _load() -> list[dict]:
+    """Возвращает КОПИЮ списка фактов. Вызывающий не должен мутировать кеш.
+
+    FIX (audit 4): раньше возвращалась прямая ссылка на _cache, и add_fact()
+    мутировал его через .append() ДО _save(). При гонке с get_memory_context()
+    это могло дать чтение неконсистентного состояния (или 'list changed during
+    iteration' при срезе [-N:]). Теперь _cache хранится приватно, наружу всегда
+    отдаём свежую копию.
+    """
     global _cache
     if _cache is not None:
-        return _cache
+        return list(_cache)
     if not MEMORY_PATH.exists():
         _cache = []
-        return _cache
+        return list(_cache)
     try:
         with open(MEMORY_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -90,7 +98,7 @@ def _load() -> list[dict]:
     except Exception as e:
         print(f"[memory] Ошибка чтения: {e}")
         _cache = []
-    return _cache
+    return list(_cache)
 
 
 def _save(facts: list[dict]) -> None:

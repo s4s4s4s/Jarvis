@@ -125,7 +125,7 @@ def _gen_thread(text: str, session_dir: str, q: Queue, stop_ev):
     loop = asyncio.new_event_loop()
     try:
         if _should_stop(stop_ev):
-            q.put(_STOP_SENTINEL)
+            q.put(_TTS_STOP_SENTINEL)
             return
         mp3 = os.path.join(session_dir, "speech.mp3")
         ok = loop.run_until_complete(_synthesize(text, mp3))
