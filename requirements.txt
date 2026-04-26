@@ -24,5 +24,8 @@ duckduckgo-search
 # UI
 PySide6
 
+# Dev tools
+rapidfuzz>=3.9.0
+
 # Python 3.8 compat (zoneinfo backport; no-op on 3.9+)
 # backports.zoneinfo; python_version < "3.9"
