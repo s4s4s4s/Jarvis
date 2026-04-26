@@ -66,9 +66,10 @@ class JarvisWindow(QMainWindow):
         self.setWindowTitle("Jarvis Control Center")
         self.resize(1320, 860)
 
+        # Создаём bridge БЕЗ автозапуска
         self.bridge = JarvisBridge()
-        self.bridge.user_text.connect(self.on_user_text, Qt.QueuedConnection)
-        self.bridge.assistant_text.connect(self.on_assistant_text, Qt.QueuedConnection)
+        self.bridge.user_text.connect(self._on_user_text, Qt.QueuedConnection)
+        self.bridge.assistant_text.connect(self._on_assistant_text, Qt.QueuedConnection)
         self.bridge.system_log.connect(self.on_system_log, Qt.QueuedConnection)
         self.bridge.state_changed.connect(self.on_state_changed, Qt.QueuedConnection)
         self.bridge.error.connect(self.on_error, Qt.QueuedConnection)
@@ -129,7 +130,6 @@ class JarvisWindow(QMainWindow):
         self.start_btn.setObjectName("PrimaryButton")
         self.start_btn.clicked.connect(self.start_assistant)
 
-        # ── Кнопка Stop ──────────────────────────────────────────────────────
         self.stop_btn = QPushButton("Остановить")
         self.stop_btn.setObjectName("DangerButton")
         self.stop_btn.setEnabled(False)
@@ -295,15 +295,10 @@ class JarvisWindow(QMainWindow):
             return
         self.append_system_line("GUI: Остановка Jarvis...")
         self.stop_btn.setEnabled(False)
-        # Останавливаем в фоне, чтобы не фризить GUI
-        threading.Thread(
-            target=self._do_stop,
-            daemon=True,
-        ).start()
+        threading.Thread(target=self._do_stop, daemon=True).start()
 
     def _do_stop(self):
         self.bridge.stop(timeout=6.0)
-        # Восстанавливаем кнопки в GUI-потоке через invokeMethod
         from PySide6.QtCore import QMetaObject, Qt as _Qt
         QMetaObject.invokeMethod(self, "_on_stop_done", _Qt.QueuedConnection)
 
@@ -315,15 +310,25 @@ class JarvisWindow(QMainWindow):
         sys.stderr = self.original_stderr
         self.append_system_line("GUI: Jarvis остановлен.")
 
-    def on_user_text(self, text: str):
+    # ── Слоты диалога ────────────────────────────────────────────────────────
+
+    def _on_user_text(self, text: str):
+        """Вызывается только через Signal — гарантированно в GUI-потоке."""
         if not text:
             return
-        self.dialog_buffer.append(f">>> {text.strip()}\n")
+        self.dialog_buffer.append(("user", text.strip()))
+
+    def _on_assistant_text(self, text: str):
+        """Вызывается только через Signal — гарантированно в GUI-потоке."""
+        if not text:
+            return
+        self.dialog_buffer.append(("assistant", text.strip()))
+
+    def on_user_text(self, text: str):
+        self._on_user_text(text)
 
     def on_assistant_text(self, text: str):
-        if not text:
-            return
-        self.dialog_buffer.append(f"Jarvis: {text.strip()}\n")
+        self._on_assistant_text(text)
 
     def on_system_log(self, text: str):
         if not text:
@@ -364,14 +369,23 @@ class JarvisWindow(QMainWindow):
         self.system_buffer.append(text if text.endswith("\n") else text + "\n")
 
     def flush_buffers(self):
-        if self.dialog_buffer:
-            chunk = "".join(self.dialog_buffer)
-            self.dialog_buffer.clear()
-            self.append_colored_text(self.dialog_view, chunk, self.pick_dialog_color(chunk))
+        # Системный лог
         if self.system_buffer:
             chunk = "".join(self.system_buffer)
             self.system_buffer.clear()
             self.append_colored_text(self.system_view, chunk, self.pick_system_color(chunk))
+
+        # Диалог — теперь tuple (role, text), красим по роли
+        if self.dialog_buffer:
+            for role, text in self.dialog_buffer:
+                if role == "user":
+                    line = f">>> {text}\n"
+                    color = "#9be7b0"
+                else:
+                    line = f"Jarvis: {text}\n"
+                    color = "#8fd3ff"
+                self.append_colored_text(self.dialog_view, line, color)
+            self.dialog_buffer.clear()
 
     def append_colored_text(self, widget: QTextEdit, text: str, color: str):
         cursor = widget.textCursor()
@@ -382,13 +396,6 @@ class JarvisWindow(QMainWindow):
         cursor.insertText(text)
         widget.setTextCursor(cursor)
         widget.ensureCursorVisible()
-
-    def pick_dialog_color(self, text: str) -> str:
-        if ">>>" in text:
-            return "#9be7b0"
-        if "Jarvis" in text:
-            return "#8fd3ff"
-        return "#d7deea"
 
     def pick_system_color(self, text: str) -> str:
         low = text.lower()

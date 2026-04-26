@@ -9,8 +9,8 @@ LANG = "ru"
 OLLAMA_ROUTER_MODEL  = "qwen2.5:14b-instruct-q4_K_M"
 OLLAMA_FAST_MODEL    = "llama3.1:8b-instruct-q5_K_M"
 OLLAMA_HEAVY_MODEL   = "qwen2.5:32b-instruct-q4_K_M"
-OLLAMA_TIMEOUT       = 60      # seconds — router + fast models
-OLLAMA_HEAVY_TIMEOUT = 180     # seconds — heavy model (32b может думать долго)
+OLLAMA_TIMEOUT       = 60
+OLLAMA_HEAVY_TIMEOUT = 180
 OLLAMA_RETRIES       = 2
 OLLAMA_RETRY_DELAY   = 1.5
 
@@ -45,7 +45,7 @@ POST_INTERRUPT_GRACE_SEC = 0.4
 IDLE_TIMEOUT_SEC         = 5.0
 
 # ─── История диалога ──────────────────────────────────────────────────────────
-MAX_HISTORY = 6  # ходов (каждый ход = user + assistant)
+MAX_HISTORY = 6
 
 # ─── Фразы ────────────────────────────────────────────────────────────────────
 WAKE_PHRASES = [
@@ -82,9 +82,10 @@ ACTIVATE_SOUND_PATH   = str(_ROOT / "assets" / "activate.wav")
 DEACTIVATE_SOUND_PATH = str(_ROOT / "assets" / "deactivate.wav")
 
 # ─── TTS ──────────────────────────────────────────────────────────────────────
+# Скорость: "+20%" = на 20% быстрее стандартной скорости Edge TTS
 EDGE_VOICE = "ru-RU-DmitryNeural"
+EDGE_RATE  = "+20%"
 
 # ─── Долгосрочная память ──────────────────────────────────────────────────────
-# Paths live in core/paths.py — do not duplicate here.
 MEMORY_MAX_FACTS     = 500
 MEMORY_CONTEXT_FACTS = 20

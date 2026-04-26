@@ -23,18 +23,14 @@ _CALLBACK_ALIASES = {
     "on_state": "state",
     "on_status": "state",
     "state_changed": "state",
-
     "on_user_text": "user_text",
     "user_text": "user_text",
-
     "on_assistant_text": "assistant_text",
     "on_assistant": "assistant_text",
     "assistant_text": "assistant_text",
-
     "on_system_log": "system_log",
     "on_log": "system_log",
     "system_log": "system_log",
-
     "on_error": "error",
     "error": "error",
 }
@@ -82,9 +78,7 @@ class JarvisBridge(QObject):
     error = Signal(str)
 
     def __init__(self, parent: Optional[QObject] = None, **kwargs: Any) -> None:
-        qt_parent = parent
-        if qt_parent is None:
-            qt_parent = kwargs.pop("parent", None)
+        qt_parent = parent if parent is not None else kwargs.pop("parent", None)
         super().__init__(qt_parent)
 
         self._thread: Optional[threading.Thread] = None
@@ -116,6 +110,8 @@ class JarvisBridge(QObject):
                 continue
             self._external_callbacks[channel].append(value)
 
+        # НЕ вызываем self.start() здесь — только по явному нажатию кнопки
+
     # ---------- Публичное API ----------
 
     def is_running(self) -> bool:
@@ -137,7 +133,6 @@ class JarvisBridge(QObject):
             return
         self._started = True
         self._stop_event.clear()
-        # self._install_stream_redirect()   # ← ЗАКОММЕНТИРОВАТЬ
 
         self._thread = threading.Thread(
             target=self._run_assistant,
@@ -146,7 +141,6 @@ class JarvisBridge(QObject):
         )
         self._thread.start()
         self._emit_system("[bridge] assistant thread started")
-
 
     def stop(self, timeout: float = 5.0) -> None:
         if not self._started:
@@ -248,7 +242,6 @@ class JarvisBridge(QObject):
                 cb(msg)
             except Exception:
                 pass
-
 
     def _install_stream_redirect(self) -> None:
         try:
