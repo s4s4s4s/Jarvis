@@ -1,20 +1,17 @@
 # voice/tts.py
-
 """
-voice/tts.py — Edge TTS с параллельным streaming и перебиванием голосом
-через единый AudioCore.
+voice/tts.py — Edge TTS с параллельным streaming и перебиванием голосом через единый AudioCore.
 
 Логика:
-1. Edge TTS генерирует чанки в отдельные файлы: <session>/chunk_0.mp3, chunk_1.mp3...
+1. Edge TTS генерирует чанки в отдельные файлы: /chunk_0.mp3, chunk_1.mp3...
 2. Как только первый чанк готов — начинаем воспроизведение
 3. Пока играет chunk_0 — генерируется chunk_1, chunk_2...
 4. В фоне interrupt-listener читает tap из AudioCore
 5. Если пользователь начал говорить — TTS останавливается, audio возвращается наружу
 
-Каждый вызов _run_streaming использует уникальный session-подкаталог, чтобы
-избежать коллизий имён и Permission denied на Windows.
+Каждый вызов _run_streaming использует уникальный session-подкаталог,
+чтобы избежать коллизий имён и Permission denied на Windows.
 """
-
 import asyncio
 import os
 import re
@@ -30,7 +27,7 @@ import numpy as np
 import edge_tts
 import pygame
 
-from .config import (
+from core.config import (
     EDGE_VOICE,
     SAMPLE_RATE_MIC,
     CHUNK_SIZE,
@@ -42,10 +39,8 @@ from .config import (
 )
 from .stt import vad_prob
 
-
 _CHUNK_ROOT = "C:/jarvis/_tts_chunks"
 _STOP_SENTINEL = object()
-
 _stop_flag = False
 _playing = False
 _mixer_ready = False
@@ -96,7 +91,6 @@ def _cleanup_session_dir(session_dir: str) -> None:
 
 
 def _cleanup_orphan_sessions(keep: Optional[str] = None) -> None:
-    """Удаляет старые session-каталоги от прошлых запусков."""
     try:
         if not os.path.exists(_CHUNK_ROOT):
             return
@@ -117,16 +111,13 @@ def _cleanup_orphan_sessions(keep: Optional[str] = None) -> None:
 
 def _ensure_mixer():
     global _mixer_ready
-
     if _mixer_ready and pygame.mixer.get_init():
         return
-
     try:
         if not pygame.get_init():
             pygame.init()
     except Exception:
         pass
-
     try:
         if not pygame.mixer.get_init():
             pygame.mixer.init()
@@ -140,10 +131,8 @@ def _split_sentences(text: str) -> list[str]:
     text = re.sub(r"\s+", " ", text).strip()
     if not text:
         return []
-
     parts = re.split(r"(?<=[.!?])\s+", text)
     sentences = []
-
     for part in parts:
         part = part.strip()
         if not part:
@@ -151,15 +140,12 @@ def _split_sentences(text: str) -> list[str]:
         if part[-1] not in ".!?":
             part += "."
         sentences.append(part)
-
     if not sentences and text:
         return [text if text[-1] in ".!?" else text + "."]
-
     return sentences
 
 
 async def _save_chunk_with_retry(sentence: str, chunk_path: str, retries: int = 3) -> bool:
-    """Сохраняет чанк, делая несколько попыток на случай Permission denied."""
     last_err = None
     for attempt in range(retries):
         try:
@@ -168,7 +154,6 @@ async def _save_chunk_with_retry(sentence: str, chunk_path: str, retries: int = 
             return True
         except PermissionError as e:
             last_err = e
-            # файл могли держать антивирус/предыдущий playback
             try:
                 if os.path.exists(chunk_path):
                     os.remove(chunk_path)
@@ -191,35 +176,27 @@ async def _generate_chunks(
     try:
         sentences = _split_sentences(text)
         print(f"[TTS] Генерирую {len(sentences)} чанков")
-
         for idx, sentence in enumerate(sentences):
             if _should_stop(stop_event):
                 print("[TTS] Генерация прервана")
                 break
-
             chunk_path = os.path.join(session_dir, f"chunk_{idx}.mp3")
             ok = await _save_chunk_with_retry(sentence, chunk_path, retries=3)
-
             if _should_stop(stop_event):
                 print("[TTS] stop после генерации чанка")
                 break
-
             if not ok:
                 continue
-
             chunk_queue.put(chunk_path)
             print(f"[TTS] Чанк {idx} готов: {sentence[:60]}...")
-
         chunk_queue.put(_STOP_SENTINEL)
         print("[TTS] Генерация всех чанков завершена")
-
     except Exception as e:
         print(f"[TTS] Ошибка генерации чанков: {e}")
         chunk_queue.put(_STOP_SENTINEL)
 
 
 def _release_current_chunk():
-    """Освобождает текущий MP3 в mixer'е, чтобы файл можно было перезаписать/удалить."""
     try:
         if pygame.mixer.get_init():
             try:
@@ -229,7 +206,6 @@ def _release_current_chunk():
             try:
                 pygame.mixer.music.unload()
             except Exception:
-                # unload доступен не во всех версиях pygame — не критично
                 pass
     except Exception:
         pass
@@ -238,54 +214,42 @@ def _release_current_chunk():
 def _playback_worker(chunk_queue: Queue, stop_event: Optional[threading.Event] = None):
     chunk_idx = 0
     _set_playing(False)
-
     while not _should_stop(stop_event):
         try:
             item = chunk_queue.get(timeout=0.20)
         except Empty:
             continue
-
         if item is _STOP_SENTINEL:
             print("[TTS] Очередь playback завершена")
             break
-
         chunk_path = item
-
         if _should_stop(stop_event):
             break
-
         if not os.path.exists(chunk_path):
             print(f"[TTS] Чанк не найден: {chunk_path}")
             continue
-
         try:
             _ensure_mixer()
             if not pygame.mixer.get_init():
                 print("[TTS] mixer не инициализирован, playback пропущен")
                 continue
-
             print(f"[TTS] Играю чанк {chunk_idx}: {os.path.getsize(chunk_path)} байт")
             pygame.mixer.music.load(chunk_path)
             pygame.mixer.music.play()
             _set_playing(True)
-
             while pygame.mixer.music.get_busy():
                 if _should_stop(stop_event):
                     print("[TTS] Воспроизведение прервано")
                     _release_current_chunk()
                     break
                 time.sleep(0.05)
-
-            # гарантированно освобождаем файл перед переходом к следующему чанку
             _release_current_chunk()
             _set_playing(False)
             chunk_idx += 1
-
         except Exception as e:
             _set_playing(False)
             _release_current_chunk()
             print(f"[TTS] Ошибка воспроизведения чанка {chunk_idx}: {e}")
-
     _release_current_chunk()
     _set_playing(False)
 
@@ -300,25 +264,20 @@ def _interrupt_listener_from_audio_core(
     frames = []
     speech_started = False
     silence_counter = 0
-
     chunk_ms = int(CHUNK_SIZE / SAMPLE_RATE_MIC * 1000)
     silence_chunks_needed = max(1, int(SILENCE_MS / chunk_ms))
     max_chunks = max(1, int(MAX_RECORD_SEC * 1000 / chunk_ms))
     min_samples = int(MIN_UTTERANCE_SEC * SAMPLE_RATE_MIC)
-
     try:
         while not interrupt_event.is_set() and not _should_stop(stop_event):
             try:
                 item = tap_q.get(timeout=0.20)
             except Empty:
                 continue
-
             if item is _STOP_SENTINEL:
                 return
-
             chunk = item
             prob = vad_prob(chunk)
-
             if prob >= TURN_VAD_TRIGGER:
                 speech_started = True
                 silence_counter = 0
@@ -331,28 +290,20 @@ def _interrupt_listener_from_audio_core(
                         break
                 else:
                     silence_counter = 0
-
             if len(frames) >= max_chunks:
                 break
-
         if _should_stop(stop_event) or interrupt_event.is_set():
             return
-
         if not speech_started or not frames:
             return
-
         audio = np.concatenate(frames)
         if len(audio) < min_samples:
             return
-
         interrupted_audio_box["audio"] = audio
         interrupt_event.set()
         _set_stop_flag(True)
-
         _release_current_chunk()
-
         print("[TTS] Обнаружено перебивание голосом через AudioCore")
-
     finally:
         audio_core.remove_tap(tap_q)
 
@@ -365,21 +316,15 @@ def _run_streaming(
 ):
     if not text or not text.strip():
         return None
-
     _set_stop_flag(False)
     _set_playing(False)
-
     session_dir = _new_session_dir()
-    # чистим хвосты прошлых запусков (но не трогаем текущую сессию)
     _cleanup_orphan_sessions(keep=session_dir)
     _ensure_mixer()
-
     print(f"[TTS] Начинаю streaming: {text[:80]}...")
-
     chunk_queue = Queue()
     interrupt_event = threading.Event()
     interrupted_audio_box = {"audio": None}
-
     gen_thread = threading.Thread(
         target=lambda: asyncio.run(
             _generate_chunks(text, session_dir, chunk_queue, stop_event=stop_event)
@@ -390,7 +335,6 @@ def _run_streaming(
         target=lambda: _playback_worker(chunk_queue, stop_event=stop_event),
         daemon=True,
     )
-
     listener_thread = None
     if allow_interrupt and audio_core is not None:
         listener_thread = threading.Thread(
@@ -402,13 +346,10 @@ def _run_streaming(
             ),
             daemon=True,
         )
-
     gen_thread.start()
     play_thread.start()
-
     if listener_thread is not None:
         listener_thread.start()
-
     try:
         while (
             gen_thread.is_alive()
@@ -417,28 +358,25 @@ def _run_streaming(
         ):
             if _should_stop(stop_event) or interrupt_event.is_set():
                 _set_stop_flag(True)
-
                 try:
                     chunk_queue.put_nowait(_STOP_SENTINEL)
                 except Exception:
                     pass
-
                 _release_current_chunk()
-
-            gen_thread.join(timeout=0.10)
-            play_thread.join(timeout=0.10)
-
-            if listener_thread is not None:
-                listener_thread.join(timeout=0.10)
-
+                gen_thread.join(timeout=0.10)
+                play_thread.join(timeout=0.10)
+                if listener_thread is not None:
+                    listener_thread.join(timeout=0.10)
+                _set_playing(False)
+                _release_current_chunk()
+                print("[TTS] Streaming завершён")
+                return interrupted_audio_box["audio"]
+            time.sleep(0.05)
         _set_playing(False)
         _release_current_chunk()
-        print("[TTS] Streaming завершён")
-
+        print("[TTS] Streaming завершён штатно")
         return interrupted_audio_box["audio"]
-
     finally:
-        # чистим только свою сессию, чужие не трогаем
         _cleanup_session_dir(session_dir)
 
 
@@ -473,5 +411,4 @@ def stop_speaking():
 def is_speaking() -> bool:
     with _state_lock:
         return _playing
-
 # === end of file: voice/tts.py ===
