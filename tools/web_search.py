@@ -3,6 +3,22 @@ from __future__ import annotations
 from duckduckgo_search import DDGS
 
 
-def web_search(query: str, max_results: int = 5) -> list[dict]:
+def web_search(query: str, max_results: int = 5) -> str:
+    """
+    Search DuckDuckGo and return results as a formatted string
+    ready to be placed directly into an LLM prompt.
+    """
     with DDGS() as ddgs:
-        return list(ddgs.text(query, max_results=max_results))
+        results = list(ddgs.text(query, max_results=max_results))
+
+    if not results:
+        return "Результатов не найдено."
+
+    lines: list[str] = []
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "").strip()
+        body  = r.get("body", "").strip()
+        href  = r.get("href", "").strip()
+        lines.append(f"[{i}] {title}\n{body}\nИсточник: {href}")
+
+    return "\n\n".join(lines)

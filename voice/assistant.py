@@ -20,6 +20,7 @@ from core.config import (
     IGNORE_PHRASES,
 )
 from brain.ask import ask_llm
+from brain import history as hist
 
 FAREWELL_PATTERNS = [
     r"\bпока\b",
@@ -55,6 +56,15 @@ ACTIVE_COMMAND_PATTERNS = [
     r"\bслушай без имени\b",
     r"\bне жди обращения\b",
     r"\bне жди имя\b",
+]
+
+CLEAR_HISTORY_PATTERNS = [
+    r"\bочисти историю\b",
+    r"\bсбрось историю\b",
+    r"\bзабудь всё\b",
+    r"\bзабудь разговор\b",
+    r"\bначни сначала\b",
+    r"\bновый разговор\b",
 ]
 
 
@@ -201,6 +211,15 @@ def main(
 
                 _safe_call(on_user_text, text)
 
+                # --- встроенные команды (без LLM) ---
+                if matches_any_pattern(text, CLEAR_HISTORY_PATTERNS):
+                    hist.clear()
+                    _safe_call(on_system_log, "🗑️ История разговора очищена\n")
+                    _safe_call(on_assistant_text, "История очищена.")
+                    say("История разговора очищена.", stop_event=stop_event)
+                    post_tts_grace_until = time.time() + POST_TTS_GRACE_SEC
+                    continue
+
                 if matches_any_pattern(text, ACTIVE_COMMAND_PATTERNS):
                     _safe_call(on_system_log, "🟢 Активный режим уже включён\n")
                     post_tts_grace_until = time.time() + POST_TTS_GRACE_SEC
@@ -250,7 +269,6 @@ def main(
                     _safe_call(on_system_log, "[assistant] TTS прерван — обрабатываю реплику...\n")
                     _emit_status(AssistantState.THINKING, on_state, on_system_log)
                     pending_audio = interrupted
-                    # мини-grace чтобы не захватить хвост своего же голоса
                     post_tts_grace_until = time.time() + POST_INTERRUPT_GRACE_SEC
                 else:
                     _emit_status(AssistantState.SPEAKING, on_state, on_system_log)

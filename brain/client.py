@@ -1,28 +1,36 @@
+from __future__ import annotations
+
 import time
 import ollama
 
-MODEL_ROUTER = "qwen2.5:14b-instruct-q4_K_M"
-MODEL_FAST   = "llama3.1:8b-instruct-q5_K_M"
-MODEL_HEAVY  = "qwen2.5:32b-instruct-q4_K_M"
+from core.config import (
+    OLLAMA_ROUTER_MODEL,
+    OLLAMA_FAST_MODEL,
+    OLLAMA_HEAVY_MODEL,
+    OLLAMA_TIMEOUT,
+    OLLAMA_RETRIES,
+    OLLAMA_RETRY_DELAY,
+)
 
-_OLLAMA_TIMEOUT = 60      # секунд до таймаута одного запроса
-_OLLAMA_RETRIES = 2       # повторов при сбое
-_OLLAMA_RETRY_DELAY = 1.5 # секунд между повторами
+MODEL_ROUTER = OLLAMA_ROUTER_MODEL
+MODEL_FAST   = OLLAMA_FAST_MODEL
+MODEL_HEAVY  = OLLAMA_HEAVY_MODEL
 
-_client = ollama.Client(timeout=_OLLAMA_TIMEOUT)
+_client = ollama.Client(timeout=OLLAMA_TIMEOUT)
 
 
 def chat(model: str, messages: list[dict], options: dict | None = None) -> str:
     opts = options or {"temperature": 0.2, "num_ctx": 8192}
     last_err = None
-    for attempt in range(_OLLAMA_RETRIES + 1):
+    for attempt in range(OLLAMA_RETRIES + 1):
         try:
             resp = _client.chat(model=model, messages=messages, options=opts)
-            return (resp.get("message") or {}).get("content", "").strip()
+            # ollama SDK returns a ChatResponse object, not a dict
+            return resp.message.content.strip()
         except Exception as e:
             last_err = e
             print(f"[ollama] Ошибка (попытка {attempt + 1}): {e}")
-            if attempt < _OLLAMA_RETRIES:
-                time.sleep(_OLLAMA_RETRY_DELAY)
+            if attempt < OLLAMA_RETRIES:
+                time.sleep(OLLAMA_RETRY_DELAY)
     print(f"[ollama] Все попытки исчерпаны: {last_err}")
     return ""
