@@ -42,8 +42,6 @@ def main(
     if stop_event is None:
         stop_event = threading.Event()
 
-    # _log — только print().
-    # GUI получает логи через StreamRedirector (stdout-перехват) без дублирования.
     def _log(msg: str) -> None:
         print(msg)
 
@@ -64,7 +62,16 @@ def main(
             tts.say(msg, stop_event=stop_event)
             return
 
-        _log("[assistant] Ollama доступна. Запускаю голосовой цикл.")
+        _log("[assistant] Ollama доступна.")
+
+        # ── Инициализация: загружаем всё ДО старта любых циклов ─────────
+        _log("[assistant] Инициализация моделей...")
+        import numpy as np
+        from voice.stt import vad_prob
+        vad_prob(np.zeros(512, dtype="float32"))  # триггерит _ensure_models()
+        if stop_event.is_set():
+            return
+        _log("[assistant] Модели готовы.")
 
         wake_detector = WakeDetector()
         turn_manager = TurnManager(chunk_size=CHUNK_SIZE)
