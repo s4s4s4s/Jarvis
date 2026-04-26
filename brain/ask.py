@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 import time
 from dataclasses import dataclass, field
@@ -12,6 +13,7 @@ from brain import history as hist
 from brain.logger import log_route
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jarvis-ask")
+atexit.register(lambda: _executor.shutdown(wait=False, cancel_futures=True))
 
 
 @dataclass

@@ -13,15 +13,17 @@ tools/memory.py — долгосрочная память Jarvis.
   "source": "Сэр сказал: 'хожу в зал три раза в неделю'"
 }
 
-Извлечение фактов — фоновый поток, не блокирует основной цикл.
+Извлечение фактов — единственный фоновый поток через очередь, не блокирует основной цикл.
 """
 from __future__ import annotations
 
 import json
+import queue
 import re
 import threading
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from core.config import OLLAMA_FAST_MODEL, MEMORY_MAX_FACTS
 from core.paths import MEMORY_PATH
@@ -29,28 +31,78 @@ from brain.client import chat
 
 _lock = threading.Lock()
 
+# --- In-memory кэш -----------------------------------------------------------
+_cache: Optional[list[dict]] = None
+
+
+def _invalidate_cache() -> None:
+    global _cache
+    _cache = None
+
+
+# --- Единый фоновый воркер для extract_and_save ------------------------------
+
+_extract_queue: queue.Queue = queue.Queue(maxsize=32)
+_extract_thread_started = False
+_extract_thread_lock = threading.Lock()
+
+
+def _ensure_extract_thread() -> None:
+    global _extract_thread_started
+    with _extract_thread_lock:
+        if _extract_thread_started:
+            return
+        t = threading.Thread(target=_extract_loop, daemon=True, name="jarvis-memory-extract")
+        t.start()
+        _extract_thread_started = True
+
+
+def _extract_loop() -> None:
+    while True:
+        try:
+            item = _extract_queue.get(timeout=5.0)
+        except queue.Empty:
+            continue
+        if item is None:
+            break
+        user_text, jarvis_answer = item
+        try:
+            _extract_worker(user_text, jarvis_answer)
+        except Exception as e:
+            print(f"[memory extract] Ошибка воркера: {e}")
+        finally:
+            _extract_queue.task_done()
+
 
 # --- внутренние хелперы ---------------------------------------------------
 
 def _load() -> list[dict]:
+    global _cache
+    if _cache is not None:
+        return _cache
     if not MEMORY_PATH.exists():
-        return []
+        _cache = []
+        return _cache
     try:
         with open(MEMORY_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
+        _cache = data if isinstance(data, list) else []
     except Exception as e:
         print(f"[memory] Ошибка чтения: {e}")
-        return []
+        _cache = []
+    return _cache
 
 
 def _save(facts: list[dict]) -> None:
+    global _cache
     MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(MEMORY_PATH, "w", encoding="utf-8") as f:
             json.dump(facts, f, ensure_ascii=False, indent=2)
+        _cache = list(facts)
     except Exception as e:
         print(f"[memory] Ошибка записи: {e}")
+        _invalidate_cache()
 
 
 def _is_duplicate(new_fact: str, existing: list[dict], threshold: float = 0.7) -> bool:
@@ -114,13 +166,12 @@ def get_all_facts() -> list[dict]:
 
 
 def extract_and_save_async(user_text: str, jarvis_answer: str) -> None:
-    """Запускает фоновый поток для извлечения фактов. Не блокирует."""
-    t = threading.Thread(
-        target=_extract_worker,
-        args=(user_text, jarvis_answer),
-        daemon=True,
-    )
-    t.start()
+    """Ставит задачу в очередь единственного фонового потока. Не блокирует."""
+    _ensure_extract_thread()
+    try:
+        _extract_queue.put_nowait((user_text, jarvis_answer))
+    except queue.Full:
+        print("[memory] Очередь извлечения переполнена, пропускаю ход")
 
 
 # --- фоновый воркер -------------------------------------------------------

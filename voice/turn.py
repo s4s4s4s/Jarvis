@@ -47,7 +47,7 @@ class TurnManager:
             prob = vad_prob(chunk)
             if prob >= TURN_VAD_TRIGGER:
                 speech_started = True
-                silence_counter = 0
+                silence_counter = 0  # сброс при любом речевом бёрсте
                 frames.append(chunk)
             elif speech_started:
                 frames.append(chunk)
@@ -86,7 +86,7 @@ class TurnManager:
             if prob >= TURN_VAD_TRIGGER:
                 speech_started = True
                 idle_start = time.time()
-                silence_counter = 0
+                silence_counter = 0  # сброс при любом речевом бёрсте
                 frames.append(chunk)
             else:
                 if speech_started:

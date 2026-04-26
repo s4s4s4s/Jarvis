@@ -10,6 +10,9 @@ from core.config import SAMPLE_RATE_MIC, CHUNK_SIZE, PRE_ROLL_SEC
 
 _STOP_SENTINEL = object()
 
+# ~6 секунд буфера при 16 кГц / chunk 512: 16000/512*6 ≈ 188 чанков
+_TAP_QUEUE_MAXSIZE = 200
+
 
 class AudioCore:
     def __init__(self):
@@ -19,14 +22,18 @@ class AudioCore:
         self._pre_roll: deque = deque(maxlen=self._pre_roll_len)  # O(1) append/pop
         self._stream = None
         self._stop_requested = False
+        self._dropped_chunks = 0  # счётчик дропнутых чанков для диагностики
 
     def create_tap(self, pre_roll: bool = False) -> queue.Queue:
-        q: queue.Queue = queue.Queue()
+        q: queue.Queue = queue.Queue(maxsize=_TAP_QUEUE_MAXSIZE)
         with self._taps_lock:
             self._taps.append(q)
             if pre_roll and self._pre_roll:
                 for chunk in self._pre_roll:
-                    q.put(chunk)
+                    try:
+                        q.put_nowait(chunk)
+                    except queue.Full:
+                        pass  # pre-roll может быть больше maxsize — пропускаем старые
         return q
 
     def remove_tap(self, q: queue.Queue) -> None:
@@ -62,6 +69,10 @@ class AudioCore:
         with self._taps_lock:
             return list(self._pre_roll)
 
+    def get_dropped_chunks(self) -> int:
+        """Количество дропнутых чанков с момента старта — для диагностики."""
+        return self._dropped_chunks
+
     def request_stop(self) -> None:
         self._stop_requested = True
         self.stop()
@@ -74,8 +85,11 @@ class AudioCore:
             for q in self._taps:
                 try:
                     q.put_nowait(chunk)
+                except queue.Full:
+                    # Очередь переполнена — consumer слишком медленный
+                    self._dropped_chunks += 1
                 except Exception:
-                    dead.append(q)  # переполненная/мёртвая очередь
+                    dead.append(q)
             for q in dead:
                 try:
                     self._taps.remove(q)
@@ -84,6 +98,7 @@ class AudioCore:
 
     def start(self):
         self._stop_requested = False
+        self._dropped_chunks = 0
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE_MIC,
             blocksize=CHUNK_SIZE,
