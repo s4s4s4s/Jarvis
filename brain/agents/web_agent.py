@@ -9,7 +9,20 @@ def run(query: str, history: list[dict]) -> str:
     try:
         snippets = web_search(query)
     except Exception as e:
-        return f"Сэр, поиск не удался: {e}"
+        # FIX (аудит 6): раньше был хардкод "Сэр, поиск не удался: ...".
+        # Теперь LLM формулирует ответ об ошибке. Хардкод — только fallback.
+        try:
+            err_msgs = [
+                {"role": "system", "content": WEB_SYSTEM},
+                {"role": "user", "content": (
+                    f"Запрос пользователя: {query}\n\n"
+                    f"Веб-поиск завершился с ошибкой:\n{e}\n\n"
+                    f"Сообщи пользователю, что не удалось найти информацию в интернете, кратко."
+                )},
+            ]
+            return chat(MODEL_FAST, err_msgs, options={"temperature": 0.3, "num_ctx": 4096})
+        except Exception:
+            return f"Сэр, поиск не удался: {e}"
 
     msgs = [
         {"role": "system", "content": WEB_SYSTEM},

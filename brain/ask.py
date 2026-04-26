@@ -32,35 +32,12 @@ class AskResult:
         return self._answer
 
 
-_QUICK_FILLERS = [
-    "Позвольте уточнить...",
-    "Одну секунду...",
-    "Съезжу и проверю.",
-    "Анализирую.",
-    "Дайте подумаю.",
-]
-
-_filler_idx = 0
-
-
-def _quick_filler(text: str) -> str:
-    global _filler_idx
-    t = text.lower()
-    if any(w in t for w in ("погода", "температура")):
-        return "Смотрю текущие данные."
-    if any(w in t for w in ("курс", "валюта", "доллар", "рубль")):
-        return "Проверяю курсы."
-    if any(w in t for w in ("крипто", "биткоин", "эфир")):
-        return "Смотрю цены."
-    if any(w in t for w in ("время", "час", "сколько")):
-        return "Сейчас скажу."
-    if any(w in t for w in ("найди", "поищи", "ищи", "гугл")):
-        return "Ищу в сети."
-    if any(w in t for w in ("объясни", "почему", "как", "расскажи")):
-        return "Дайте подумаю."
-    f = _QUICK_FILLERS[_filler_idx % len(_QUICK_FILLERS)]
-    _filler_idx += 1
-    return f
+# FIX (аудит 6): полностью убраны захардкоженные филлеры и keyword-based
+# роутинг филлеров (_QUICK_FILLERS, _SMALL_TALK_PATTERNS, _quick_filler).
+# Принципиальный архитектурный сдвиг: Jarvis — ИИ-агент, не чат-бот.
+# Все фразы, которые произносит ассистент, должна генерировать LLM.
+# Филлер теперь приходит из роутера в JSON-поле "filler" (см. ROUTER_SYSTEM).
+# Это даёт контекстно-уместные филлеры ценой ~500-1500мс на инференс роутера.
 
 
 def _route(text: str) -> dict[str, Any]:
@@ -88,6 +65,28 @@ def _route(text: str) -> dict[str, Any]:
     }
 
 
+def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
+    """LLM генерирует естественный ответ об ошибке инструмента.
+
+    FIX (аудит 6): раньше тут был хардкод "Сэр, инструмент вернул ошибку: ...".
+    Теперь LLM сама формулирует ответ пользователю на основе контекста ошибки.
+    """
+    msgs = [
+        {"role": "system", "content": TOOL_FORMAT_SYSTEM},
+        {"role": "user", "content": (
+            f"Запрос пользователя: {text}\n\n"
+            f"Инструмент ({tool_name}) завершился с ошибкой:\n{error}\n\n"
+            f"Сообщи пользователю, что не удалось выполнить запрос, "
+            f"кратко объясни причину естественным языком."
+        )},
+    ]
+    try:
+        return chat(MODEL_FAST, msgs, options={"temperature": 0.3, "num_ctx": 4096})
+    except Exception:
+        # Fallback на хардкод только если LLM недоступна
+        return f"Сэр, инструмент вернул ошибку: {error}"
+
+
 def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str:
     route = route_data["route"]
 
@@ -104,7 +103,8 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
                 )},
             ]
             return chat(MODEL_FAST, msgs, options={"temperature": 0.2, "num_ctx": 4096})
-        return f"Сэр, инструмент вернул ошибку: {result.error}"
+        # FIX (аудит 6): ошибку формулирует LLM, а не хардкод
+        return _format_tool_error(text, route_data.get("tool"), result.error or "неизвестная ошибка")
 
     if route == "web":
         from brain.agents.web_agent import run as web_run
@@ -126,21 +126,39 @@ def ask_llm(text: str) -> AskResult:
     # FIX: snapshot берём ДО append(user) — это правильный контекст для агентов.
     # append(user) тоже до executor, чтобы при параллельных вызовах (прерывание)
     # порядок в истории был user1 → user2, а не user1 → assistant1 → user2.
-    # assistant-ответ пишется внутри _run() после получения ответа от LLM.
     history = hist.snapshot()
     hist.append("user", text)
 
-    filler = _quick_filler(text)
-    result = AskResult(filler=filler)
+    # FIX (аудит 6): роутер вызывается СИНХРОННО здесь, чтобы получить
+    # контекстно-уместный филлер вместе с маршрутом. Раньше филлер брался
+    # из keyword-based _quick_filler() (~0мс, но тупо). Теперь — от LLM
+    # (~500-1500мс, но умно). Это согласуется с философией "ИИ-агент,
+    # не чат-бот": все фразы генерирует LLM. Если роутер упал —
+    # AskResult вернёт пустой filler и chat-маршрут по умолчанию.
+    t_route0 = time.monotonic()
+    try:
+        route_data = _route(text)
+    except Exception as e:
+        # Ollama упала / сетевой сбой — отдаём в воркер сам факт ошибки,
+        # чтобы LLM-цепочка тоже отвалилась с понятным сообщением.
+        route_data = {
+            "route": "chat",
+            "tool": None,
+            "tool_args": {},
+            "confidence": 0.0,
+            "filler": "",
+            "reason": f"router error: {e}",
+        }
+    route_ms = int((time.monotonic() - t_route0) * 1000)
+
+    result = AskResult(filler=route_data.get("filler", ""))
 
     def _run() -> str:
         t0 = time.monotonic()
-        route_data = _route(text)
         answer = _dispatch(route_data, text, history)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
-        # FIX: assistant-ответ добавляется здесь, после получения,
-        # не в главном потоке — это сохраняет правильное чередование
-        # даже при быстрых последовательных вопросах
+        # assistant-ответ добавляется после получения, не в главном потоке —
+        # это сохраняет правильное чередование при быстрых последовательных вопросах
         hist.append("assistant", answer)
         log_route(
             text=text,
@@ -148,7 +166,7 @@ def ask_llm(text: str) -> AskResult:
             tool=route_data.get("tool"),
             confidence=route_data.get("confidence", 0.0),
             reason=route_data.get("reason", ""),
-            answer_ms=elapsed_ms,
+            answer_ms=elapsed_ms + route_ms,
         )
         try:
             from tools.memory import extract_and_save_async

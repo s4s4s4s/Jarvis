@@ -43,12 +43,49 @@ def set_fire_callback(cb: Callable[[str], None]) -> None:
     _fire_callback = cb
 
 
+def _generate_fire_message(label: str) -> str:
+    """Просим LLM сформулировать фразу о срабатывании таймера.
+
+    FIX (аудит 6): раньше тут был хардкод "Сэр, таймер '{label}' сработал!".
+    Теперь фразу генерирует LLM. Хардкод остаётся только как fallback на
+    случай, когда Ollama недоступна (это разрешено по архитектурному правилу).
+    """
+    fallback = f"Сэр, таймер '{label}' сработал!"
+    try:
+        from brain.client import chat, MODEL_FAST, is_ollama_available
+        if not is_ollama_available():
+            return fallback
+        msgs = [
+            {
+                "role": "system",
+                "content": (
+                    "Ты — голосовой ассистент Jarvis. Ответ будет зачитан вслух.\n"
+                    "Не используй markdown. Отвечай по-русски, кратко (1 предложение),\n"
+                    "естественно. Обращайся к пользователю напрямую."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Сработал таймер с названием '{label}'. "
+                    f"Сообщи пользователю об этом одной короткой фразой."
+                ),
+            },
+        ]
+        text = chat(MODEL_FAST, msgs, options={"temperature": 0.5, "num_ctx": 2048})
+        text = (text or "").strip()
+        return text or fallback
+    except Exception as e:
+        print(f"[timer] LLM недоступна, fallback: {e}")
+        return fallback
+
+
 def _on_fire(timer_id: str, label: str) -> None:
     with _timers_lock:
         t = _timers.pop(timer_id, None)
         if t is None or t.cancelled:
             return
-    msg = f"Сэр, таймер '{label}' сработал!"
+    msg = _generate_fire_message(label)
     try:
         _fire_callback(msg)
     except Exception as e:
