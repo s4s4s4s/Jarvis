@@ -1,8 +1,4 @@
 # voice/assistant.py
-"""
-Главный голосовой цикл Jarvis.
-Запускается из ui/bridge.py через main(stop_event, callbacks...).
-"""
 from __future__ import annotations
 
 import threading
@@ -25,7 +21,6 @@ except Exception:
         SPEAKING = "SPEAKING"
         INTERRUPT_LISTEN = "INTERRUPT_LISTEN"
 
-# Гард от двойного запуска
 _running_lock = threading.Lock()
 _is_running = False
 
@@ -47,13 +42,10 @@ def main(
     if stop_event is None:
         stop_event = threading.Event()
 
+    # _log — только print().
+    # GUI получает логи через StreamRedirector (stdout-перехват) без дублирования.
     def _log(msg: str) -> None:
         print(msg)
-        if on_system_log:
-            try:
-                on_system_log(msg)
-            except Exception:
-                pass
 
     def _state(s) -> None:
         if on_state:
@@ -62,8 +54,9 @@ def main(
             except Exception:
                 pass
 
+    audio_core = AudioCore()
+
     try:
-        # ── Ollama health-check ─────────────────────────────────────────────────
         from brain.client import is_ollama_available
         if not is_ollama_available():
             msg = "Сэр, Ollama недоступна. Убедитесь, что сервис запущен на порту 11434."
@@ -73,7 +66,6 @@ def main(
 
         _log("[assistant] Ollama доступна. Запускаю голосовой цикл.")
 
-        audio_core = AudioCore()
         wake_detector = WakeDetector()
         turn_manager = TurnManager(chunk_size=CHUNK_SIZE)
 
@@ -91,7 +83,6 @@ def main(
                     continue
 
         while not stop_event.is_set():
-            # ── Фаза 1: Ожидание wake-word ───────────────────────────────────
             _state(AssistantState.IDLE)
             wake_tap = audio_core.create_tap(pre_roll=False)
             _log("[assistant] Жду wake-word...")
@@ -104,10 +95,6 @@ def main(
             if not woke or stop_event.is_set():
                 break
 
-            # ── Фаза 2: Запись utterance с пре-роллом ──────────────────────────
-            # pre_roll=True: AudioCore предзаполняет очередь последними
-            # чанками до срабатывания вейка — фраза вроде «Джарвис, как дела?»
-            # не теряется.
             _log("[assistant] Wake! Слушаю команду...")
             _state(AssistantState.LISTENING)
             listen_tap = audio_core.create_tap(pre_roll=True)
@@ -122,7 +109,6 @@ def main(
                 _log("[assistant] Utterance не получен, возврат в idle.")
                 continue
 
-            # ── Фаза 3: STT ──────────────────────────────────────────────────
             from voice.stt import transcribe
             text = transcribe(audio)
             if not text or not text.strip():
@@ -136,7 +122,6 @@ def main(
                 except Exception:
                     pass
 
-            # ── Фаза 4: LLM (async) + filler ────────────────────────────────
             _state(AssistantState.THINKING)
             ask_result = ask_llm(text)
 
@@ -144,7 +129,6 @@ def main(
                 _state(AssistantState.SPEAKING)
                 tts.say(ask_result.filler, stop_event=stop_event)
 
-            # ── Фаза 5: Дожидаемся ответа LLM ───────────────────────────────
             _state(AssistantState.THINKING)
             answer = ask_result.get_answer(timeout=120.0)
             if not answer:
@@ -158,7 +142,6 @@ def main(
                 except Exception:
                     pass
 
-            # ── Фаза 6: TTS с возможностью перебить ─────────────────────────
             _state(AssistantState.SPEAKING)
             interrupted_audio = tts.speak_and_handle(
                 answer,
@@ -208,5 +191,5 @@ def main(
         with _running_lock:
             _is_running = False
         audio_core.stop()
-        _log("[assistant] AudioCore остановлен. Выход.")
+        print("[assistant] AudioCore остановлен. Выход.")
         _state(AssistantState.IDLE)
