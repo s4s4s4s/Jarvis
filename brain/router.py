@@ -1,13 +1,14 @@
+# brain/router.py
+# parse_router_response is kept for backward compatibility but routing
+# is now handled directly in brain/ask.py (_route function).
 from __future__ import annotations
 
 import json
 from typing import Any
 
-from brain.prompts import ROUTER_SYSTEM  # noqa: F401 — re-exported for convenience
-
 
 def parse_router_response(text: str) -> dict[str, Any]:
-    """Parse router JSON response with graceful fallback on invalid JSON."""
+    """Parse router JSON with graceful fallback on invalid JSON."""
     raw = text.strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1]

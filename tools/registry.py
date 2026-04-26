@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from tools.crypto import get_crypto_price, search_coin
@@ -16,24 +16,50 @@ class ToolResult:
     error: str = ""
 
 
-_TOOL_MAP = {
-    "weather": (get_weather, ["location"]),
-    "crypto.search": (search_coin, ["query"]),
-    "crypto.price": (get_crypto_price, ["ids"]),
-    "currency.rates": (lambda **_: get_rates(), []),
-    "currency.convert": (convert_currency, ["amount", "from_code", "to_code"]),
-    "time": (lambda **_: get_time(), []),
+def _call_weather(location: str, language: str = "ru") -> Any:
+    return get_weather(location=location, language=language)
+
+
+def _call_crypto_search(query: str) -> Any:
+    return search_coin(query=query)
+
+
+def _call_crypto_price(ids: list[str], vs_currency: str = "usd") -> Any:
+    return get_crypto_price(ids=ids, vs_currency=vs_currency)
+
+
+def _call_currency_rates() -> Any:
+    return get_rates()
+
+
+def _call_currency_convert(amount: float, from_code: str, to_code: str) -> Any:
+    return convert_currency(amount=amount, from_code=from_code, to_code=to_code)
+
+
+def _call_time() -> Any:
+    return get_time()
+
+
+_TOOL_MAP: dict[str, Any] = {
+    "weather": _call_weather,
+    "crypto.search": _call_crypto_search,
+    "crypto.price": _call_crypto_price,
+    "currency.rates": _call_currency_rates,
+    "currency.convert": _call_currency_convert,
+    "time": _call_time,
 }
+
+
+def list_tools() -> list[str]:
+    """Return names of all registered tools."""
+    return list(_TOOL_MAP.keys())
 
 
 def call_tool(name: str, args: dict[str, Any] | None = None) -> ToolResult:
     args = args or {}
-
-    handler_entry = _TOOL_MAP.get(name)
-    if handler_entry is None:
-        return ToolResult(ok=False, error=f"Unknown tool: {name}")
-
-    fn, _ = handler_entry
+    fn = _TOOL_MAP.get(name)
+    if fn is None:
+        return ToolResult(ok=False, error=f"Unknown tool: {name}. Available: {list_tools()}")
     try:
         result = fn(**args)
         return ToolResult(ok=True, data=result)

@@ -1,11 +1,28 @@
+# Audio
 sounddevice
 numpy
-requests
+pygame
+
+# STT / VAD
 torch
 faster-whisper
 silero-vad
+
+# TTS
 edge-tts
-pygame
+
+# Wake word
 voxcpm
+
+# LLM
+ollama
+
+# Tools
+requests
 duckduckgo-search
+
+# UI
 PySide6
+
+# Python 3.8 compat (zoneinfo backport; no-op on 3.9+)
+# backports.zoneinfo; python_version < "3.9"
