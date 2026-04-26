@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -14,6 +15,8 @@ from brain.logger import log_route
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jarvis-ask")
 atexit.register(lambda: _executor.shutdown(wait=False, cancel_futures=True))
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -86,8 +89,6 @@ def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
     except Exception as e:
         # Fallback на хардкод только если LLM недоступна
         # FIX (аудит 6): добавлен логгинг для молчаливых исключений
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"LLM error in _format_tool_error for tool '{tool_name}': {e}")
         return f"Сэр, инструмент вернул ошибку: {error}"
 
@@ -178,8 +179,6 @@ def ask_llm(text: str) -> AskResult:
             extract_and_save_async(text, answer)
         except Exception as e:
             # FIX (аудит 6): добавлен логгинг для молчаливого исключения
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"Memory extraction failed: {e}")
         return answer
 
