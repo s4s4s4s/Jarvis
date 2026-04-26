@@ -130,6 +130,14 @@ def main(
             ask_result = ask_llm(text)
 
             if ask_result.filler:
+                # FIX (audit 5): филлер озвучивался, но не попадал ни в логи,
+                # ни в UI-диалог. Теперь дублируем в _log + on_assistant_text.
+                _log(f"[assistant] Filler: {ask_result.filler}")
+                if on_assistant_text:
+                    try:
+                        on_assistant_text(ask_result.filler)
+                    except Exception:
+                        pass
                 _state(AssistantState.SPEAKING)
                 tts.say(ask_result.filler, stop_event=stop_event)
 
@@ -171,6 +179,13 @@ def main(
                     _state(AssistantState.THINKING)
                     int_result = ask_llm(int_text)
                     if int_result.filler:
+                        # FIX (audit 5): филлер также должен попадать в лог/UI
+                        _log(f"[assistant] Filler: {int_result.filler}")
+                        if on_assistant_text:
+                            try:
+                                on_assistant_text(int_result.filler)
+                            except Exception:
+                                pass
                         _state(AssistantState.SPEAKING)
                         tts.say(int_result.filler, stop_event=stop_event)
                     _state(AssistantState.THINKING)
