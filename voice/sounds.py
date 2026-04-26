@@ -2,7 +2,9 @@
 from pathlib import Path
 import pygame
 
-from core.config import ACTIVATE_SOUND_PATH, DEACTIVATE_SOUND_PATH
+# FIX (audit 3): пути ассетов переехали в core/paths.py — единый источник
+# правды, реагирует на JARVIS_ROOT.
+from core.paths import ACTIVATE_SOUND_PATH, DEACTIVATE_SOUND_PATH
 
 _MIXER_FREQ = 44100
 _MIXER_SIZE = -16

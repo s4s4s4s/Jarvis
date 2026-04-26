@@ -8,17 +8,8 @@ from voice.audio_core import AudioCore
 from voice.wake import WakeDetector
 from voice.turn import TurnManager
 from voice import tts
+from voice.state import AssistantState
 from brain.ask import ask_llm
-
-try:
-    from voice.state import AssistantState
-except Exception:
-    class AssistantState:  # type: ignore
-        IDLE = "IDLE"
-        LISTENING = "LISTENING"
-        THINKING = "THINKING"
-        SPEAKING = "SPEAKING"
-        INTERRUPT_LISTEN = "INTERRUPT_LISTEN"
 
 _running_lock = threading.Lock()
 _is_running = False

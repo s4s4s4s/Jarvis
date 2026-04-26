@@ -1,5 +1,4 @@
 # core/config.py
-from pathlib import Path
 
 # ─── STT / Whisper ────────────────────────────────────────────────────────────
 WHISPER_MODEL_SIZE = "large-v3"
@@ -81,10 +80,9 @@ IGNORE_PHRASES = [
 ]
 
 # ─── Пути (assets через ROOT) ─────────────────────────────────────────────────
-_ROOT = Path(r"C:\jarvis")
-REFERENCE_WAV         = str(_ROOT / "assets" / "reference.wav")
-ACTIVATE_SOUND_PATH   = str(_ROOT / "assets" / "activate.wav")
-DEACTIVATE_SOUND_PATH = str(_ROOT / "assets" / "deactivate.wav")
+# FIX (audit 3): все пути живут в core/paths.py (единый источник правды),
+# реагируют на JARVIS_ROOT. Раньше звуки были захардкожены в C:\jarvis\assets.
+# Импорты REFERENCE_WAV/ACTIVATE_SOUND_PATH/DEACTIVATE_SOUND_PATH — из core.paths.
 
 # ─── TTS ──────────────────────────────────────────────────────────────────────
 # Скорость: "+20%" = на 20% быстрее стандартной скорости Edge TTS

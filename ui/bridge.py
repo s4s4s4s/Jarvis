@@ -8,10 +8,7 @@ from typing import Callable, Optional, Any
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-try:
-    from voice.state import AssistantState
-except Exception:
-    AssistantState = None  # type: ignore
+from voice.state import AssistantState  # noqa: F401  (re-exported for callers)
 
 _CALLBACK_ALIASES = {
     "on_state": "state",        "on_status": "state",       "state_changed": "state",
@@ -253,7 +250,12 @@ class JarvisBridge(QObject):
                 pass
 
         print("[bridge] assistant thread exiting")
+        # FIX (audit 3): восстанавливаем stdout, если ассистент завершился сам
+        # (напр. Ollama недоступна). Иначе stop() не вызывается → редирект
+        # остаётся висеть, и повторный start() не установит новый (из-за
+        # проверки `if self._orig_stdout is not None: return`).
         self._started = False
+        self._restore_redirect()
 
     @Slot()
     def slot_start(self) -> None:

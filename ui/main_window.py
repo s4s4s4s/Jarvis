@@ -10,11 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from .bridge import JarvisBridge
-
-try:
-    from voice.state import AssistantState
-except Exception:
-    AssistantState = None  # type: ignore
+from voice.state import AssistantState  # noqa: F401  (used via state.name in slots)
 
 
 class JarvisWindow(QMainWindow):

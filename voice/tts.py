@@ -16,9 +16,15 @@ import pygame
 
 from core.config import EDGE_VOICE, EDGE_RATE, SAMPLE_RATE_MIC, TURN_VAD_TRIGGER, CHUNK_SIZE
 from core.paths import TTS_CHUNKS
+# FIX (audit 3): импортируем sentinel из audio_core, чтобы _listen_thread
+# мог корректно сравнивать через `is`. Раньше в tts.py был свой _STOP_SENTINEL,
+# который никогда не совпадал с тем, что кладёт audio_core.remove_tap()/stop().
+from voice.audio_core import _STOP_SENTINEL as _AUDIO_STOP_SENTINEL
 
 _CHUNK_ROOT = str(TTS_CHUNKS)
-_STOP_SENTINEL = object()
+# Локальный sentinel — для внутренней очереди _gen_thread → _play_thread.
+# Для tap-очереди от audio_core используем _AUDIO_STOP_SENTINEL.
+_TTS_STOP_SENTINEL = object()
 _stop_flag = False
 _playing = False
 _mixer_ready = False
@@ -125,7 +131,7 @@ def _gen_thread(text: str, session_dir: str, q: Queue, stop_ev):
         ok = loop.run_until_complete(_synthesize(text, mp3))
         if ok and not _should_stop(stop_ev):
             q.put(mp3)
-        q.put(_STOP_SENTINEL)
+        q.put(_TTS_STOP_SENTINEL)
     finally:
         loop.close()
 
@@ -137,7 +143,7 @@ def _play_thread(q: Queue, stop_ev):
             item = q.get(timeout=0.2)
         except Empty:
             continue
-        if item is _STOP_SENTINEL:
+        if item is _TTS_STOP_SENTINEL:
             break
         path = item
         if not os.path.exists(path):
@@ -179,7 +185,9 @@ def _listen_thread(audio_core, stop_ev, interrupt_ev, audio_box):
         while not interrupt_ev.is_set() and not (stop_ev and stop_ev.is_set()):
             try:
                 item = tap.get(timeout=0.2)
-                if item is _STOP_SENTINEL:
+                # FIX (audit 3): сравниваем с sentinel из audio_core,
+                # т.к. tap создан им и его же remove_tap() кладёт sentinel.
+                if item is _AUDIO_STOP_SENTINEL:
                     return
                 yield item
             except Exception:
@@ -244,7 +252,7 @@ def _run(text: str, stop_ev=None, allow_interrupt=False, audio_core=None):
             lst_done = t_lst is None or not t_lst.is_alive()
 
             if _get_stop() and t_lst is not None:
-                try: q.put_nowait(_STOP_SENTINEL)
+                try: q.put_nowait(_TTS_STOP_SENTINEL)
                 except Exception: pass
                 t_gen.join(timeout=0.5); t_play.join(timeout=0.5)
                 _release(); _set_playing(False)
@@ -254,7 +262,7 @@ def _run(text: str, stop_ev=None, allow_interrupt=False, audio_core=None):
 
             if stop_ev is not None and stop_ev.is_set():
                 _set_stop(True)
-                try: q.put_nowait(_STOP_SENTINEL)
+                try: q.put_nowait(_TTS_STOP_SENTINEL)
                 except Exception: pass
                 _release()
                 t_gen.join(timeout=0.1); t_play.join(timeout=0.1)
