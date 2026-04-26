@@ -8,11 +8,10 @@ from __future__ import annotations
 import threading
 from typing import Callable, Optional
 
-from core.config import CHUNK_SIZE, POST_TTS_GRACE_SEC, POST_INTERRUPT_GRACE_SEC, IDLE_TIMEOUT_SEC
+from core.config import CHUNK_SIZE, POST_TTS_GRACE_SEC, IDLE_TIMEOUT_SEC
 from voice.audio_core import AudioCore
 from voice.wake import WakeDetector
 from voice.turn import TurnManager
-from voice.stt import transcribe
 from voice import tts
 from brain.ask import ask_llm
 
@@ -26,6 +25,10 @@ except Exception:
         SPEAKING = "SPEAKING"
         INTERRUPT_LISTEN = "INTERRUPT_LISTEN"
 
+# Гард от двойного запуска
+_running_lock = threading.Lock()
+_is_running = False
+
 
 def main(
     stop_event: Optional[threading.Event] = None,
@@ -34,6 +37,13 @@ def main(
     on_assistant_text: Optional[Callable[[str], None]] = None,
     on_system_log: Optional[Callable[[str], None]] = None,
 ) -> None:
+    global _is_running
+    with _running_lock:
+        if _is_running:
+            print("[assistant] Уже запущен, игнорирую повторный вызов.")
+            return
+        _is_running = True
+
     if stop_event is None:
         stop_event = threading.Event()
 
@@ -52,38 +62,38 @@ def main(
             except Exception:
                 pass
 
-    # ── Ollama health-check ──────────────────────────────────────────────────
-    from brain.client import is_ollama_available
-    if not is_ollama_available():
-        msg = "Сэр, Ollama недоступна. Убедитесь, что сервис запущен на порту 11434."
-        _log(f"[assistant] {msg}")
-        tts.say(msg, stop_event=stop_event)
-        return
-
-    _log("[assistant] Ollama доступна. Запускаю голосовой цикл.")
-
-    audio_core = AudioCore()
-    wake_detector = WakeDetector()
-    turn_manager = TurnManager(chunk_size=CHUNK_SIZE)
-
-    audio_core.start()
-    _log("[assistant] AudioCore запущен.")
-    _state(AssistantState.IDLE)
-
-    def _chunk_iter(tap_q):
-        from queue import Empty
-        while not stop_event.is_set():
-            try:
-                chunk = tap_q.get(timeout=0.2)
-                yield chunk
-            except Empty:
-                continue
-
     try:
+        # ── Ollama health-check ─────────────────────────────────────────────────
+        from brain.client import is_ollama_available
+        if not is_ollama_available():
+            msg = "Сэр, Ollama недоступна. Убедитесь, что сервис запущен на порту 11434."
+            _log(f"[assistant] {msg}")
+            tts.say(msg, stop_event=stop_event)
+            return
+
+        _log("[assistant] Ollama доступна. Запускаю голосовой цикл.")
+
+        audio_core = AudioCore()
+        wake_detector = WakeDetector()
+        turn_manager = TurnManager(chunk_size=CHUNK_SIZE)
+
+        audio_core.start()
+        _log("[assistant] AudioCore запущен.")
+        _state(AssistantState.IDLE)
+
+        def _chunk_iter(tap_q):
+            from queue import Empty
+            while not stop_event.is_set():
+                try:
+                    chunk = tap_q.get(timeout=0.2)
+                    yield chunk
+                except Empty:
+                    continue
+
         while not stop_event.is_set():
             # ── Фаза 1: Ожидание wake-word ───────────────────────────────────
             _state(AssistantState.IDLE)
-            wake_tap = audio_core.create_tap()
+            wake_tap = audio_core.create_tap(pre_roll=False)
             _log("[assistant] Жду wake-word...")
             woke = False
             for chunk in _chunk_iter(wake_tap):
@@ -94,10 +104,13 @@ def main(
             if not woke or stop_event.is_set():
                 break
 
-            # ── Фаза 2: Запись utterance ─────────────────────────────────────
+            # ── Фаза 2: Запись utterance с пре-роллом ──────────────────────────
+            # pre_roll=True: AudioCore предзаполняет очередь последними
+            # чанками до срабатывания вейка — фраза вроде «Джарвис, как дела?»
+            # не теряется.
             _log("[assistant] Wake! Слушаю команду...")
             _state(AssistantState.LISTENING)
-            listen_tap = audio_core.create_tap()
+            listen_tap = audio_core.create_tap(pre_roll=True)
             audio = turn_manager.collect_with_timeout(
                 _chunk_iter(listen_tap),
                 idle_timeout_sec=IDLE_TIMEOUT_SEC,
@@ -110,6 +123,7 @@ def main(
                 continue
 
             # ── Фаза 3: STT ──────────────────────────────────────────────────
+            from voice.stt import transcribe
             text = transcribe(audio)
             if not text or not text.strip():
                 _log("[assistant] STT вернул пустую строку.")
@@ -156,9 +170,9 @@ def main(
                 break
 
             if interrupted_audio is not None:
-                # Пользователь перебил — сразу обрабатываем его фразу
                 _log("[assistant] Пользователь перебил TTS.")
                 _state(AssistantState.INTERRUPT_LISTEN)
+                from voice.stt import transcribe
                 int_text = transcribe(interrupted_audio)
                 if int_text and int_text.strip():
                     _log(f"[assistant] Перебивание STT: {int_text}")
@@ -191,6 +205,8 @@ def main(
                 time.sleep(POST_TTS_GRACE_SEC)
 
     finally:
+        with _running_lock:
+            _is_running = False
         audio_core.stop()
         _log("[assistant] AudioCore остановлен. Выход.")
         _state(AssistantState.IDLE)

@@ -1,31 +1,48 @@
 from __future__ import annotations
 
+import threading
+from typing import Optional
+
 import torch
-from faster_whisper import WhisperModel
-from silero_vad import load_silero_vad
 
 from core.config import WHISPER_MODEL_SIZE, SAMPLE_RATE_MIC, LANG
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-compute = "float16" if device == "cuda" else "int8"
+_lock = threading.Lock()
+_whisper_model = None
+_vad_model = None
 
-print("Загружаю Whisper...")
-whisper_model = WhisperModel(
-    WHISPER_MODEL_SIZE,
-    device=device,
-    compute_type=compute,
-)
 
-print("Загружаю Silero VAD...")
-vad_model = load_silero_vad()
+def _ensure_models():
+    """Lazy singleton — загружает модели только при первом вызове."""
+    global _whisper_model, _vad_model
+    if _whisper_model is not None:
+        return
+    with _lock:
+        if _whisper_model is not None:
+            return
+        from faster_whisper import WhisperModel
+        from silero_vad import load_silero_vad
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        compute = "float16" if device == "cuda" else "int8"
+
+        print("Загружаю Whisper...")
+        _whisper_model = WhisperModel(
+            WHISPER_MODEL_SIZE,
+            device=device,
+            compute_type=compute,
+        )
+        print("Загружаю Silero VAD...")
+        _vad_model = load_silero_vad()
 
 
 def transcribe(audio, log: bool = True) -> str:
+    _ensure_models()
     if log:
         print("Распознаю...")
     audio_len_sec = len(audio) / SAMPLE_RATE_MIC
     beam = 1 if audio_len_sec < 3.0 else 3
-    segments, _ = whisper_model.transcribe(
+    segments, _ = _whisper_model.transcribe(
         audio,
         language=LANG,
         beam_size=beam,
@@ -42,5 +59,6 @@ def transcribe(audio, log: bool = True) -> str:
 
 
 def vad_prob(chunk) -> float:
+    _ensure_models()
     tensor = torch.from_numpy(chunk.astype("float32"))
-    return vad_model(tensor, SAMPLE_RATE_MIC).item()
+    return _vad_model(tensor, SAMPLE_RATE_MIC).item()
