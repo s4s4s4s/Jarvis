@@ -16,6 +16,7 @@ from core.config import (
     CHUNK_SIZE,
     IDLE_TIMEOUT_SEC,
     POST_TTS_GRACE_SEC,
+    POST_INTERRUPT_GRACE_SEC,
     IGNORE_PHRASES,
 )
 from brain.ask import ask_llm
@@ -213,7 +214,6 @@ def main(
                     _safe_call(on_system_log, "💤 Жду обращения...\n")
                     continue
 
-                # --- LLM с параллельным filler'ом ---
                 result = ask_llm(text)
                 if stop_event.is_set():
                     break
@@ -247,12 +247,12 @@ def main(
                     break
 
                 if interrupted is not None:
-                    # Пользователь перебил — сразу обрабатываем его аудио
                     _safe_call(on_system_log, "[assistant] TTS прерван — обрабатываю реплику...\n")
                     _emit_status(AssistantState.THINKING, on_state, on_system_log)
                     pending_audio = interrupted
+                    # мини-grace чтобы не захватить хвост своего же голоса
+                    post_tts_grace_until = time.time() + POST_INTERRUPT_GRACE_SEC
                 else:
-                    # TTS доиграл штатно
                     _emit_status(AssistantState.SPEAKING, on_state, on_system_log)
                     _safe_call(on_system_log, "Говорю...\n")
                     post_tts_grace_until = time.time() + POST_TTS_GRACE_SEC

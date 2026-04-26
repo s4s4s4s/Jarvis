@@ -4,14 +4,9 @@ WHISPER_MODEL_SIZE = "large-v3"
 # ─── LLM / Ollama ─────────────────────────────────────────────────────────────
 OLLAMA_URL = "http://localhost:11434/api/chat"
 
-# Быстрая модель — для обычного живого диалога
-OLLAMA_FAST_MODEL = "llama3.1:8b-instruct-q5_K_M"
-
-# Тяжёлая модель — для маршрутизации и классификации
+OLLAMA_FAST_MODEL  = "llama3.1:8b-instruct-q5_K_M"
 OLLAMA_HEAVY_MODEL = "qwen2.5:32b-instruct-q4_K_M"
-
-# Глубокая модель — для сложных запросов, где нужен более вдумчивый ответ
-OLLAMA_DEEP_MODEL = "qwen2.5:32b-instruct-q4_K_M"
+OLLAMA_DEEP_MODEL  = "qwen2.5:32b-instruct-q4_K_M"
 
 LANG = "ru"
 
@@ -42,8 +37,12 @@ TURN_VAD_TRIGGER = 0.48
 TURN_VAD_HOLD = 0.30
 
 # ─── Режимы ───────────────────────────────────────────────────────────────────
-POST_TTS_GRACE_SEC = 2.5
-IDLE_TIMEOUT_SEC = 5.0
+POST_TTS_GRACE_SEC       = 2.5   # пауза после штатного завершения TTS
+POST_INTERRUPT_GRACE_SEC = 0.4   # мини-пауза после перебивания
+IDLE_TIMEOUT_SEC         = 5.0
+
+# ─── История диалога ──────────────────────────────────────────────────────────
+MAX_HISTORY = 6  # ходов (каждый ход = user + assistant)
 
 # ─── Фразы ────────────────────────────────────────────────────────────────────
 WAKE_PHRASES = [
@@ -78,19 +77,13 @@ REFERENCE_WAV = "C:/jarvis/assets/reference.wav"
 EDGE_VOICE = "ru-RU-DmitryNeural"
 
 # ─── Звуки ────────────────────────────────────────────────────────────────────
-ACTIVATE_SOUND_PATH = "C:/jarvis/assets/activate.wav"
+ACTIVATE_SOUND_PATH   = "C:/jarvis/assets/activate.wav"
 DEACTIVATE_SOUND_PATH = "C:/jarvis/assets/deactivate.wav"
 
-# ─── История диалога (краткосрочная) ──────────────────────────────────────────
-MAX_HISTORY = 6
-
 # ─── Долгосрочная память ──────────────────────────────────────────────────────
-MEMORY_PATH = "C:/jarvis/memory/facts.json"
-MEMORY_MAX_FACTS = 500
+MEMORY_PATH          = "C:/jarvis/memory/facts.json"
+MEMORY_MAX_FACTS     = 500
 MEMORY_CONTEXT_FACTS = 20
 
-# ─── Оркестратор / deep ───────────────────────────────────────────────────────
+# ─── Роутер ───────────────────────────────────────────────────────────────────
 ROUTER_LOG_PATH = "C:/jarvis/logs/router.jsonl"
-ROUTER_LOW_CONFIDENCE = 0.55
-DEEP_MIN_CONFIDENCE = 0.72
-DEEP_MAX_INPUT_CHARS = 1200

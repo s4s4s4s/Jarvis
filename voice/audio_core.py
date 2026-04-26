@@ -1,6 +1,6 @@
-# voice/audio_core.py
 import queue
 import threading
+from collections import deque
 from typing import Optional
 
 import numpy as np
@@ -16,11 +16,9 @@ class AudioCore:
         self._taps: list[queue.Queue] = []
         self._taps_lock = threading.Lock()
         self._pre_roll_len = max(1, int(PRE_ROLL_SEC * SAMPLE_RATE_MIC / CHUNK_SIZE))
-        self._pre_roll: list = []
+        self._pre_roll: deque = deque(maxlen=self._pre_roll_len)  # O(1) append/pop
         self._stream = None
         self._stop_requested = False
-
-    # --- tap API (используется TTS interrupt-listener) ---
 
     def create_tap(self, pre_roll: bool = False) -> queue.Queue:
         q: queue.Queue = queue.Queue()
@@ -37,15 +35,12 @@ class AudioCore:
                 self._taps.remove(q)
             except ValueError:
                 pass
-        q.put(_STOP_SENTINEL)
-
-    # --- stream API (используется assistant main loop) ---
+        try:
+            q.put_nowait(_STOP_SENTINEL)
+        except Exception:
+            pass
 
     def stream_chunks(self, stop_event: Optional[threading.Event] = None):
-        """
-        Генератор чанков из микрофона.
-        Создаёт личный tap и выдаёт чанки до stop_event или request_stop.
-        """
         tap = self.create_tap(pre_roll=False)
         try:
             while True:
@@ -64,25 +59,28 @@ class AudioCore:
             self.remove_tap(tap)
 
     def get_pre_roll(self) -> list:
-        """Возвращает копию текущего pre-roll буфера."""
         with self._taps_lock:
             return list(self._pre_roll)
 
     def request_stop(self) -> None:
-        """Сигнализирует stream_chunks завершиться."""
         self._stop_requested = True
         self.stop()
 
-    # --- внутренние ---
-
     def _callback(self, indata: np.ndarray, frames, time_, status):
         chunk = indata[:, 0].copy()
-        self._pre_roll.append(chunk)
-        if len(self._pre_roll) > self._pre_roll_len:
-            self._pre_roll.pop(0)
+        self._pre_roll.append(chunk)  # deque автоматически вытесняет старое
         with self._taps_lock:
+            dead = []
             for q in self._taps:
-                q.put(chunk)
+                try:
+                    q.put_nowait(chunk)
+                except Exception:
+                    dead.append(q)  # переполненная/мёртвая очередь
+            for q in dead:
+                try:
+                    self._taps.remove(q)
+                except ValueError:
+                    pass
 
     def start(self):
         self._stop_requested = False
@@ -105,6 +103,8 @@ class AudioCore:
             self._stream = None
         with self._taps_lock:
             for q in self._taps:
-                q.put(_STOP_SENTINEL)
+                try:
+                    q.put_nowait(_STOP_SENTINEL)
+                except Exception:
+                    pass
             self._taps.clear()
-# === end of file: voice/audio_core.py ===

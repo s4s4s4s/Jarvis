@@ -1,16 +1,17 @@
-# C:\jarvis\brain\history.py
 import threading
+
+from core.config import MAX_HISTORY
 
 _history: list[dict] = []
 _lock = threading.Lock()
-MAX_TURNS = 20
 
 
 def append(role: str, content: str) -> None:
     with _lock:
         _history.append({"role": role, "content": content})
-        if len(_history) > MAX_TURNS * 2:
-            del _history[: len(_history) - MAX_TURNS * 2]
+        max_msgs = MAX_HISTORY * 2  # каждый ход = 2 сообщения (user + assistant)
+        if len(_history) > max_msgs:
+            del _history[: len(_history) - max_msgs]
 
 
 def snapshot() -> list[dict]:
@@ -20,4 +21,3 @@ def snapshot() -> list[dict]:
 
 def lock():
     return _lock
-# === end of file: brain/history.py ===
