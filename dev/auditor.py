@@ -2,19 +2,20 @@
 dev/auditor.py
 Verifier-agent: аудит файлов → list[Finding] → Level 1 верификация → дедупликация.
 Usage: python -m dev.auditor brain/ask.py brain/agents/chat.py ...
+
+Backend: Ollama (brain.client) — тот же что и основной Jarvis, нет конфликта по VRAM.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 
-import requests
+from brain.client import chat, MODEL_ROUTER
 from rapidfuzz import fuzz
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -37,10 +38,9 @@ class Finding:
 # Конфиг
 # ──────────────────────────────────────────────────────────────────────────────
 
-LLAMA_URL   = "http://127.0.0.1:8080/v1/chat/completions"
-MODEL_ALIAS = "qwen3-coder"
-MAX_TOKENS  = 2048
-TEMPERATURE = 0.2
+# Модель для аудита — тот же роутер, что и основной Jarvis (qwen2.5:14b)
+AUDIT_MODEL     = MODEL_ROUTER
+TEMPERATURE     = 0.2
 DEDUP_THRESHOLD = 80
 
 SYSTEM_PROMPT = """\
@@ -79,15 +79,11 @@ Pay special attention to:
 class AuditorAgent:
     def __init__(
         self,
-        llama_url: str = LLAMA_URL,
-        model: str = MODEL_ALIAS,
-        max_tokens: int = MAX_TOKENS,
+        model: str = AUDIT_MODEL,
         temperature: float = TEMPERATURE,
         dedup_threshold: int = DEDUP_THRESHOLD,
     ):
-        self.llama_url = llama_url
         self.model = model
-        self.max_tokens = max_tokens
         self.temperature = temperature
         self.dedup_threshold = dedup_threshold
 
@@ -119,29 +115,21 @@ class AuditorAgent:
         return USER_TEMPLATE.format(file_blocks="\n\n".join(blocks))
 
     def _call_llm(self, user_content: str) -> str:
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": user_content},
-            ],
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-            "stream": False,
-        }
-        try:
-            resp = requests.post(self.llama_url, json=payload, timeout=120)
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-        except requests.exceptions.ConnectionError:
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": user_content},
+        ]
+        result = chat(
+            self.model,
+            messages,
+            options={"temperature": self.temperature, "num_ctx": 16384},
+        )
+        if not result:
             raise RuntimeError(
-                "Не могу подключиться к llama-server. "
-                "Запусти C:\\llama\\start-coder.ps1 и повтори."
+                "Ollama вернула пустой ответ. "
+                "Убедись что Ollama запущена и модель доступна: ollama list"
             )
-        except requests.exceptions.Timeout:
-            raise RuntimeError("llama-server не ответил за 120 секунд — модель ещё грузится?")
-        except Exception as e:
-            raise RuntimeError(f"Ошибка запроса к LLM: {e}") from e
+        return result
 
     def _parse_findings(self, raw: str) -> list[Finding]:
         """Парсим ответ: каждая строка — JSON-объект Finding."""
@@ -283,7 +271,7 @@ if __name__ == "__main__":
     agent = AuditorAgent()
 
     print(f"Аудитирую {len(files)} файл(ов): {', '.join(files)}")
-    print("Отправляю запрос на llama-server...")
+    print(f"Модель: {AUDIT_MODEL} (через Ollama)")
 
     try:
         findings = agent.audit(files)
