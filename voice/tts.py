@@ -6,7 +6,7 @@ voice/tts.py — Edge TTS с параллельным streaming и переби�
 2. Как только первый чанк готов — начинаем воспроизведение
 3. Пока играет chunk_0 — генерируется chunk_1, chunk_2...
 4. В фоне interrupt-listener читает tap из AudioCore
-5. Если пользователь начал говорить — TTS останавливается, audio возвращается наружу
+5. Если пользователь начал говорить — TTS глушится немедленно, listener дособирает всю фразу, audio возвращается наружу
 
 Каждый вызов _run_streaming использует уникальный session-подкаталог,
 чтобы избежать коллизий имён и Permission denied на Windows.
@@ -44,6 +44,9 @@ _stop_flag = False
 _playing = False
 _mixer_ready = False
 _state_lock = threading.Lock()
+
+# Максимальное время ожидания listener'а после остановки TTS (секунды)
+_LISTENER_WAIT_TIMEOUT = 15.0
 
 
 def _set_playing(value: bool) -> None:
@@ -268,7 +271,7 @@ def _interrupt_listener_from_audio_core(
     max_chunks = max(1, int(MAX_RECORD_SEC * 1000 / chunk_ms))
     min_samples = int(MIN_UTTERANCE_SEC * SAMPLE_RATE_MIC)
     try:
-        while not interrupt_event.is_set() and not _should_stop(stop_event):
+        while not interrupt_event.is_set() and not (stop_event is not None and stop_event.is_set()):
             try:
                 item = tap_q.get(timeout=0.20)
             except Empty:
@@ -284,11 +287,13 @@ def _interrupt_listener_from_audio_core(
                     speech_started = True
                     _set_stop_flag(True)
                     _release_current_chunk()
-                    print("[TTS] Речь обнаружена — TTS остановлен немедленно")
+                    print("[TTS] Речь обнаружена — TTS остановлен немедленно, дособираю фразу...")
                 silence_counter = 0
                 frames.append(chunk)
 
             elif speech_started:
+                # Продолжаем собирать даже после остановки TTS,
+                # игнорируя _stop_flag — нам нужна полная фраза
                 frames.append(chunk)
                 if prob < TURN_VAD_HOLD:
                     silence_counter += 1
@@ -300,7 +305,7 @@ def _interrupt_listener_from_audio_core(
             if len(frames) >= max_chunks:
                 break
 
-        if _should_stop(stop_event) or interrupt_event.is_set():
+        if stop_event is not None and stop_event.is_set():
             return
         if not speech_started or not frames:
             return
@@ -358,12 +363,35 @@ def _run_streaming(
     if listener_thread is not None:
         listener_thread.start()
     try:
-        while (
-            gen_thread.is_alive()
-            or play_thread.is_alive()
-            or (listener_thread is not None and listener_thread.is_alive())
-        ):
-            if _should_stop(stop_event) or interrupt_event.is_set():
+        while True:
+            tts_done = not gen_thread.is_alive() and not play_thread.is_alive()
+            listener_done = listener_thread is None or not listener_thread.is_alive()
+
+            # Если пользователь начал говорить (сработал _stop_flag) —
+            # убиваем gen и play, но listener ЖДЁМ до полного завершения
+            if _get_stop_flag() and listener_thread is not None:
+                # Останавливаем gen и play
+                try:
+                    chunk_queue.put_nowait(_STOP_SENTINEL)
+                except Exception:
+                    pass
+                gen_thread.join(timeout=0.5)
+                play_thread.join(timeout=0.5)
+                _release_current_chunk()
+                _set_playing(False)
+
+                # Ждём listener'a до полного завершения (он дособирает фразу)
+                if not listener_done:
+                    print("[TTS] Жду listener — дособирает фразу...")
+                    listener_thread.join(timeout=_LISTENER_WAIT_TIMEOUT)
+                    if listener_thread.is_alive():
+                        print("[TTS] listener timeout — аудио не получено")
+
+                print("[TTS] Streaming завершён (прервано)")
+                return interrupted_audio_box["audio"]
+
+            # Если внешний stop_event — быстро убиваем всё
+            if stop_event is not None and stop_event.is_set():
                 _set_stop_flag(True)
                 try:
                     chunk_queue.put_nowait(_STOP_SENTINEL)
@@ -375,14 +403,17 @@ def _run_streaming(
                 if listener_thread is not None:
                     listener_thread.join(timeout=0.10)
                 _set_playing(False)
+                print("[TTS] Streaming остановлен внешним stop_event")
+                return None
+
+            # Штатное завершение
+            if tts_done and listener_done:
+                _set_playing(False)
                 _release_current_chunk()
-                print("[TTS] Streaming завершён")
+                print("[TTS] Streaming завершён штатно")
                 return interrupted_audio_box["audio"]
+
             time.sleep(0.05)
-        _set_playing(False)
-        _release_current_chunk()
-        print("[TTS] Streaming завершён штатно")
-        return interrupted_audio_box["audio"]
     finally:
         _cleanup_session_dir(session_dir)
 
