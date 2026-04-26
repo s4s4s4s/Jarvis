@@ -42,6 +42,12 @@ Available tools (use only when route=tool):
    args: {}
 6. time             — get current Moscow time and date
    args: {}
+7. timer.set        — set a countdown timer with optional label
+   args: {"seconds": number, "label": string?}
+8. timer.list       — list all active timers
+   args: {}
+9. timer.cancel     — cancel a timer by id
+   args: {"timer_id": string}
 """
 
 CHAT_SYSTEM = """

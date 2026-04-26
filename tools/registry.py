@@ -7,6 +7,7 @@ from tools.crypto import get_crypto_price, search_coin
 from tools.currency import convert_currency, get_rates
 from tools.time_tool import get_time
 from tools.weather import get_weather
+from tools.timer import set_timer, list_timers, cancel_timer
 
 
 @dataclass
@@ -40,18 +41,33 @@ def _call_time() -> Any:
     return get_time()
 
 
+def _call_timer_set(seconds: int, label: str = "таймер") -> Any:
+    return set_timer(seconds=seconds, label=label)
+
+
+def _call_timer_list() -> Any:
+    return list_timers()
+
+
+def _call_timer_cancel(timer_id: str) -> Any:
+    ok = cancel_timer(timer_id)
+    return {"cancelled": ok, "id": timer_id}
+
+
 _TOOL_MAP: dict[str, Any] = {
-    "weather": _call_weather,
-    "crypto.search": _call_crypto_search,
-    "crypto.price": _call_crypto_price,
-    "currency.rates": _call_currency_rates,
+    "weather":         _call_weather,
+    "crypto.search":   _call_crypto_search,
+    "crypto.price":    _call_crypto_price,
+    "currency.rates":  _call_currency_rates,
     "currency.convert": _call_currency_convert,
-    "time": _call_time,
+    "time":            _call_time,
+    "timer.set":       _call_timer_set,
+    "timer.list":      _call_timer_list,
+    "timer.cancel":    _call_timer_cancel,
 }
 
 
 def list_tools() -> list[str]:
-    """Return names of all registered tools."""
     return list(_TOOL_MAP.keys())
 
 

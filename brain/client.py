@@ -12,11 +12,13 @@ from core.config import (
     OLLAMA_RETRY_DELAY,
 )
 
+# Re-export for consumers that import MODEL_* from brain.client
 MODEL_ROUTER = OLLAMA_ROUTER_MODEL
 MODEL_FAST   = OLLAMA_FAST_MODEL
 MODEL_HEAVY  = OLLAMA_HEAVY_MODEL
 
-_client = ollama.Client(timeout=OLLAMA_TIMEOUT)
+_OLLAMA_BASE_URL = "http://localhost:11434"
+_client = ollama.Client(host=_OLLAMA_BASE_URL, timeout=OLLAMA_TIMEOUT)
 
 
 def chat(model: str, messages: list[dict], options: dict | None = None) -> str:
@@ -25,7 +27,6 @@ def chat(model: str, messages: list[dict], options: dict | None = None) -> str:
     for attempt in range(OLLAMA_RETRIES + 1):
         try:
             resp = _client.chat(model=model, messages=messages, options=opts)
-            # ollama SDK returns a ChatResponse object, not a dict
             return resp.message.content.strip()
         except Exception as e:
             last_err = e

@@ -21,6 +21,10 @@ from core.config import (
 )
 from brain.ask import ask_llm
 from brain import history as hist
+from tools import timer as _timer_mod
+
+# Wire timer callback to voice output
+_timer_mod.set_fire_callback(lambda msg: say(msg))
 
 FAREWELL_PATTERNS = [
     r"\bпока\b",
@@ -284,5 +288,6 @@ def main(
         stop_event.set()
         audio_core.request_stop()
         stop_speaking()
+        _timer_mod.cancel_all()
         _emit_status(AssistantState.IDLE, on_state, on_system_log)
         _safe_call(on_system_log, "Jarvis остановлен.\n")

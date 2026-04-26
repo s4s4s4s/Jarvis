@@ -36,16 +36,16 @@ from core.config import (
     TURN_VAD_TRIGGER,
     TURN_VAD_HOLD,
 )
+from core.paths import TTS_CHUNKS
 from .stt import vad_prob
 
-_CHUNK_ROOT = "C:/jarvis/_tts_chunks"
+_CHUNK_ROOT = str(TTS_CHUNKS)
 _STOP_SENTINEL = object()
 _stop_flag = False
 _playing = False
 _mixer_ready = False
 _state_lock = threading.Lock()
 
-# Максимальное время ожидания listener'а после остановки TTS (секунды)
 _LISTENER_WAIT_TIMEOUT = 15.0
 
 
@@ -283,7 +283,6 @@ def _interrupt_listener_from_audio_core(
 
             if prob >= TURN_VAD_TRIGGER:
                 if not speech_started:
-                    # Первый речевой фрейм → глушим TTS немедленно
                     speech_started = True
                     _set_stop_flag(True)
                     _release_current_chunk()
@@ -292,8 +291,6 @@ def _interrupt_listener_from_audio_core(
                 frames.append(chunk)
 
             elif speech_started:
-                # Продолжаем собирать даже после остановки TTS,
-                # игнорируя _stop_flag — нам нужна полная фраза
                 frames.append(chunk)
                 if prob < TURN_VAD_HOLD:
                     silence_counter += 1
@@ -367,10 +364,7 @@ def _run_streaming(
             tts_done = not gen_thread.is_alive() and not play_thread.is_alive()
             listener_done = listener_thread is None or not listener_thread.is_alive()
 
-            # Если пользователь начал говорить (сработал _stop_flag) —
-            # убиваем gen и play, но listener ЖДЁМ до полного завершения
             if _get_stop_flag() and listener_thread is not None:
-                # Останавливаем gen и play
                 try:
                     chunk_queue.put_nowait(_STOP_SENTINEL)
                 except Exception:
@@ -379,18 +373,14 @@ def _run_streaming(
                 play_thread.join(timeout=0.5)
                 _release_current_chunk()
                 _set_playing(False)
-
-                # Ждём listener'a до полного завершения (он дособирает фразу)
                 if not listener_done:
                     print("[TTS] Жду listener — дособирает фразу...")
                     listener_thread.join(timeout=_LISTENER_WAIT_TIMEOUT)
                     if listener_thread.is_alive():
                         print("[TTS] listener timeout — аудио не получено")
-
                 print("[TTS] Streaming завершён (прервано)")
                 return interrupted_audio_box["audio"]
 
-            # Если внешний stop_event — быстро убиваем всё
             if stop_event is not None and stop_event.is_set():
                 _set_stop_flag(True)
                 try:
@@ -406,7 +396,6 @@ def _run_streaming(
                 print("[TTS] Streaming остановлен внешним stop_event")
                 return None
 
-            # Штатное завершение
             if tts_done and listener_done:
                 _set_playing(False)
                 _release_current_chunk()
@@ -432,7 +421,7 @@ def speak_and_handle(
     - np.ndarray audio, если пользователь перебил TTS голосом
     - None, если TTS завершился штатно или был остановлен извне
     """
-    _set_stop_flag(False)  # сбрасываем флаг от предыдущего прерывания
+    _set_stop_flag(False)
     return _run_streaming(
         text,
         stop_event=stop_event,

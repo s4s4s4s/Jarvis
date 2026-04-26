@@ -1,11 +1,19 @@
 param(
-    [string]$msg = "update"
+    [string]$msg = "update",
+    [switch]$SkipInstall
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectDir = $PSScriptRoot
+$Python = "$ProjectDir\.venv\Scripts\python.exe"
+$Pip    = "$ProjectDir\.venv\Scripts\pip.exe"
 
 Set-Location $ProjectDir
+
+if (-not $SkipInstall) {
+    Write-Host "`n[JARVIS] Installing dependencies..." -ForegroundColor Cyan
+    & $Pip install -r requirements.txt --quiet
+}
 
 Write-Host "`n[JARVIS] Staging files..." -ForegroundColor Cyan
 git add -A
@@ -22,4 +30,4 @@ if ($status) {
 }
 
 Write-Host "`n[JARVIS] Starting project..." -ForegroundColor Cyan
-& "$ProjectDir\.venv\Scripts\python.exe" "app.py"
+& $Python "app.py"
