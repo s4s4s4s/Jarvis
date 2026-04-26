@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-from typing import Optional
 
 import torch
 
@@ -13,7 +12,6 @@ _vad_model = None
 
 
 def _ensure_models():
-    """Lazy singleton — загружает модели только при первом вызове."""
     global _whisper_model, _vad_model
     if _whisper_model is not None:
         return
@@ -26,20 +24,17 @@ def _ensure_models():
         device = "cuda" if torch.cuda.is_available() else "cpu"
         compute = "float16" if device == "cuda" else "int8"
 
-        print("Загружаю Whisper...")
-        _whisper_model = WhisperModel(
-            WHISPER_MODEL_SIZE,
-            device=device,
-            compute_type=compute,
-        )
-        print("Загружаю Silero VAD...")
+        print(f"[STT] Загружаю Whisper {WHISPER_MODEL_SIZE} ({device}/{compute})...")
+        _whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device=device, compute_type=compute)
+        print("[STT] Загружаю Silero VAD...")
         _vad_model = load_silero_vad()
+        print("[STT] Модели загружены.")
 
 
 def transcribe(audio, log: bool = True) -> str:
     _ensure_models()
     if log:
-        print("Распознаю...")
+        print("[STT] Распознаю...")
     audio_len_sec = len(audio) / SAMPLE_RATE_MIC
     beam = 1 if audio_len_sec < 3.0 else 3
     segments, _ = _whisper_model.transcribe(
@@ -54,7 +49,7 @@ def transcribe(audio, log: bool = True) -> str:
     )
     text = "".join(seg.text for seg in segments).strip()
     if log:
-        print(f"Ты: {text}")
+        print(f"[STT] Ты: {text}")
     return text
 
 
