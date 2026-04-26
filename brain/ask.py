@@ -27,7 +27,8 @@ class AskResult:
             try:
                 self._answer = self._future.result(timeout=timeout)
             except Exception as e:
-                self._answer = f"Ошибка: {e}"
+                # FIX (аудит 6): использовать LLM для генерации ошибки вместо хардкода
+                self._answer = _format_tool_error("получение ответа", "get_answer", str(e))
             self._future = None
         return self._answer
 
@@ -82,8 +83,12 @@ def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
     ]
     try:
         return chat(MODEL_FAST, msgs, options={"temperature": 0.3, "num_ctx": 4096})
-    except Exception:
+    except Exception as e:
         # Fallback на хардкод только если LLM недоступна
+        # FIX (аудит 6): добавлен логгинг для молчаливых исключений
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"LLM error in _format_tool_error for tool '{tool_name}': {e}")
         return f"Сэр, инструмент вернул ошибку: {error}"
 
 
@@ -171,8 +176,11 @@ def ask_llm(text: str) -> AskResult:
         try:
             from tools.memory import extract_and_save_async
             extract_and_save_async(text, answer)
-        except Exception:
-            pass
+        except Exception as e:
+            # FIX (аудит 6): добавлен логгинг для молчаливого исключения
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Memory extraction failed: {e}")
         return answer
 
     result._future = _executor.submit(_run)
