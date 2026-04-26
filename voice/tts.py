@@ -278,18 +278,29 @@ def _interrupt_listener_from_audio_core(
                 return
             chunk = item
             prob = vad_prob(chunk)
+
             if prob >= TURN_VAD_TRIGGER:
-                speech_started = True
+                if not speech_started:
+                    # ─── КЛЮЧЕВОЕ ИЗМЕНЕНИЕ ───────────────────────────────
+                    # Первый речевой фрейм → глушим TTS немедленно,
+                    # НЕ дожидаясь конца паузы после фразы.
+                    speech_started = True
+                    _set_stop_flag(True)      # playback_worker увидит на след. тике
+                    _release_current_chunk()  # немедленно pygame.mixer.music.stop()
+                    print("[TTS] Речь обнаружена — TTS остановлен немедленно")
+                    # ─────────────────────────────────────────────────────
                 silence_counter = 0
                 frames.append(chunk)
+
             elif speech_started:
                 frames.append(chunk)
                 if prob < TURN_VAD_HOLD:
                     silence_counter += 1
                     if silence_counter >= silence_chunks_needed:
-                        break
+                        break   # фраза закончена, выходим собирать результат
                 else:
                     silence_counter = 0
+
             if len(frames) >= max_chunks:
                 break
 
@@ -301,12 +312,11 @@ def _interrupt_listener_from_audio_core(
         if len(audio) < min_samples:
             return
 
-        # ВАЖНО: сначала останавливаем playback, потом сохраняем аудио
-        _set_stop_flag(True)          # ← playback_worker увидит это на следующем тике
-        _release_current_chunk()      # ← немедленно останавливаем pygame
+        # stop_flag уже выставлен выше при первом фрейме,
+        # здесь только финализируем сигнал прерывания
         interrupted_audio_box["audio"] = audio
         interrupt_event.set()
-        print("[TTS] Обнаружено перебивание голосом через AudioCore")
+        print("[TTS] Перебивание зафиксировано, аудио передано")
     finally:
         audio_core.remove_tap(tap_q)
 
