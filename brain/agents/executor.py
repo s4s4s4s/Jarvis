@@ -10,8 +10,9 @@ Flow:
       _run_parallel_wave(independent_tasks)   ← asyncio.gather, llama-server
       _run_serial_task(dependent_tasks)       ← one by one, Ollama
 
-Optimisation: if ALL independent tasks are type="tool", llama-server is NOT
-launched — tool calls are pure HTTP, no LLM needed.
+Optimisations:
+  - tool-only parallel wave → skips llama-server entirely
+  - chat tasks use MODEL_FAST (8b) — formatting only, quality != reasoning
 """
 from __future__ import annotations
 
@@ -24,7 +25,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from brain.client import chat, chat_async, MODEL_HEAVY, set_backend
+from brain.client import chat, chat_async, MODEL_FAST, MODEL_HEAVY, set_backend
 from brain.agents.types import Task
 
 logger = logging.getLogger(__name__)
@@ -384,7 +385,7 @@ def _run_chat(task: Task, context: dict[str, str]) -> str:
         {"role": "system", "content": "You are a helpful assistant. Provide a clear, user-friendly final answer."},
         {"role": "user", "content": f"{ctx_text}Task: {task.goal}"},
     ]
-    return chat(model=MODEL_HEAVY, messages=messages)
+    return chat(model=MODEL_FAST, messages=messages)
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +439,7 @@ async def _run_chat_async(task: Task, context: dict[str, str]) -> str:
         {"role": "system", "content": "You are a helpful assistant. Provide a clear, user-friendly final answer."},
         {"role": "user", "content": f"{ctx_text}Task: {task.goal}"},
     ]
-    return await chat_async(model=MODEL_HEAVY, messages=messages)
+    return await chat_async(model=MODEL_FAST, messages=messages)
 
 
 async def _run_task_async(
@@ -502,10 +503,6 @@ class Executor:
         self.critic_retries = critic_retries
         self.use_parallel   = use_parallel
 
-    # ------------------------------------------------------------------
-    # Public entry point
-    # ------------------------------------------------------------------
-
     def run(self, tasks: list[Task], user_request: str = "") -> dict[str, str]:
         """Synchronous wrapper — auto-selects parallel or serial mode."""
         if self.use_parallel:
@@ -514,10 +511,6 @@ class Executor:
                 return asyncio.run(self._run_with_parallel(tasks, user_request))
         return self._run_serial(tasks, user_request)
 
-    # ------------------------------------------------------------------
-    # Parallel execution path
-    # ------------------------------------------------------------------
-
     async def _run_with_parallel(
         self, tasks: list[Task], user_request: str
     ) -> dict[str, str]:
@@ -525,7 +518,6 @@ class Executor:
         independent = [t for t in tasks if not t.depends_on]
         dependent   = [t for t in tasks if t.depends_on]
 
-        # Check if ALL independent tasks are tool-only (no LLM needed)
         tool_only_wave = all(t.type == "tool" for t in independent)
 
         if tool_only_wave:
@@ -569,10 +561,6 @@ class Executor:
             self._run_serial(dependent, user_request, context=context, all_tasks=tasks)
 
         return context
-
-    # ------------------------------------------------------------------
-    # Serial execution path
-    # ------------------------------------------------------------------
 
     def _run_serial(
         self,
