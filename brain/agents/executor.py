@@ -1,5 +1,18 @@
+"""brain/agents/executor.py
+
+Asynchronous Executor with two execution modes:
+  1. Serial   — tasks with dependencies run sequentially (original behaviour)
+  2. Parallel — independent tasks (depends_on=[]) run concurrently via
+                asyncio.gather + llama-server backend
+
+Flow:
+  Executor.run_async(tasks) →
+      _run_parallel_wave(independent_tasks)   ← asyncio.gather, llama-server
+      _run_serial_task(dependent_tasks)       ← one by one, Ollama
+"""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -7,7 +20,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from brain.client import chat, MODEL_HEAVY
+from brain.client import chat, chat_async, MODEL_HEAVY, set_backend
 from brain.agents.types import Task
 
 logger = logging.getLogger(__name__)
@@ -16,7 +29,7 @@ DEFAULT_CRITIC_RETRIES = 3
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers  (unchanged from previous version)
 # ---------------------------------------------------------------------------
 
 def _findings_hash(report: str) -> str:
@@ -39,10 +52,6 @@ def _build_context_block(task: Task, context: dict[str, str], max_chars: int = 3
 
 
 def _build_code_context(task: Task, context: dict[str, str], all_tasks: list[Task]) -> str:
-    """
-    Walk the dependency chain upward, collect the most recent actual CODE
-    artifact (skipping audit stubs like 'Audit complete: no issues found.').
-    """
     task_by_id = {t.id: t for t in all_tasks}
     visited: set[str] = set()
     code_parts: list[str] = []
@@ -93,7 +102,6 @@ def _collect_code_artifacts(context: dict[str, str], tasks: list[Task]) -> str:
 
 
 def _strip_code_fences(text: str) -> str:
-    """Extract raw code from ```python ... ``` block if present."""
     text = text.strip()
     if text.startswith("```"):
         lines = text.splitlines()
@@ -112,11 +120,6 @@ def _strip_code_fences(text: str) -> str:
 
 
 def _fix_pip_deps_in_output(llm_output: str, final_code: str) -> str:
-    """
-    Replace the LLM-generated pip deps list with an accurate one
-    derived from actual imports in the final code.
-    Removes stdlib packages (e.g. sqlite3) and maps import names to pip names.
-    """
     from brain.tools.sandbox import extract_pip_requirements
     real_deps = extract_pip_requirements(final_code)
 
@@ -125,14 +128,12 @@ def _fix_pip_deps_in_output(llm_output: str, final_code: str) -> str:
     else:
         replacement = " ".join(real_deps)
 
-    # Replace ```bash\npip install ...\n``` block
     llm_output = re.sub(
         r"(```bash\s*pip install\s*)[^`]+(```)",
         lambda m: f"{m.group(1)}{replacement}{m.group(2)}",
         llm_output,
         flags=re.IGNORECASE | re.DOTALL,
     )
-    # Replace plain `pip install ...` line
     llm_output = re.sub(
         r"pip install[^\n]+",
         f"pip install {replacement}",
@@ -143,7 +144,7 @@ def _fix_pip_deps_in_output(llm_output: str, final_code: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Sub-agent handlers
+# Sub-agent handlers  (sync — used for serial / dependent tasks)
 # ---------------------------------------------------------------------------
 
 def _run_research(task: Task, context: dict[str, str]) -> str:
@@ -192,12 +193,10 @@ def _run_code(
         {"role": "user", "content": user_content},
     ]
     raw = chat(model=MODEL_HEAVY, messages=messages)
-    # Always strip fences before storing — sandbox and context readers expect clean Python
     return _strip_code_fences(raw)
 
 
 def _run_audit_raw(task: Task, code_artifact: str) -> tuple[str, bool]:
-    """LLM-based audit fallback."""
     try:
         from dev.auditor import AuditorAgent, GENERIC_SYSTEM_PROMPT
         tmp_path = Path("logs/_executor_audit_tmp.py")
@@ -216,14 +215,8 @@ def _run_audit_raw(task: Task, code_artifact: str) -> tuple[str, bool]:
     except Exception as e:
         logger.warning("[Executor] AuditorAgent failed (%s), falling back to LLM audit", e)
         messages = [
-            {
-                "role": "system",
-                "content": "You are a code auditor. Find bugs, security issues, and inefficiencies. Be concise.",
-            },
-            {
-                "role": "user",
-                "content": f"Audit this code:\n\n{code_artifact[:3000]}\n\nTask: {task.goal}",
-            },
+            {"role": "system", "content": "You are a code auditor. Find bugs, security issues, and inefficiencies. Be concise."},
+            {"role": "user", "content": f"Audit this code:\n\n{code_artifact[:3000]}\n\nTask: {task.goal}"},
         ]
         report = chat(model=MODEL_HEAVY, messages=messages)
         has_issues = "no issues" not in report.lower() and len(report.strip()) > 20
@@ -236,13 +229,6 @@ def _run_audit(
     max_retries: int = DEFAULT_CRITIC_RETRIES,
     all_tasks: list[Task] | None = None,
 ) -> str:
-    """
-    Critic loop:
-    1. Sandbox run — catch real runtime errors first
-    2. LLM audit — catch logic/style issues
-    3. If issues found → fix → repeat
-    Stops on pass or stagnation.
-    """
     from brain.tools.sandbox import sandbox_audit
 
     if all_tasks:
@@ -260,7 +246,6 @@ def _run_audit(
         ]
         return chat(model=MODEL_HEAVY, messages=messages)
 
-    # Code coming from context is already fence-stripped (stored clean by _run_code)
     current_code = _strip_code_fences(code_artifact)
     prev_hash: str | None = None
     combined_report = ""
@@ -268,14 +253,12 @@ def _run_audit(
     for attempt in range(1, max_retries + 1):
         logger.info("[Critic] Audit attempt %d/%d for task %s", attempt, max_retries, task.id)
 
-        # --- Step 1: Sandbox ---
         sandbox_report, sandbox_has_issues = sandbox_audit(current_code)
         logger.info("[Critic][Sandbox] %s", sandbox_report[:120])
 
         if sandbox_has_issues:
             combined_report = f"[Sandbox runtime error]:\n{sandbox_report}"
         else:
-            # --- Step 2: LLM audit (only if sandbox passed) ---
             llm_report, llm_has_issues = _run_audit_raw(task, current_code)
             combined_report = llm_report
             sandbox_has_issues = llm_has_issues
@@ -302,7 +285,7 @@ def _run_audit(
                 inputs=task.inputs,
             )
             fixed = _run_code(fix_task, context, fix_instructions=combined_report, all_tasks=all_tasks)
-            current_code = fixed  # already stripped by _run_code
+            current_code = fixed
             context[f"{task.id}_fix{attempt}"] = fixed
         else:
             logger.warning("[Critic] Task %s: max retries reached", task.id)
@@ -360,7 +343,6 @@ def _run_synthesize(
             saved_files.append(saved_path)
             logger.info("[Synthesize] Saved code to %s", saved_path)
 
-    # Fix pip deps list — replace LLM-generated deps with accurate ones from real imports
     if final_code:
         llm_output = _fix_pip_deps_in_output(llm_output, final_code)
 
@@ -375,13 +357,98 @@ def _run_synthesize(
 def _run_chat(task: Task, context: dict[str, str]) -> str:
     ctx_text = _build_context_block(task, context)
     messages = [
-        {
-            "role": "system",
-            "content": "You are a helpful assistant. Provide a clear, user-friendly final answer.",
-        },
+        {"role": "system", "content": "You are a helpful assistant. Provide a clear, user-friendly final answer."},
         {"role": "user", "content": f"{ctx_text}Task: {task.goal}"},
     ]
     return chat(model=MODEL_HEAVY, messages=messages)
+
+
+# ---------------------------------------------------------------------------
+# Async sub-agent handlers  (llama-server backend)
+# ---------------------------------------------------------------------------
+
+async def _run_research_async(task: Task, context: dict[str, str]) -> str:
+    ctx_text = _build_context_block(task, context)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a research agent. Answer thoroughly and factually. "
+                "Return a structured markdown report."
+            ),
+        },
+        {"role": "user", "content": f"{ctx_text}Research task: {task.goal}"},
+    ]
+    return await chat_async(model=MODEL_HEAVY, messages=messages)
+
+
+async def _run_code_async(
+    task: Task,
+    context: dict[str, str],
+    all_tasks: list[Task] | None = None,
+) -> str:
+    if all_tasks:
+        ctx_text = _build_code_context(task, context, all_tasks)
+    else:
+        ctx_text = _build_context_block(task, context)
+
+    user_content = f"{ctx_text}Code task: {task.goal}"
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an expert Python developer. Write clean, working code. "
+                "If existing code is provided, EXTEND it — do not rewrite from scratch. "
+                "Return ONLY the complete final code inside a ```python ... ``` block."
+            ),
+        },
+        {"role": "user", "content": user_content},
+    ]
+    raw = await chat_async(model=MODEL_HEAVY, messages=messages)
+    return _strip_code_fences(raw)
+
+
+async def _run_chat_async(task: Task, context: dict[str, str]) -> str:
+    ctx_text = _build_context_block(task, context)
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant. Provide a clear, user-friendly final answer."},
+        {"role": "user", "content": f"{ctx_text}Task: {task.goal}"},
+    ]
+    return await chat_async(model=MODEL_HEAVY, messages=messages)
+
+
+async def _run_task_async(
+    task: Task,
+    context: dict[str, str],
+    all_tasks: list[Task],
+) -> tuple[str, str]:
+    """Dispatch a single task asynchronously. Returns (task.id, artifact)."""
+    logger.info("[Executor][parallel] %s [%s]: %s", task.id, task.type, task.goal)
+    task.status = "running"
+    if task.type == "research":
+        artifact = await _run_research_async(task, context)
+    elif task.type == "code":
+        artifact = await _run_code_async(task, context, all_tasks)
+    elif task.type == "chat":
+        artifact = await _run_chat_async(task, context)
+    else:
+        # audit / synthesize require shared mutable context — fall back to sync
+        loop = asyncio.get_event_loop()
+        if task.type == "audit":
+            artifact = await loop.run_in_executor(
+                None, lambda: _run_audit(task, context, all_tasks=all_tasks)
+            )
+        elif task.type == "synthesize":
+            artifact = await loop.run_in_executor(
+                None, lambda: _run_synthesize(task, context, all_tasks=all_tasks)
+            )
+        else:
+            logger.error("[Executor][parallel] Unknown task type '%s'", task.type)
+            task.status = "failed"
+            return task.id, ""
+    task.artifact = artifact
+    task.status = "done"
+    return task.id, artifact
 
 
 # ---------------------------------------------------------------------------
@@ -389,21 +456,117 @@ def _run_chat(task: Task, context: dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 
 class Executor:
-    def __init__(self, critic_retries: int = DEFAULT_CRITIC_RETRIES) -> None:
+    """
+    Executes a task plan produced by PlannerAgent.
+
+    Parallel mode (use_parallel=True, default):
+      - Launches llama-server before execution
+      - Runs all independent tasks (depends_on=[]) concurrently via asyncio.gather
+      - Falls back to serial for dependent tasks
+      - Stops llama-server after all tasks complete
+
+    Serial mode (use_parallel=False):
+      - Pure sequential execution via Ollama (original behaviour)
+    """
+
+    def __init__(
+        self,
+        critic_retries: int = DEFAULT_CRITIC_RETRIES,
+        use_parallel: bool = True,
+    ) -> None:
         self.critic_retries = critic_retries
+        self.use_parallel   = use_parallel
+
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
 
     def run(self, tasks: list[Task], user_request: str = "") -> dict[str, str]:
+        """Synchronous wrapper — auto-selects parallel or serial mode."""
+        if self.use_parallel:
+            independent = [t for t in tasks if not t.depends_on]
+            if len(independent) > 1:
+                return asyncio.run(self._run_with_parallel(tasks, user_request))
+        return self._run_serial(tasks, user_request)
+
+    # ------------------------------------------------------------------
+    # Parallel execution path
+    # ------------------------------------------------------------------
+
+    async def _run_with_parallel(
+        self, tasks: list[Task], user_request: str
+    ) -> dict[str, str]:
+        from brain.llama_server import LlamaServerManager
+
         context: dict[str, str] = {}
+        independent = [t for t in tasks if not t.depends_on]
+        dependent   = [t for t in tasks if t.depends_on]
+
+        logger.info(
+            "[Executor] Parallel wave: %d independent tasks → launching llama-server",
+            len(independent),
+        )
+
+        async with LlamaServerManager() as srv:
+            set_backend("llama")
+            logger.info("[Executor] llama-server ready at %s", srv.base_url)
+
+            # Run all independent tasks in parallel
+            results = await asyncio.gather(
+                *[_run_task_async(t, context, tasks) for t in independent],
+                return_exceptions=True,
+            )
+
+        # llama-server stopped here — switch back to Ollama
+        set_backend("ollama")
+
+        for res in results:
+            if isinstance(res, Exception):
+                logger.error("[Executor][parallel] Task raised: %s", res)
+                continue
+            task_id, artifact = res
+            context[task_id] = artifact
+            # Mark corresponding task as done
+            for t in independent:
+                if t.id == task_id:
+                    t.status = "done" if artifact else "failed"
+
+        # Run dependent tasks serially with Ollama
+        if dependent:
+            logger.info(
+                "[Executor] Serial phase: %d dependent tasks (Ollama)", len(dependent)
+            )
+            self._run_serial(dependent, user_request, context=context, all_tasks=tasks)
+
+        return context
+
+    # ------------------------------------------------------------------
+    # Serial execution path  (original behaviour, preserved intact)
+    # ------------------------------------------------------------------
+
+    def _run_serial(
+        self,
+        tasks: list[Task],
+        user_request: str = "",
+        context: dict[str, str] | None = None,
+        all_tasks: list[Task] | None = None,
+    ) -> dict[str, str]:
+        if context is None:
+            context = {}
+        effective_all = all_tasks or tasks
 
         for task in tasks:
             for dep in task.depends_on:
-                dep_task = next((t for t in tasks if t.id == dep), None)
+                dep_task = next((t for t in effective_all if t.id == dep), None)
                 if dep_task is None:
                     logger.error("[Executor] Dependency '%s' not found", dep)
                     task.status = "failed"
                     return context
                 if dep_task.status != "done":
-                    logger.error("[Executor] Task %s depends on %s (status=%s)", task.id, dep, dep_task.status)
+                    logger.error(
+                        "[Executor] Task %s depends on %s (status=%s)",
+                        task.id, dep, dep_task.status,
+                    )
                     task.status = "failed"
                     return context
 
@@ -411,15 +574,23 @@ class Executor:
             task.status = "running"
             try:
                 if task.type == "audit":
-                    artifact = _run_audit(task, context, max_retries=self.critic_retries, all_tasks=tasks)
+                    artifact = _run_audit(
+                        task, context,
+                        max_retries=self.critic_retries,
+                        all_tasks=effective_all,
+                    )
                 elif task.type == "synthesize":
-                    artifact = _run_synthesize(task, context, all_tasks=tasks, user_request=user_request)
+                    artifact = _run_synthesize(
+                        task, context,
+                        all_tasks=effective_all,
+                        user_request=user_request,
+                    )
                 elif task.type == "code":
-                    artifact = _run_code(task, context, all_tasks=tasks)
+                    artifact = _run_code(task, context, all_tasks=effective_all)
                 else:
                     handler: Callable[[Task, dict[str, str]], str] | None = {
                         "research": _run_research,
-                        "chat": _run_chat,
+                        "chat":     _run_chat,
                     }.get(task.type)
                     if handler is None:
                         logger.error("[Executor] Unknown task type '%s'", task.type)
@@ -440,7 +611,7 @@ class Executor:
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# CLI  (unchanged)
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import argparse
@@ -456,13 +627,18 @@ if __name__ == "__main__":
         "--retries", type=int, default=DEFAULT_CRITIC_RETRIES,
         help=f"Max Critic loop retries per audit task (default: {DEFAULT_CRITIC_RETRIES})",
     )
+    parser.add_argument(
+        "--no-parallel", action="store_true",
+        help="Disable parallel execution (use Ollama serial mode)",
+    )
     args = parser.parse_args()
 
     from brain.agents.planner import PlannerAgent
 
     user_req = " ".join(args.request)
     print(f"\n[Pipeline] Request: {user_req}")
-    print(f"[Pipeline] Critic retries: {args.retries}\n")
+    print(f"[Pipeline] Critic retries: {args.retries}")
+    print(f"[Pipeline] Parallel: {not args.no_parallel}\n")
 
     planner = PlannerAgent()
     try:
@@ -477,11 +653,11 @@ if __name__ == "__main__":
         print(f"  {t.id} [{t.type}] {t.goal}{deps}")
     print()
 
-    executor = Executor(critic_retries=args.retries)
+    executor = Executor(critic_retries=args.retries, use_parallel=not args.no_parallel)
     context = executor.run(plan, user_request=user_req)
 
-    done = [t for t in plan if t.status == "done"]
-    failed = [t for t in plan if t.status == "failed"]
+    done    = [t for t in plan if t.status == "done"]
+    failed  = [t for t in plan if t.status == "failed"]
     pending = [t for t in plan if t.status == "pending"]
 
     print(f"\n[Pipeline] Done: {len(done)}/{len(plan)} tasks")
