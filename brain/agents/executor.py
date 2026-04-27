@@ -9,6 +9,9 @@ Flow:
   Executor.run_async(tasks) →
       _run_parallel_wave(independent_tasks)   ← asyncio.gather, llama-server
       _run_serial_task(dependent_tasks)       ← one by one, Ollama
+
+Optimisation: if ALL independent tasks are type="tool", llama-server is NOT
+launched — tool calls are pure HTTP, no LLM needed.
 """
 from __future__ import annotations
 
@@ -30,7 +33,7 @@ DEFAULT_CRITIC_RETRIES = 3
 
 
 # ---------------------------------------------------------------------------
-# Helpers  (unchanged from previous version)
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _findings_hash(report: str) -> str:
@@ -165,7 +168,7 @@ async def _run_tool_async(task: Task, context: dict[str, str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Sub-agent handlers  (sync — used for serial / dependent tasks)
+# Sub-agent handlers  (sync — serial / dependent tasks)
 # ---------------------------------------------------------------------------
 
 def _run_research(task: Task, context: dict[str, str]) -> str:
@@ -455,7 +458,6 @@ async def _run_task_async(
     elif task.type == "tool":
         artifact = await _run_tool_async(task, context)
     else:
-        # audit / synthesize require shared mutable context — fall back to sync
         loop = asyncio.get_event_loop()
         if task.type == "audit":
             artifact = await loop.run_in_executor(
@@ -483,13 +485,13 @@ class Executor:
     Executes a task plan produced by PlannerAgent.
 
     Parallel mode (use_parallel=True, default):
-      - Launches llama-server before execution
-      - Runs all independent tasks (depends_on=[]) concurrently via asyncio.gather
+      - If independent tasks include LLM types → launches llama-server
+      - If ALL independent tasks are type="tool" → skips llama-server entirely
+        (tool calls are pure HTTP, no LLM needed)
       - Falls back to serial for dependent tasks
-      - Stops llama-server after all tasks complete
 
     Serial mode (use_parallel=False):
-      - Pure sequential execution via Ollama (original behaviour)
+      - Pure sequential execution via Ollama
     """
 
     def __init__(
@@ -519,29 +521,36 @@ class Executor:
     async def _run_with_parallel(
         self, tasks: list[Task], user_request: str
     ) -> dict[str, str]:
-        from brain.llama_server import LlamaServerManager
-
         context: dict[str, str] = {}
         independent = [t for t in tasks if not t.depends_on]
         dependent   = [t for t in tasks if t.depends_on]
 
-        logger.info(
-            "[Executor] Parallel wave: %d independent tasks → launching llama-server",
-            len(independent),
-        )
+        # Check if ALL independent tasks are tool-only (no LLM needed)
+        tool_only_wave = all(t.type == "tool" for t in independent)
 
-        async with LlamaServerManager() as srv:
-            set_backend("llama")
-            logger.info("[Executor] llama-server ready at %s", srv.base_url)
-
-            # Run all independent tasks in parallel
+        if tool_only_wave:
+            logger.info(
+                "[Executor] Parallel wave: %d tool tasks → skipping llama-server",
+                len(independent),
+            )
             results = await asyncio.gather(
                 *[_run_task_async(t, context, tasks) for t in independent],
                 return_exceptions=True,
             )
-
-        # llama-server stopped here — switch back to Ollama
-        set_backend("ollama")
+        else:
+            from brain.llama_server import LlamaServerManager
+            logger.info(
+                "[Executor] Parallel wave: %d tasks (LLM) → launching llama-server",
+                len(independent),
+            )
+            async with LlamaServerManager() as srv:
+                set_backend("llama")
+                logger.info("[Executor] llama-server ready at %s", srv.base_url)
+                results = await asyncio.gather(
+                    *[_run_task_async(t, context, tasks) for t in independent],
+                    return_exceptions=True,
+                )
+            set_backend("ollama")
 
         for res in results:
             if isinstance(res, Exception):
@@ -549,12 +558,10 @@ class Executor:
                 continue
             task_id, artifact = res
             context[task_id] = artifact
-            # Mark corresponding task as done
             for t in independent:
                 if t.id == task_id:
                     t.status = "done" if artifact else "failed"
 
-        # Run dependent tasks serially with Ollama
         if dependent:
             logger.info(
                 "[Executor] Serial phase: %d dependent tasks (Ollama)", len(dependent)
@@ -564,7 +571,7 @@ class Executor:
         return context
 
     # ------------------------------------------------------------------
-    # Serial execution path  (original behaviour, preserved intact)
+    # Serial execution path
     # ------------------------------------------------------------------
 
     def _run_serial(
@@ -636,7 +643,7 @@ class Executor:
 
 
 # ---------------------------------------------------------------------------
-# CLI  (unchanged)
+# CLI
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import argparse
