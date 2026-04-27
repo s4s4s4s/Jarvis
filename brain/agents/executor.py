@@ -145,29 +145,84 @@ def _run_audit(task: Task, context: dict[str, str], max_retries: int = DEFAULT_C
     return report + f"\n\n[Critic] Max retries ({max_retries}) reached. Last code version kept."
 
 
-def _run_synthesize(task: Task, context: dict[str, str]) -> str:
+def _collect_code_artifacts(context: dict[str, str], tasks: list[Task] | None = None) -> str:
+    """
+    Collect ALL code artifacts from context.
+    If tasks list is provided, only picks artifacts from tasks with type='code'.
+    Otherwise heuristically picks artifacts that look like code (contain 'def ' or 'import ').
+    Returns them joined as a single string.
+    """
+    if tasks is not None:
+        code_task_ids = {t.id for t in tasks if t.type == "code"}
+        # Also include fix artifacts from critic loop (e.g. t3_fix1)
+        all_ids = list(context.keys())
+        parts = []
+        for tid in all_ids:
+            base_id = tid.split("_fix")[0]
+            if base_id in code_task_ids:
+                parts.append((tid, context[tid]))
+    else:
+        parts = [
+            (tid, art) for tid, art in context.items()
+            if "def " in art or "import " in art
+        ]
+
+    if not parts:
+        return ""
+
+    # Keep only the LAST version of each base task (latest fix wins)
+    seen_bases: dict[str, tuple[str, str]] = {}
+    for tid, art in parts:
+        base = tid.split("_fix")[0]
+        seen_bases[base] = (tid, art)  # later entries overwrite earlier ones
+
+    joined = "\n\n# ========================\n\n".join(
+        f"# --- {tid} ---\n{art}" for tid, art in seen_bases.values()
+    )
+    return joined
+
+
+def _run_synthesize(task: Task, context: dict[str, str], all_tasks: list[Task] | None = None) -> str:
     """
     Synthesize final result:
-    1. Ask LLM to combine artifacts into final code + summary.
-    2. Extract code blocks and save each to output/ via FileSystemTool.
-    3. Return human-readable report: what was saved, where, how to run it.
+    1. Collect ALL code artifacts from the full pipeline context (not just depends_on).
+    2. Ask LLM to merge them into one final runnable script.
+    3. Extract code block and save to output/ via FileSystemTool.
+    4. Return human-readable report: file path + how to run.
     """
     from brain.tools.file_system import FileSystemTool, extract_code_blocks, suggest_filename
 
-    ctx_text = _build_context_block(task, context)
+    # Collect all code from the entire pipeline
+    all_code = _collect_code_artifacts(context, tasks=all_tasks)
+
+    if not all_code:
+        # Fallback: use direct depends_on context
+        all_code = _build_context_block(task, context)
+
+    if len(all_code) > 6000:
+        all_code = all_code[:6000] + "\n... [truncated]"
+
     messages = [
         {
             "role": "system",
             "content": (
                 "You are a synthesis agent. Your job is to produce the FINAL deliverable.\n"
                 "Rules:\n"
-                "1. Combine all provided artifacts into ONE complete, runnable Python script.\n"
-                "2. Output the full script inside a ```python ... ``` code block.\n"
-                "3. After the code block, write a short usage section: how to install deps and run it.\n"
-                "4. Do NOT describe the process — output the actual code."
+                "1. You will receive multiple code artifacts from a pipeline. "
+                "Combine them into ONE complete, runnable Python script.\n"
+                "2. Remove duplicate imports and merge all functions/classes logically.\n"
+                "3. Output ONLY the final merged script inside a ```python ... ``` code block.\n"
+                "4. After the code block, write: deps to install (pip install ...) and how to run.\n"
+                "5. Do NOT invent new functionality — only use what is in the provided artifacts."
             ),
         },
-        {"role": "user", "content": f"{ctx_text}Synthesis task: {task.goal}"},
+        {
+            "role": "user",
+            "content": (
+                f"Task: {task.goal}\n\n"
+                f"Code artifacts from pipeline:\n\n{all_code}"
+            ),
+        },
     ]
     llm_output = chat(model=MODEL_HEAVY, messages=messages)
 
@@ -180,13 +235,11 @@ def _run_synthesize(task: Task, context: dict[str, str]) -> str:
         if lang in ("python", "py", "") and len(code.strip()) > 50:
             filename = suggest_filename(task.goal, lang="py")
             if i > 0:
-                # avoid overwriting if multiple code blocks
                 filename = filename.replace(".py", f"_{i}.py")
             saved_path = fs.write_file(filename, code)
             saved_files.append(saved_path)
             logger.info("[Synthesize] Saved code to %s", saved_path)
 
-    # Build report
     if saved_files:
         paths_str = "\n".join(f"  → {p.resolve()}" for p in saved_files)
         report = (
@@ -194,7 +247,6 @@ def _run_synthesize(task: Task, context: dict[str, str]) -> str:
             + llm_output
         )
     else:
-        # No extractable code — return raw LLM output
         logger.warning("[Synthesize] No code blocks found to save, returning raw output")
         report = llm_output
 
@@ -236,11 +288,8 @@ class Executor:
     """
     Sequential executor: runs tasks in order, respecting depends_on.
     Audit tasks use Critic loop with configurable retries and stagnation detection.
-    Synthesize tasks save output files to disk via FileSystemTool.
+    Synthesize tasks collect ALL code from full context and save to disk.
     Stops on first failed task.
-
-    Args:
-        critic_retries: max fix iterations per audit task (default: 3).
     """
 
     def __init__(self, critic_retries: int = DEFAULT_CRITIC_RETRIES) -> None:
@@ -269,11 +318,13 @@ class Executor:
             try:
                 if task.type == "audit":
                     artifact = _run_audit(task, context, max_retries=self.critic_retries)
+                elif task.type == "synthesize":
+                    # Pass full task list so synthesize can find all code artifacts
+                    artifact = _run_synthesize(task, context, all_tasks=tasks)
                 else:
                     handler: Callable[[Task, dict[str, str]], str] | None = {
                         "research": _run_research,
                         "code": _run_code,
-                        "synthesize": _run_synthesize,
                         "chat": _run_chat,
                     }.get(task.type)
                     if handler is None:
