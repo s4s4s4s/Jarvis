@@ -54,14 +54,13 @@ def _run_code(task: Task, context: dict[str, str]) -> str:
 
 
 def _run_audit(task: Task, context: dict[str, str]) -> str:
-    """Calls AuditorAgent if code artifacts exist, otherwise falls back to LLM review."""
-    # Collect code artifacts from dependencies
+    """Calls AuditorAgent on code artifacts from direct dependencies only."""
+    # Only use direct dependency artifacts (not entire accumulated context)
     code_artifacts = [
         context[dep] for dep in task.depends_on if dep in context
     ]
 
     if not code_artifacts:
-        # No code artifacts — generic LLM review
         ctx_text = _build_context_block(task, context)
         messages = [
             {
@@ -75,27 +74,38 @@ def _run_audit(task: Task, context: dict[str, str]) -> str:
         ]
         return chat(model=MODEL_HEAVY, messages=messages)
 
-    # Write combined artifact to a temp file and run AuditorAgent
     try:
         from dev.auditor import AuditorAgent
         tmp_path = Path("logs/_executor_audit_tmp.py")
         tmp_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path.write_text("\n\n# --- next artifact ---\n\n".join(code_artifacts), encoding="utf-8")
+        tmp_path.write_text(
+            "\n\n# --- next artifact ---\n\n".join(code_artifacts),
+            encoding="utf-8",
+        )
         agent = AuditorAgent()
         findings = agent.audit([str(tmp_path)])
         if not findings:
             return "Audit complete: no issues found."
-        lines = [f"[{f.type}] line {f.line} (conf={f.confidence:.2f}): {f.description} | Fix: {f.suggestion}"]
         return "Audit findings:\n" + "\n".join(
             f"  [{f.type}] line {f.line} conf={f.confidence:.2f}: {f.description} | Fix: {f.suggestion}"
             for f in findings
         )
     except Exception as e:
         logger.warning("[Executor] AuditorAgent failed (%s), falling back to LLM review", e)
-        ctx_text = _build_context_block(task, context)
+        # Fallback: pass only direct dep artifacts, not full context
+        direct_ctx = "\n\n".join(
+            f"=== {dep} ===\n{context[dep]}"
+            for dep in task.depends_on if dep in context
+        )
         messages = [
-            {"role": "system", "content": "You are a code auditor. Find bugs and issues."},
-            {"role": "user", "content": f"{ctx_text}Audit: {task.goal}"},
+            {
+                "role": "system",
+                "content": "You are a code auditor. Find bugs, security issues, and inefficiencies. Be concise.",
+            },
+            {
+                "role": "user",
+                "content": f"{direct_ctx}\n\nAudit task: {task.goal}",
+            },
         ]
         return chat(model=MODEL_HEAVY, messages=messages)
 
@@ -142,14 +152,17 @@ _AGENT_DISPATCH: dict[str, Callable[[Task, dict[str, str]], str]] = {
 }
 
 
-def _build_context_block(task: Task, context: dict[str, str]) -> str:
-    """Build a context string from artifacts of dependency tasks."""
+def _build_context_block(task: Task, context: dict[str, str], max_chars: int = 3000) -> str:
+    """Build context string from direct dependency artifacts, truncated to max_chars each."""
     if not task.depends_on:
         return ""
     parts = []
     for dep_id in task.depends_on:
         if dep_id in context:
-            parts.append(f"=== Result of {dep_id} ===\n{context[dep_id]}")
+            artifact = context[dep_id]
+            if len(artifact) > max_chars:
+                artifact = artifact[:max_chars] + "\n... [truncated]"
+            parts.append(f"=== Result of {dep_id} ===\n{artifact}")
     if not parts:
         return ""
     return "\n\n".join(parts) + "\n\n"
@@ -173,7 +186,6 @@ class Executor:
         context: dict[str, str] = {}  # task_id -> artifact
 
         for task in tasks:
-            # Check all dependencies are done
             for dep in task.depends_on:
                 dep_task = next((t for t in tasks if t.id == dep), None)
                 if dep_task is None:
@@ -229,7 +241,6 @@ if __name__ == "__main__":
     user_req = " ".join(sys.argv[1:])
     print(f"\n[Pipeline] Request: {user_req}\n")
 
-    # Step 1: Plan
     planner = PlannerAgent()
     try:
         plan = planner.plan(user_req)
@@ -243,11 +254,9 @@ if __name__ == "__main__":
         print(f"  {t.id} [{t.type}] {t.goal}{deps}")
     print()
 
-    # Step 2: Execute
     executor = Executor()
     context = executor.run(plan)
 
-    # Summary
     done = [t for t in plan if t.status == "done"]
     failed = [t for t in plan if t.status == "failed"]
     pending = [t for t in plan if t.status == "pending"]
@@ -258,7 +267,6 @@ if __name__ == "__main__":
     if pending:
         print(f"[Pipeline] Not reached: {[t.id for t in pending]}")
 
-    # Print final artifact (last done task)
     if done:
         last = done[-1]
         print(f"\n[Pipeline] Final artifact from {last.id} [{last.type}]:")
