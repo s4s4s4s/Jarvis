@@ -35,7 +35,8 @@ AUDIT_MODEL     = MODEL_ROUTER
 TEMPERATURE     = 0.2
 DEDUP_THRESHOLD = 80
 
-SYSTEM_PROMPT = """\
+# Default prompt — Jarvis-specific rules
+DEFAULT_SYSTEM_PROMPT = """\
 You are a strict code auditor. Analyze the provided Python source files and report ALL issues.
 For each finding output a JSON object on a single line with EXACTLY these keys:
   file, line, type, description, suggestion, confidence
@@ -58,13 +59,26 @@ confidence: float 0.0-1.0
 Do NOT output any text outside the JSON lines. Do NOT wrap in markdown fences.
 If no issues found, output nothing."""
 
+# Generic prompt — for external/user code, no Jarvis-specific rules
+GENERIC_SYSTEM_PROMPT = """\
+You are a strict code auditor. Analyze the provided Python source files and report ALL issues.
+For each finding output a JSON object on a single line with EXACTLY these keys:
+  file, line, type, description, suggestion, confidence
+
+Types allowed:
+  BUG                 - logic error, wrong algorithm, off-by-one, incorrect condition
+  SECURITY            - injection, hardcoded secrets, insecure defaults, unvalidated input
+  UNHANDLED_EXCEPTION - bare except, silent exception swallowing, missing logging on catch
+  RESOURCE_LEAK       - file handles, threads, connections, sockets not properly closed/joined
+  PERFORMANCE         - unnecessary loops, blocking calls in async context, inefficient data structures
+  RACE_CONDITION      - shared state accessed from multiple threads without synchronization
+
+confidence: float 0.0-1.0
+Do NOT output any text outside the JSON lines. Do NOT wrap in markdown fences.
+If no issues found, output nothing."""
+
 USER_TEMPLATE = """\
 Audit the following files. Output one JSON object per line, no other text.
-Pay special attention to:
-- Hardcoded user-facing strings in responses, fallbacks, error messages (HARDCODED_STRING)
-- Silent exception handlers with no logging (UNHANDLED_EXCEPTION)
-- Race conditions on shared state (RACE_CONDITION)
-- Unclosed resources (RESOURCE_LEAK)
 
 {file_blocks}"""
 
@@ -75,10 +89,13 @@ class AuditorAgent:
         model: str = AUDIT_MODEL,
         temperature: float = TEMPERATURE,
         dedup_threshold: int = DEDUP_THRESHOLD,
+        system_prompt: str | None = None,
     ):
         self.model = model
         self.temperature = temperature
         self.dedup_threshold = dedup_threshold
+        # Use provided prompt or fall back to Jarvis-specific default
+        self.system_prompt = system_prompt if system_prompt is not None else DEFAULT_SYSTEM_PROMPT
 
     def audit(self, file_paths: list[str]) -> list[Finding]:
         prompt = self._build_prompt(file_paths)
@@ -103,7 +120,7 @@ class AuditorAgent:
 
     def _call_llm(self, user_content: str) -> str:
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": self.system_prompt},
             {"role": "user",   "content": user_content},
         ]
         result = chat(

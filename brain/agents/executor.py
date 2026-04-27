@@ -10,11 +10,12 @@ from brain.agents.types import Task
 
 logger = logging.getLogger(__name__)
 
+CRITIC_MAX_RETRIES = 3  # max fix iterations per audit task
+
 
 # ---------------------------------------------------------------------------
 # Sub-agent handlers
 # Each handler receives (task: Task, context: dict[str, str]) -> str artifact
-# context = {task_id: artifact} for all previously completed tasks
 # ---------------------------------------------------------------------------
 
 def _run_research(task: Task, context: dict[str, str]) -> str:
@@ -27,16 +28,20 @@ def _run_research(task: Task, context: dict[str, str]) -> str:
                 "Return a structured markdown report."
             ),
         },
-        {
-            "role": "user",
-            "content": f"{ctx_text}Research task: {task.goal}",
-        },
+        {"role": "user", "content": f"{ctx_text}Research task: {task.goal}"},
     ]
     return chat(model=MODEL_HEAVY, messages=messages)
 
 
-def _run_code(task: Task, context: dict[str, str]) -> str:
+def _run_code(task: Task, context: dict[str, str], fix_instructions: str | None = None) -> str:
     ctx_text = _build_context_block(task, context)
+    if fix_instructions:
+        user_content = (
+            f"{ctx_text}Code task: {task.goal}\n\n"
+            f"IMPORTANT — fix the following issues found during audit:\n{fix_instructions}"
+        )
+    else:
+        user_content = f"{ctx_text}Code task: {task.goal}"
     messages = [
         {
             "role": "system",
@@ -45,58 +50,33 @@ def _run_code(task: Task, context: dict[str, str]) -> str:
                 "Return ONLY the code with minimal comments, no explanations outside code blocks."
             ),
         },
-        {
-            "role": "user",
-            "content": f"{ctx_text}Code task: {task.goal}",
-        },
+        {"role": "user", "content": user_content},
     ]
     return chat(model=MODEL_HEAVY, messages=messages)
 
 
-def _run_audit(task: Task, context: dict[str, str]) -> str:
-    """Calls AuditorAgent on code artifacts from direct dependencies only."""
-    # Only use direct dependency artifacts (not entire accumulated context)
-    code_artifacts = [
-        context[dep] for dep in task.depends_on if dep in context
-    ]
-
-    if not code_artifacts:
-        ctx_text = _build_context_block(task, context)
-        messages = [
-            {
-                "role": "system",
-                "content": "You are a code auditor. Find bugs, security issues, and inefficiencies.",
-            },
-            {
-                "role": "user",
-                "content": f"{ctx_text}Audit task: {task.goal}",
-            },
-        ]
-        return chat(model=MODEL_HEAVY, messages=messages)
-
+def _run_audit_raw(task: Task, code_artifact: str) -> tuple[str, bool]:
+    """
+    Run AuditorAgent with generic prompt on code_artifact.
+    Returns (audit_report: str, has_issues: bool).
+    """
     try:
-        from dev.auditor import AuditorAgent
+        from dev.auditor import AuditorAgent, GENERIC_SYSTEM_PROMPT
         tmp_path = Path("logs/_executor_audit_tmp.py")
         tmp_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path.write_text(
-            "\n\n# --- next artifact ---\n\n".join(code_artifacts),
-            encoding="utf-8",
-        )
-        agent = AuditorAgent()
+        tmp_path.write_text(code_artifact, encoding="utf-8")
+        agent = AuditorAgent(system_prompt=GENERIC_SYSTEM_PROMPT)
         findings = agent.audit([str(tmp_path)])
-        if not findings:
-            return "Audit complete: no issues found."
-        return "Audit findings:\n" + "\n".join(
+        confirmed = [f for f in findings if f.status == "confirmed"]
+        if not confirmed:
+            return "Audit complete: no issues found.", False
+        report = "Audit findings:\n" + "\n".join(
             f"  [{f.type}] line {f.line} conf={f.confidence:.2f}: {f.description} | Fix: {f.suggestion}"
-            for f in findings
+            for f in confirmed
         )
+        return report, True
     except Exception as e:
-        logger.warning("[Executor] AuditorAgent failed (%s), falling back to LLM review", e)
-        # Fallback: pass only direct dep artifacts, not full context
-        direct_ctx = "\n\n".join(
-            f"=== {dep} ===\n{context[dep]}"
-            for dep in task.depends_on if dep in context
-        )
+        logger.warning("[Executor] AuditorAgent failed (%s), falling back to LLM audit", e)
         messages = [
             {
                 "role": "system",
@@ -104,10 +84,66 @@ def _run_audit(task: Task, context: dict[str, str]) -> str:
             },
             {
                 "role": "user",
-                "content": f"{direct_ctx}\n\nAudit task: {task.goal}",
+                "content": f"Audit this code:\n\n{code_artifact[:3000]}\n\nTask: {task.goal}",
             },
         ]
+        report = chat(model=MODEL_HEAVY, messages=messages)
+        has_issues = "no issues" not in report.lower() and len(report.strip()) > 20
+        return report, has_issues
+
+
+def _run_audit(task: Task, context: dict[str, str]) -> str:
+    """
+    Critic loop: audit → if issues → fix code → audit again. Max CRITIC_MAX_RETRIES iterations.
+    Returns final audit report.
+    """
+    # Collect code from direct dependencies
+    code_artifacts = [
+        context[dep] for dep in task.depends_on if dep in context
+    ]
+
+    if not code_artifacts:
+        # Nothing to audit — generic LLM review
+        ctx_text = _build_context_block(task, context)
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a code auditor. Find bugs, security issues, and inefficiencies.",
+            },
+            {"role": "user", "content": f"{ctx_text}Audit task: {task.goal}"},
+        ]
         return chat(model=MODEL_HEAVY, messages=messages)
+
+    current_code = "\n\n# --- next artifact ---\n\n".join(code_artifacts)
+
+    for attempt in range(1, CRITIC_MAX_RETRIES + 1):
+        logger.info("[Critic] Audit attempt %d/%d for task %s", attempt, CRITIC_MAX_RETRIES, task.id)
+        report, has_issues = _run_audit_raw(task, current_code)
+
+        if not has_issues:
+            logger.info("[Critic] Task %s passed audit on attempt %d", task.id, attempt)
+            return report
+
+        if attempt < CRITIC_MAX_RETRIES:
+            logger.info("[Critic] Issues found, requesting fix (attempt %d)", attempt)
+            # Re-run code with fix instructions, using same task but injecting findings
+            fix_task = Task(
+                id=f"{task.id}_fix{attempt}",
+                goal=task.goal,
+                type="code",
+                depends_on=task.depends_on,
+                inputs=task.inputs,
+            )
+            current_code = _run_code(fix_task, context, fix_instructions=report)
+            # Update context so next audit sees fixed code
+            context[f"{task.id}_fix{attempt}"] = current_code
+        else:
+            logger.warning(
+                "[Critic] Task %s still has issues after %d attempts, continuing with last version",
+                task.id, CRITIC_MAX_RETRIES,
+            )
+
+    return report + f"\n\n[Critic] Max retries ({CRITIC_MAX_RETRIES}) reached. Last code version kept."
 
 
 def _run_synthesize(task: Task, context: dict[str, str]) -> str:
@@ -120,10 +156,7 @@ def _run_synthesize(task: Task, context: dict[str, str]) -> str:
                 "coherent final result. Be concise and structured."
             ),
         },
-        {
-            "role": "user",
-            "content": f"{ctx_text}Synthesis task: {task.goal}",
-        },
+        {"role": "user", "content": f"{ctx_text}Synthesis task: {task.goal}"},
     ]
     return chat(model=MODEL_HEAVY, messages=messages)
 
@@ -135,10 +168,7 @@ def _run_chat(task: Task, context: dict[str, str]) -> str:
             "role": "system",
             "content": "You are a helpful assistant. Provide a clear, user-friendly final answer.",
         },
-        {
-            "role": "user",
-            "content": f"{ctx_text}Task: {task.goal}",
-        },
+        {"role": "user", "content": f"{ctx_text}Task: {task.goal}"},
     ]
     return chat(model=MODEL_HEAVY, messages=messages)
 
@@ -175,15 +205,12 @@ def _build_context_block(task: Task, context: dict[str, str], max_chars: int = 3
 class Executor:
     """
     Sequential executor: runs tasks in order, respecting depends_on.
+    Audit tasks use Critic loop (auto-fix up to CRITIC_MAX_RETRIES times).
     Stops on first failed task.
     """
 
     def run(self, tasks: list[Task]) -> dict[str, str]:
-        """
-        Execute all tasks sequentially.
-        Returns dict {task_id: artifact} for completed tasks.
-        """
-        context: dict[str, str] = {}  # task_id -> artifact
+        context: dict[str, str] = {}
 
         for task in tasks:
             for dep in task.depends_on:
@@ -224,7 +251,6 @@ class Executor:
 
 # ---------------------------------------------------------------------------
 # CLI: python -m brain.agents.executor "<user request>"
-# Runs full pipeline: PlannerAgent -> Executor
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     logging.basicConfig(
