@@ -15,6 +15,94 @@ DEFAULT_CRITIC_RETRIES = 3
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _findings_hash(report: str) -> str:
+    return hashlib.md5(report.strip().encode()).hexdigest()
+
+
+def _build_context_block(task: Task, context: dict[str, str], max_chars: int = 3000) -> str:
+    """Build context string from direct dependency artifacts only."""
+    if not task.depends_on:
+        return ""
+    parts = []
+    for dep_id in task.depends_on:
+        if dep_id in context:
+            artifact = context[dep_id]
+            if len(artifact) > max_chars:
+                artifact = artifact[:max_chars] + "\n... [truncated]"
+            parts.append(f"=== Result of {dep_id} ===\n{artifact}")
+    if not parts:
+        return ""
+    return "\n\n".join(parts) + "\n\n"
+
+
+def _build_code_context(task: Task, context: dict[str, str], all_tasks: list[Task]) -> str:
+    """
+    For code tasks: walk the dependency chain upward and collect
+    the most recent actual CODE artifact (skipping audit stubs like '32 chars').
+    This ensures each code task always sees the latest real code, not an audit report.
+    """
+    task_by_id = {t.id: t for t in all_tasks}
+    visited: set[str] = set()
+    code_parts: list[str] = []
+
+    def _collect(dep_id: str) -> None:
+        if dep_id in visited:
+            return
+        visited.add(dep_id)
+        artifact = context.get(dep_id, "")
+        dep_task = task_by_id.get(dep_id)
+        if dep_task and dep_task.type == "code" and len(artifact.strip()) > 50:
+            code_parts.append(f"# --- {dep_id} ---\n{artifact}")
+        elif dep_task:
+            # Not a code artifact — go deeper
+            for parent_dep in dep_task.depends_on:
+                _collect(parent_dep)
+
+    for dep_id in task.depends_on:
+        _collect(dep_id)
+
+    if not code_parts:
+        return ""
+    joined = "\n\n# ========================\n\n".join(code_parts)
+    return f"=== Existing code to extend ===\n{joined}\n\n"
+
+
+def _collect_code_artifacts(context: dict[str, str], tasks: list[Task]) -> str:
+    """
+    Collect ALL code artifacts from the pipeline for synthesize.
+    Keeps only the latest fix version of each task.
+    Returns them joined as a single string.
+    """
+    code_task_ids = {t.id for t in tasks if t.type == "code"}
+    parts: list[tuple[str, str]] = []
+    for tid, art in context.items():
+        base_id = tid.split("_fix")[0]
+        if base_id in code_task_ids and len(art.strip()) > 50:
+            parts.append((tid, art))
+
+    if not parts:
+        # Fallback: heuristic — anything that looks like Python
+        parts = [(tid, art) for tid, art in context.items()
+                 if "def " in art or "import " in art]
+
+    if not parts:
+        return ""
+
+    # Keep only latest fix per base task
+    seen_bases: dict[str, tuple[str, str]] = {}
+    for tid, art in parts:
+        base = tid.split("_fix")[0]
+        seen_bases[base] = (tid, art)
+
+    return "\n\n# ========================\n\n".join(
+        f"# --- {tid} ---\n{art}" for tid, art in seen_bases.values()
+    )
+
+
+# ---------------------------------------------------------------------------
 # Sub-agent handlers
 # ---------------------------------------------------------------------------
 
@@ -33,8 +121,18 @@ def _run_research(task: Task, context: dict[str, str]) -> str:
     return chat(model=MODEL_HEAVY, messages=messages)
 
 
-def _run_code(task: Task, context: dict[str, str], fix_instructions: str | None = None) -> str:
-    ctx_text = _build_context_block(task, context)
+def _run_code(
+    task: Task,
+    context: dict[str, str],
+    fix_instructions: str | None = None,
+    all_tasks: list[Task] | None = None,
+) -> str:
+    # Use smart code context (walks chain to find real code, skips audit stubs)
+    if all_tasks:
+        ctx_text = _build_code_context(task, context, all_tasks)
+    else:
+        ctx_text = _build_context_block(task, context)
+
     if fix_instructions:
         user_content = (
             f"{ctx_text}Code task: {task.goal}\n\n"
@@ -42,21 +140,19 @@ def _run_code(task: Task, context: dict[str, str], fix_instructions: str | None 
         )
     else:
         user_content = f"{ctx_text}Code task: {task.goal}"
+
     messages = [
         {
             "role": "system",
             "content": (
                 "You are an expert Python developer. Write clean, working code. "
-                "Return ONLY the code with minimal comments, no explanations outside code blocks."
+                "If existing code is provided, EXTEND it — do not rewrite from scratch. "
+                "Return ONLY the complete final code inside a ```python ... ``` block."
             ),
         },
         {"role": "user", "content": user_content},
     ]
     return chat(model=MODEL_HEAVY, messages=messages)
-
-
-def _findings_hash(report: str) -> str:
-    return hashlib.md5(report.strip().encode()).hexdigest()
 
 
 def _run_audit_raw(task: Task, code_artifact: str) -> tuple[str, bool]:
@@ -92,14 +188,25 @@ def _run_audit_raw(task: Task, code_artifact: str) -> tuple[str, bool]:
         return report, has_issues
 
 
-def _run_audit(task: Task, context: dict[str, str], max_retries: int = DEFAULT_CRITIC_RETRIES) -> str:
+def _run_audit(
+    task: Task,
+    context: dict[str, str],
+    max_retries: int = DEFAULT_CRITIC_RETRIES,
+    all_tasks: list[Task] | None = None,
+) -> str:
     """
     Critic loop: audit → if issues → fix → audit again.
-    Stops early on stagnation (same findings hash twice in a row).
+    Stops early on stagnation.
     """
-    code_artifacts = [context[dep] for dep in task.depends_on if dep in context]
+    # Walk chain to find actual code (skips audit stubs)
+    if all_tasks:
+        code_ctx = _build_code_context(task, context, all_tasks)
+        code_artifact = code_ctx.replace("=== Existing code to extend ===\n", "").strip()
+    else:
+        code_artifacts = [context[dep] for dep in task.depends_on if dep in context]
+        code_artifact = "\n\n".join(code_artifacts)
 
-    if not code_artifacts:
+    if not code_artifact or len(code_artifact.strip()) < 20:
         ctx_text = _build_context_block(task, context)
         messages = [
             {"role": "system", "content": "You are a code auditor. Find bugs, security issues, and inefficiencies."},
@@ -107,7 +214,7 @@ def _run_audit(task: Task, context: dict[str, str], max_retries: int = DEFAULT_C
         ]
         return chat(model=MODEL_HEAVY, messages=messages)
 
-    current_code = "\n\n# --- next artifact ---\n\n".join(code_artifacts)
+    current_code = code_artifact
     prev_hash: str | None = None
     report = ""
 
@@ -121,11 +228,8 @@ def _run_audit(task: Task, context: dict[str, str], max_retries: int = DEFAULT_C
 
         current_hash = _findings_hash(report)
         if current_hash == prev_hash:
-            logger.warning(
-                "[Critic] Task %s: stagnation detected at attempt %d, stopping early",
-                task.id, attempt,
-            )
-            return report + f"\n\n[Critic] Stopped: findings stagnated at attempt {attempt}/{max_retries}."
+            logger.warning("[Critic] Task %s: stagnation at attempt %d, stopping early", task.id, attempt)
+            return report + f"\n\n[Critic] Stopped: stagnated at attempt {attempt}/{max_retries}."
         prev_hash = current_hash
 
         if attempt < max_retries:
@@ -137,68 +241,31 @@ def _run_audit(task: Task, context: dict[str, str], max_retries: int = DEFAULT_C
                 depends_on=task.depends_on,
                 inputs=task.inputs,
             )
-            current_code = _run_code(fix_task, context, fix_instructions=report)
+            current_code = _run_code(fix_task, context, fix_instructions=report, all_tasks=all_tasks)
             context[f"{task.id}_fix{attempt}"] = current_code
         else:
-            logger.warning("[Critic] Task %s: max retries reached, keeping last version", task.id)
+            logger.warning("[Critic] Task %s: max retries reached", task.id)
 
-    return report + f"\n\n[Critic] Max retries ({max_retries}) reached. Last code version kept."
-
-
-def _collect_code_artifacts(context: dict[str, str], tasks: list[Task] | None = None) -> str:
-    """
-    Collect ALL code artifacts from context.
-    If tasks list is provided, only picks artifacts from tasks with type='code'.
-    Otherwise heuristically picks artifacts that look like code (contain 'def ' or 'import ').
-    Returns them joined as a single string.
-    """
-    if tasks is not None:
-        code_task_ids = {t.id for t in tasks if t.type == "code"}
-        # Also include fix artifacts from critic loop (e.g. t3_fix1)
-        all_ids = list(context.keys())
-        parts = []
-        for tid in all_ids:
-            base_id = tid.split("_fix")[0]
-            if base_id in code_task_ids:
-                parts.append((tid, context[tid]))
-    else:
-        parts = [
-            (tid, art) for tid, art in context.items()
-            if "def " in art or "import " in art
-        ]
-
-    if not parts:
-        return ""
-
-    # Keep only the LAST version of each base task (latest fix wins)
-    seen_bases: dict[str, tuple[str, str]] = {}
-    for tid, art in parts:
-        base = tid.split("_fix")[0]
-        seen_bases[base] = (tid, art)  # later entries overwrite earlier ones
-
-    joined = "\n\n# ========================\n\n".join(
-        f"# --- {tid} ---\n{art}" for tid, art in seen_bases.values()
-    )
-    return joined
+    return report + f"\n\n[Critic] Max retries ({max_retries}) reached."
 
 
-def _run_synthesize(task: Task, context: dict[str, str], all_tasks: list[Task] | None = None) -> str:
+def _run_synthesize(
+    task: Task,
+    context: dict[str, str],
+    all_tasks: list[Task] | None = None,
+    user_request: str = "",
+) -> str:
     """
     Synthesize final result:
-    1. Collect ALL code artifacts from the full pipeline context (not just depends_on).
-    2. Ask LLM to merge them into one final runnable script.
-    3. Extract code block and save to output/ via FileSystemTool.
-    4. Return human-readable report: file path + how to run.
+    1. Collect ALL code artifacts from full pipeline context.
+    2. Ask LLM to merge into one final runnable script.
+    3. Save to output/ and report file path + usage.
     """
     from brain.tools.file_system import FileSystemTool, extract_code_blocks, suggest_filename
 
-    # Collect all code from the entire pipeline
-    all_code = _collect_code_artifacts(context, tasks=all_tasks)
-
+    all_code = _collect_code_artifacts(context, tasks=all_tasks or [])
     if not all_code:
-        # Fallback: use direct depends_on context
         all_code = _build_context_block(task, context)
-
     if len(all_code) > 6000:
         all_code = all_code[:6000] + "\n... [truncated]"
 
@@ -206,34 +273,31 @@ def _run_synthesize(task: Task, context: dict[str, str], all_tasks: list[Task] |
         {
             "role": "system",
             "content": (
-                "You are a synthesis agent. Your job is to produce the FINAL deliverable.\n"
+                "You are a synthesis agent producing the FINAL deliverable.\n"
                 "Rules:\n"
-                "1. You will receive multiple code artifacts from a pipeline. "
-                "Combine them into ONE complete, runnable Python script.\n"
-                "2. Remove duplicate imports and merge all functions/classes logically.\n"
-                "3. Output ONLY the final merged script inside a ```python ... ``` code block.\n"
-                "4. After the code block, write: deps to install (pip install ...) and how to run.\n"
-                "5. Do NOT invent new functionality — only use what is in the provided artifacts."
+                "1. Combine provided code artifacts into ONE complete runnable Python script.\n"
+                "2. Remove duplicate imports. Merge all functions/classes logically.\n"
+                "3. Output ONLY the final script inside a ```python ... ``` code block.\n"
+                "4. After the block: list pip deps and exact run command.\n"
+                "5. Do NOT invent new functionality — only use what is in the artifacts."
             ),
         },
         {
             "role": "user",
-            "content": (
-                f"Task: {task.goal}\n\n"
-                f"Code artifacts from pipeline:\n\n{all_code}"
-            ),
+            "content": f"User request: {user_request}\n\nCode artifacts:\n\n{all_code}",
         },
     ]
     llm_output = chat(model=MODEL_HEAVY, messages=messages)
 
-    # Extract and save code blocks to disk
     fs = FileSystemTool()
     blocks = extract_code_blocks(llm_output)
     saved_files: list[Path] = []
 
+    # Use user_request for filename (more meaningful than task.goal)
+    name_source = user_request or task.goal
     for i, (lang, code) in enumerate(blocks):
         if lang in ("python", "py", "") and len(code.strip()) > 50:
-            filename = suggest_filename(task.goal, lang="py")
+            filename = suggest_filename(name_source, lang="py")
             if i > 0:
                 filename = filename.replace(".py", f"_{i}.py")
             saved_path = fs.write_file(filename, code)
@@ -242,15 +306,10 @@ def _run_synthesize(task: Task, context: dict[str, str], all_tasks: list[Task] |
 
     if saved_files:
         paths_str = "\n".join(f"  → {p.resolve()}" for p in saved_files)
-        report = (
-            f"[Synthesize] Done. Saved {len(saved_files)} file(s):\n{paths_str}\n\n"
-            + llm_output
-        )
+        return f"[Synthesize] Done. Saved {len(saved_files)} file(s):\n{paths_str}\n\n" + llm_output
     else:
-        logger.warning("[Synthesize] No code blocks found to save, returning raw output")
-        report = llm_output
-
-    return report
+        logger.warning("[Synthesize] No code blocks found, returning raw output")
+        return llm_output
 
 
 def _run_chat(task: Task, context: dict[str, str]) -> str:
@@ -265,37 +324,22 @@ def _run_chat(task: Task, context: dict[str, str]) -> str:
     return chat(model=MODEL_HEAVY, messages=messages)
 
 
-def _build_context_block(task: Task, context: dict[str, str], max_chars: int = 3000) -> str:
-    if not task.depends_on:
-        return ""
-    parts = []
-    for dep_id in task.depends_on:
-        if dep_id in context:
-            artifact = context[dep_id]
-            if len(artifact) > max_chars:
-                artifact = artifact[:max_chars] + "\n... [truncated]"
-            parts.append(f"=== Result of {dep_id} ===\n{artifact}")
-    if not parts:
-        return ""
-    return "\n\n".join(parts) + "\n\n"
-
-
 # ---------------------------------------------------------------------------
 # Executor
 # ---------------------------------------------------------------------------
 
 class Executor:
     """
-    Sequential executor: runs tasks in order, respecting depends_on.
-    Audit tasks use Critic loop with configurable retries and stagnation detection.
-    Synthesize tasks collect ALL code from full context and save to disk.
-    Stops on first failed task.
+    Sequential executor: runs tasks in dependency order.
+    - code tasks: receive actual prior code (not audit stubs) via _build_code_context
+    - audit tasks: walk chain to find real code for review
+    - synthesize: collects ALL code artifacts, saves to disk, reports path
     """
 
     def __init__(self, critic_retries: int = DEFAULT_CRITIC_RETRIES) -> None:
         self.critic_retries = critic_retries
 
-    def run(self, tasks: list[Task]) -> dict[str, str]:
+    def run(self, tasks: list[Task], user_request: str = "") -> dict[str, str]:
         context: dict[str, str] = {}
 
         for task in tasks:
@@ -307,7 +351,7 @@ class Executor:
                     return context
                 if dep_task.status != "done":
                     logger.error(
-                        "[Executor] Task %s depends on %s which is not done (status=%s)",
+                        "[Executor] Task %s depends on %s (status=%s)",
                         task.id, dep, dep_task.status,
                     )
                     task.status = "failed"
@@ -317,18 +361,18 @@ class Executor:
             task.status = "running"
             try:
                 if task.type == "audit":
-                    artifact = _run_audit(task, context, max_retries=self.critic_retries)
+                    artifact = _run_audit(task, context, max_retries=self.critic_retries, all_tasks=tasks)
                 elif task.type == "synthesize":
-                    # Pass full task list so synthesize can find all code artifacts
-                    artifact = _run_synthesize(task, context, all_tasks=tasks)
+                    artifact = _run_synthesize(task, context, all_tasks=tasks, user_request=user_request)
+                elif task.type == "code":
+                    artifact = _run_code(task, context, all_tasks=tasks)
                 else:
                     handler: Callable[[Task, dict[str, str]], str] | None = {
                         "research": _run_research,
-                        "code": _run_code,
                         "chat": _run_chat,
                     }.get(task.type)
                     if handler is None:
-                        logger.error("[Executor] Unknown task type '%s' for task %s", task.type, task.id)
+                        logger.error("[Executor] Unknown task type '%s'", task.type)
                         task.status = "failed"
                         return context
                     artifact = handler(task, context)
@@ -346,7 +390,7 @@ class Executor:
 
 
 # ---------------------------------------------------------------------------
-# CLI: python -m brain.agents.executor "<user request>" [--retries N]
+# CLI
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import argparse
@@ -384,7 +428,7 @@ if __name__ == "__main__":
     print()
 
     executor = Executor(critic_retries=args.retries)
-    context = executor.run(plan)
+    context = executor.run(plan, user_request=user_req)
 
     done = [t for t in plan if t.status == "done"]
     failed = [t for t in plan if t.status == "failed"]
