@@ -16,7 +16,6 @@ DEFAULT_CRITIC_RETRIES = 3
 
 # ---------------------------------------------------------------------------
 # Sub-agent handlers
-# Each handler receives (task: Task, context: dict[str, str]) -> str artifact
 # ---------------------------------------------------------------------------
 
 def _run_research(task: Task, context: dict[str, str]) -> str:
@@ -57,15 +56,10 @@ def _run_code(task: Task, context: dict[str, str], fix_instructions: str | None 
 
 
 def _findings_hash(report: str) -> str:
-    """Stable hash of audit report for stagnation detection."""
     return hashlib.md5(report.strip().encode()).hexdigest()
 
 
 def _run_audit_raw(task: Task, code_artifact: str) -> tuple[str, bool]:
-    """
-    Run AuditorAgent with generic prompt on code_artifact.
-    Returns (audit_report: str, has_issues: bool).
-    """
     try:
         from dev.auditor import AuditorAgent, GENERIC_SYSTEM_PROMPT
         tmp_path = Path("logs/_executor_audit_tmp.py")
@@ -100,21 +94,15 @@ def _run_audit_raw(task: Task, code_artifact: str) -> tuple[str, bool]:
 
 def _run_audit(task: Task, context: dict[str, str], max_retries: int = DEFAULT_CRITIC_RETRIES) -> str:
     """
-    Critic loop: audit → if issues → fix code → audit again.
-    Stops early if findings stagnate (same hash two attempts in a row).
-    Returns final audit report.
+    Critic loop: audit → if issues → fix → audit again.
+    Stops early on stagnation (same findings hash twice in a row).
     """
-    code_artifacts = [
-        context[dep] for dep in task.depends_on if dep in context
-    ]
+    code_artifacts = [context[dep] for dep in task.depends_on if dep in context]
 
     if not code_artifacts:
         ctx_text = _build_context_block(task, context)
         messages = [
-            {
-                "role": "system",
-                "content": "You are a code auditor. Find bugs, security issues, and inefficiencies.",
-            },
+            {"role": "system", "content": "You are a code auditor. Find bugs, security issues, and inefficiencies."},
             {"role": "user", "content": f"{ctx_text}Audit task: {task.goal}"},
         ]
         return chat(model=MODEL_HEAVY, messages=messages)
@@ -134,7 +122,7 @@ def _run_audit(task: Task, context: dict[str, str], max_retries: int = DEFAULT_C
         current_hash = _findings_hash(report)
         if current_hash == prev_hash:
             logger.warning(
-                "[Critic] Task %s: findings unchanged after fix (stagnation), stopping early at attempt %d",
+                "[Critic] Task %s: stagnation detected at attempt %d, stopping early",
                 task.id, attempt,
             )
             return report + f"\n\n[Critic] Stopped: findings stagnated at attempt {attempt}/{max_retries}."
@@ -152,27 +140,65 @@ def _run_audit(task: Task, context: dict[str, str], max_retries: int = DEFAULT_C
             current_code = _run_code(fix_task, context, fix_instructions=report)
             context[f"{task.id}_fix{attempt}"] = current_code
         else:
-            logger.warning(
-                "[Critic] Task %s still has issues after %d attempts, keeping last version",
-                task.id, max_retries,
-            )
+            logger.warning("[Critic] Task %s: max retries reached, keeping last version", task.id)
 
     return report + f"\n\n[Critic] Max retries ({max_retries}) reached. Last code version kept."
 
 
 def _run_synthesize(task: Task, context: dict[str, str]) -> str:
+    """
+    Synthesize final result:
+    1. Ask LLM to combine artifacts into final code + summary.
+    2. Extract code blocks and save each to output/ via FileSystemTool.
+    3. Return human-readable report: what was saved, where, how to run it.
+    """
+    from brain.tools.file_system import FileSystemTool, extract_code_blocks, suggest_filename
+
     ctx_text = _build_context_block(task, context)
     messages = [
         {
             "role": "system",
             "content": (
-                "You are a synthesis agent. Combine the provided artifacts into a "
-                "coherent final result. Be concise and structured."
+                "You are a synthesis agent. Your job is to produce the FINAL deliverable.\n"
+                "Rules:\n"
+                "1. Combine all provided artifacts into ONE complete, runnable Python script.\n"
+                "2. Output the full script inside a ```python ... ``` code block.\n"
+                "3. After the code block, write a short usage section: how to install deps and run it.\n"
+                "4. Do NOT describe the process — output the actual code."
             ),
         },
         {"role": "user", "content": f"{ctx_text}Synthesis task: {task.goal}"},
     ]
-    return chat(model=MODEL_HEAVY, messages=messages)
+    llm_output = chat(model=MODEL_HEAVY, messages=messages)
+
+    # Extract and save code blocks to disk
+    fs = FileSystemTool()
+    blocks = extract_code_blocks(llm_output)
+    saved_files: list[Path] = []
+
+    for i, (lang, code) in enumerate(blocks):
+        if lang in ("python", "py", "") and len(code.strip()) > 50:
+            filename = suggest_filename(task.goal, lang="py")
+            if i > 0:
+                # avoid overwriting if multiple code blocks
+                filename = filename.replace(".py", f"_{i}.py")
+            saved_path = fs.write_file(filename, code)
+            saved_files.append(saved_path)
+            logger.info("[Synthesize] Saved code to %s", saved_path)
+
+    # Build report
+    if saved_files:
+        paths_str = "\n".join(f"  → {p.resolve()}" for p in saved_files)
+        report = (
+            f"[Synthesize] Done. Saved {len(saved_files)} file(s):\n{paths_str}\n\n"
+            + llm_output
+        )
+    else:
+        # No extractable code — return raw LLM output
+        logger.warning("[Synthesize] No code blocks found to save, returning raw output")
+        report = llm_output
+
+    return report
 
 
 def _run_chat(task: Task, context: dict[str, str]) -> str:
@@ -188,7 +214,6 @@ def _run_chat(task: Task, context: dict[str, str]) -> str:
 
 
 def _build_context_block(task: Task, context: dict[str, str], max_chars: int = 3000) -> str:
-    """Build context string from direct dependency artifacts, truncated to max_chars each."""
     if not task.depends_on:
         return ""
     parts = []
@@ -211,11 +236,11 @@ class Executor:
     """
     Sequential executor: runs tasks in order, respecting depends_on.
     Audit tasks use Critic loop with configurable retries and stagnation detection.
+    Synthesize tasks save output files to disk via FileSystemTool.
     Stops on first failed task.
 
     Args:
         critic_retries: max fix iterations per audit task (default: 3).
-                        Increase for complex code that needs more passes.
     """
 
     def __init__(self, critic_retries: int = DEFAULT_CRITIC_RETRIES) -> None:
