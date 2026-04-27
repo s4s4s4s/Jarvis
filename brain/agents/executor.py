@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 from pathlib import Path
@@ -10,7 +11,7 @@ from brain.agents.types import Task
 
 logger = logging.getLogger(__name__)
 
-CRITIC_MAX_RETRIES = 3  # max fix iterations per audit task
+DEFAULT_CRITIC_RETRIES = 3
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +56,11 @@ def _run_code(task: Task, context: dict[str, str], fix_instructions: str | None 
     return chat(model=MODEL_HEAVY, messages=messages)
 
 
+def _findings_hash(report: str) -> str:
+    """Stable hash of audit report for stagnation detection."""
+    return hashlib.md5(report.strip().encode()).hexdigest()
+
+
 def _run_audit_raw(task: Task, code_artifact: str) -> tuple[str, bool]:
     """
     Run AuditorAgent with generic prompt on code_artifact.
@@ -92,18 +98,17 @@ def _run_audit_raw(task: Task, code_artifact: str) -> tuple[str, bool]:
         return report, has_issues
 
 
-def _run_audit(task: Task, context: dict[str, str]) -> str:
+def _run_audit(task: Task, context: dict[str, str], max_retries: int = DEFAULT_CRITIC_RETRIES) -> str:
     """
-    Critic loop: audit → if issues → fix code → audit again. Max CRITIC_MAX_RETRIES iterations.
+    Critic loop: audit → if issues → fix code → audit again.
+    Stops early if findings stagnate (same hash two attempts in a row).
     Returns final audit report.
     """
-    # Collect code from direct dependencies
     code_artifacts = [
         context[dep] for dep in task.depends_on if dep in context
     ]
 
     if not code_artifacts:
-        # Nothing to audit — generic LLM review
         ctx_text = _build_context_block(task, context)
         messages = [
             {
@@ -115,18 +120,28 @@ def _run_audit(task: Task, context: dict[str, str]) -> str:
         return chat(model=MODEL_HEAVY, messages=messages)
 
     current_code = "\n\n# --- next artifact ---\n\n".join(code_artifacts)
+    prev_hash: str | None = None
+    report = ""
 
-    for attempt in range(1, CRITIC_MAX_RETRIES + 1):
-        logger.info("[Critic] Audit attempt %d/%d for task %s", attempt, CRITIC_MAX_RETRIES, task.id)
+    for attempt in range(1, max_retries + 1):
+        logger.info("[Critic] Audit attempt %d/%d for task %s", attempt, max_retries, task.id)
         report, has_issues = _run_audit_raw(task, current_code)
 
         if not has_issues:
-            logger.info("[Critic] Task %s passed audit on attempt %d", task.id, attempt)
+            logger.info("[Critic] Task %s passed audit on attempt %d ✅", task.id, attempt)
             return report
 
-        if attempt < CRITIC_MAX_RETRIES:
-            logger.info("[Critic] Issues found, requesting fix (attempt %d)", attempt)
-            # Re-run code with fix instructions, using same task but injecting findings
+        current_hash = _findings_hash(report)
+        if current_hash == prev_hash:
+            logger.warning(
+                "[Critic] Task %s: findings unchanged after fix (stagnation), stopping early at attempt %d",
+                task.id, attempt,
+            )
+            return report + f"\n\n[Critic] Stopped: findings stagnated at attempt {attempt}/{max_retries}."
+        prev_hash = current_hash
+
+        if attempt < max_retries:
+            logger.info("[Critic] Issues found, requesting fix (attempt %d/%d)", attempt, max_retries)
             fix_task = Task(
                 id=f"{task.id}_fix{attempt}",
                 goal=task.goal,
@@ -135,15 +150,14 @@ def _run_audit(task: Task, context: dict[str, str]) -> str:
                 inputs=task.inputs,
             )
             current_code = _run_code(fix_task, context, fix_instructions=report)
-            # Update context so next audit sees fixed code
             context[f"{task.id}_fix{attempt}"] = current_code
         else:
             logger.warning(
-                "[Critic] Task %s still has issues after %d attempts, continuing with last version",
-                task.id, CRITIC_MAX_RETRIES,
+                "[Critic] Task %s still has issues after %d attempts, keeping last version",
+                task.id, max_retries,
             )
 
-    return report + f"\n\n[Critic] Max retries ({CRITIC_MAX_RETRIES}) reached. Last code version kept."
+    return report + f"\n\n[Critic] Max retries ({max_retries}) reached. Last code version kept."
 
 
 def _run_synthesize(task: Task, context: dict[str, str]) -> str:
@@ -173,15 +187,6 @@ def _run_chat(task: Task, context: dict[str, str]) -> str:
     return chat(model=MODEL_HEAVY, messages=messages)
 
 
-_AGENT_DISPATCH: dict[str, Callable[[Task, dict[str, str]], str]] = {
-    "research": _run_research,
-    "code": _run_code,
-    "audit": _run_audit,
-    "synthesize": _run_synthesize,
-    "chat": _run_chat,
-}
-
-
 def _build_context_block(task: Task, context: dict[str, str], max_chars: int = 3000) -> str:
     """Build context string from direct dependency artifacts, truncated to max_chars each."""
     if not task.depends_on:
@@ -205,9 +210,16 @@ def _build_context_block(task: Task, context: dict[str, str], max_chars: int = 3
 class Executor:
     """
     Sequential executor: runs tasks in order, respecting depends_on.
-    Audit tasks use Critic loop (auto-fix up to CRITIC_MAX_RETRIES times).
+    Audit tasks use Critic loop with configurable retries and stagnation detection.
     Stops on first failed task.
+
+    Args:
+        critic_retries: max fix iterations per audit task (default: 3).
+                        Increase for complex code that needs more passes.
     """
+
+    def __init__(self, critic_retries: int = DEFAULT_CRITIC_RETRIES) -> None:
+        self.critic_retries = critic_retries
 
     def run(self, tasks: list[Task]) -> dict[str, str]:
         context: dict[str, str] = {}
@@ -227,16 +239,24 @@ class Executor:
                     task.status = "failed"
                     return context
 
-            handler = _AGENT_DISPATCH.get(task.type)
-            if handler is None:
-                logger.error("[Executor] Unknown task type '%s' for task %s", task.type, task.id)
-                task.status = "failed"
-                return context
-
             logger.info("[Executor] Running %s [%s]: %s", task.id, task.type, task.goal)
             task.status = "running"
             try:
-                artifact = handler(task, context)
+                if task.type == "audit":
+                    artifact = _run_audit(task, context, max_retries=self.critic_retries)
+                else:
+                    handler: Callable[[Task, dict[str, str]], str] | None = {
+                        "research": _run_research,
+                        "code": _run_code,
+                        "synthesize": _run_synthesize,
+                        "chat": _run_chat,
+                    }.get(task.type)
+                    if handler is None:
+                        logger.error("[Executor] Unknown task type '%s' for task %s", task.type, task.id)
+                        task.status = "failed"
+                        return context
+                    artifact = handler(task, context)
+
                 task.artifact = artifact
                 task.status = "done"
                 context[task.id] = artifact
@@ -250,22 +270,29 @@ class Executor:
 
 
 # ---------------------------------------------------------------------------
-# CLI: python -m brain.agents.executor "<user request>"
+# CLI: python -m brain.agents.executor "<user request>" [--retries N]
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    import argparse
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    if len(sys.argv) < 2:
-        print('Usage: python -m brain.agents.executor "<user request>"')
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Run Jarvis agentic pipeline")
+    parser.add_argument("request", nargs="+", help="User request")
+    parser.add_argument(
+        "--retries", type=int, default=DEFAULT_CRITIC_RETRIES,
+        help=f"Max Critic loop retries per audit task (default: {DEFAULT_CRITIC_RETRIES})",
+    )
+    args = parser.parse_args()
 
     from brain.agents.planner import PlannerAgent
 
-    user_req = " ".join(sys.argv[1:])
-    print(f"\n[Pipeline] Request: {user_req}\n")
+    user_req = " ".join(args.request)
+    print(f"\n[Pipeline] Request: {user_req}")
+    print(f"[Pipeline] Critic retries: {args.retries}\n")
 
     planner = PlannerAgent()
     try:
@@ -280,7 +307,7 @@ if __name__ == "__main__":
         print(f"  {t.id} [{t.type}] {t.goal}{deps}")
     print()
 
-    executor = Executor()
+    executor = Executor(critic_retries=args.retries)
     context = executor.run(plan)
 
     done = [t for t in plan if t.status == "done"]
