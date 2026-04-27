@@ -13,21 +13,21 @@ logger = logging.getLogger(__name__)
 VALID_TYPES = {"research", "code", "audit", "synthesize", "chat"}
 MAX_TASKS = 10
 
-_SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT = f"""\
 You are a task planner for an AI agent system. Your job is to decompose a user request
 into an ordered list of atomic tasks.
 
 RULES:
 - Respond with ONLY a valid JSON array. No markdown, no explanations, no text outside JSON.
 - Each task object must have exactly these fields:
-  {
+  {{
     "id": "t1",
     "goal": "<what to do, concise>",
     "type": "<research|code|audit|synthesize|chat>",
     "depends_on": ["t1"],
-    "inputs": {}
-  }
-- Maximum {max_tasks} tasks.
+    "inputs": {{}}
+  }}
+- Maximum {MAX_TASKS} tasks.
 - Every task must be atomic (one clear action).
 - depends_on must list ids of tasks that must complete before this one starts.
 - If no dependencies, use empty list [].
@@ -37,7 +37,7 @@ RULES:
 - inputs can carry context keys, e.g. {{"topic": "crypto arbitrage"}}.
 
 IMPORTANT: Output ONLY the JSON array, starting with [ and ending with ].
-""".format(max_tasks=MAX_TASKS)
+"""
 
 
 class PlannerAgent:
@@ -65,10 +65,8 @@ class PlannerAgent:
     def _extract_json(raw: str) -> str:
         """Strip any accidental markdown fences or leading/trailing text."""
         raw = raw.strip()
-        # Remove ```json ... ``` fences if present
         if raw.startswith("```"):
             lines = raw.splitlines()
-            # Drop first and last fence lines
             inner = []
             in_block = False
             for line in lines:
@@ -80,7 +78,6 @@ class PlannerAgent:
                 if in_block:
                     inner.append(line)
             raw = "\n".join(inner).strip()
-        # Find first '[' and last ']'
         start = raw.find("[")
         end = raw.rfind("]")
         if start == -1 or end == -1:
@@ -148,7 +145,7 @@ if __name__ == "__main__":
     )
 
     if len(sys.argv) < 2:
-        print("Usage: python -m brain.agents.planner \"<user request>\"")
+        print('Usage: python -m brain.agents.planner "<user request>"')
         sys.exit(1)
 
     user_req = " ".join(sys.argv[1:])
