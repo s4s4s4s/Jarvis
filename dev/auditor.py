@@ -9,6 +9,7 @@ Backend: Ollama (brain.client) — тот же что и основной Jarvis
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sys
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from typing import Optional
 
 from brain.client import chat, MODEL_ROUTER
 from rapidfuzz import fuzz
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -94,7 +97,6 @@ class AuditorAgent:
         self.model = model
         self.temperature = temperature
         self.dedup_threshold = dedup_threshold
-        # Use provided prompt or fall back to Jarvis-specific default
         self.system_prompt = system_prompt if system_prompt is not None else DEFAULT_SYSTEM_PROMPT
 
     def audit(self, file_paths: list[str]) -> list[Finding]:
@@ -135,24 +137,77 @@ class AuditorAgent:
             )
         return result
 
-    def _parse_findings(self, raw: str) -> list[Finding]:
-        findings = []
-        required_keys = {"file", "line", "type", "description", "suggestion", "confidence"}
+    @staticmethod
+    def _iter_objects(raw: str):
+        """
+        Yield all dicts from LLM output, handling three formats:
+          1. One JSON object per line: {...}\n{...}
+          2. JSON array on one or multiple lines: [{...}, {...}]
+          3. Mixed garbage with embedded JSON objects
+        """
+        # Try full parse first (handles array or single object spanning multiple lines)
+        stripped = raw.strip()
+        # Remove markdown fences if present
+        if stripped.startswith("```"):
+            lines = stripped.splitlines()
+            inner = []
+            in_block = False
+            for ln in lines:
+                if ln.startswith("```") and not in_block:
+                    in_block = True
+                    continue
+                if ln.startswith("```") and in_block:
+                    break
+                if in_block:
+                    inner.append(ln)
+            stripped = "\n".join(inner).strip()
+
+        # Attempt full-document parse (array or single object)
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict):
+                        yield item
+                return
+            if isinstance(parsed, dict):
+                yield parsed
+                return
+        except json.JSONDecodeError:
+            pass
+
+        # Fall back to line-by-line parsing
         for line in raw.splitlines():
             line = line.strip()
             if not line or line.startswith("//") or line.startswith("#") or line.startswith("```"):
                 continue
             try:
                 data = json.loads(line)
+                if isinstance(data, dict):
+                    yield data
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            yield item
+                continue
             except json.JSONDecodeError:
-                match = re.search(r"\{.*\}", line)
-                if not match:
-                    continue
+                pass
+            # Last resort: extract first {...} from line
+            match = re.search(r"\{[^{}]+\}", line)
+            if match:
                 try:
                     data = json.loads(match.group())
+                    if isinstance(data, dict):
+                        yield data
                 except json.JSONDecodeError:
-                    continue
+                    pass
+
+    def _parse_findings(self, raw: str) -> list[Finding]:
+        findings = []
+        required_keys = {"file", "line", "type", "description", "suggestion", "confidence"}
+        for data in self._iter_objects(raw):
             if required_keys - set(data.keys()):
+                logger.debug("[Auditor] Skipping object missing keys: %s", data)
                 continue
             try:
                 findings.append(Finding(
@@ -163,8 +218,8 @@ class AuditorAgent:
                     suggestion=str(data["suggestion"]),
                     confidence=float(data.get("confidence", 0.5)),
                 ))
-            except (ValueError, TypeError):
-                continue
+            except (ValueError, TypeError) as e:
+                logger.debug("[Auditor] Skipping malformed finding: %s — %s", data, e)
         return findings
 
     def _verify_facts(self, findings: list[Finding]) -> list[Finding]:
