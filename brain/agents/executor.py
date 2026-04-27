@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Callable
@@ -110,6 +111,37 @@ def _strip_code_fences(text: str) -> str:
     return text
 
 
+def _fix_pip_deps_in_output(llm_output: str, final_code: str) -> str:
+    """
+    Replace the LLM-generated pip deps list with an accurate one
+    derived from actual imports in the final code.
+    Removes stdlib packages (e.g. sqlite3) and maps import names to pip names.
+    """
+    from brain.tools.sandbox import extract_pip_requirements
+    real_deps = extract_pip_requirements(final_code)
+
+    if not real_deps:
+        replacement = "(no third-party pip dependencies)"
+    else:
+        replacement = " ".join(real_deps)
+
+    # Replace ```bash\npip install ...\n``` block
+    llm_output = re.sub(
+        r"(```bash\s*pip install\s*)[^`]+(```)",
+        lambda m: f"{m.group(1)}{replacement}{m.group(2)}",
+        llm_output,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    # Replace plain `pip install ...` line
+    llm_output = re.sub(
+        r"pip install[^\n]+",
+        f"pip install {replacement}",
+        llm_output,
+        flags=re.IGNORECASE,
+    )
+    return llm_output
+
+
 # ---------------------------------------------------------------------------
 # Sub-agent handlers
 # ---------------------------------------------------------------------------
@@ -159,7 +191,9 @@ def _run_code(
         },
         {"role": "user", "content": user_content},
     ]
-    return chat(model=MODEL_HEAVY, messages=messages)
+    raw = chat(model=MODEL_HEAVY, messages=messages)
+    # Always strip fences before storing — sandbox and context readers expect clean Python
+    return _strip_code_fences(raw)
 
 
 def _run_audit_raw(task: Task, code_artifact: str) -> tuple[str, bool]:
@@ -209,7 +243,7 @@ def _run_audit(
     3. If issues found → fix → repeat
     Stops on pass or stagnation.
     """
-    from brain.tools.sandbox import sandbox_audit, has_infinite_loop
+    from brain.tools.sandbox import sandbox_audit
 
     if all_tasks:
         code_ctx = _build_code_context(task, context, all_tasks)
@@ -226,9 +260,10 @@ def _run_audit(
         ]
         return chat(model=MODEL_HEAVY, messages=messages)
 
+    # Code coming from context is already fence-stripped (stored clean by _run_code)
     current_code = _strip_code_fences(code_artifact)
     prev_hash: str | None = None
-    report = ""
+    combined_report = ""
 
     for attempt in range(1, max_retries + 1):
         logger.info("[Critic] Audit attempt %d/%d for task %s", attempt, max_retries, task.id)
@@ -243,7 +278,7 @@ def _run_audit(
             # --- Step 2: LLM audit (only if sandbox passed) ---
             llm_report, llm_has_issues = _run_audit_raw(task, current_code)
             combined_report = llm_report
-            sandbox_has_issues = llm_has_issues  # reuse flag
+            sandbox_has_issues = llm_has_issues
 
         has_issues = sandbox_has_issues
 
@@ -267,7 +302,7 @@ def _run_audit(
                 inputs=task.inputs,
             )
             fixed = _run_code(fix_task, context, fix_instructions=combined_report, all_tasks=all_tasks)
-            current_code = _strip_code_fences(fixed)
+            current_code = fixed  # already stripped by _run_code
             context[f"{task.id}_fix{attempt}"] = fixed
         else:
             logger.warning("[Critic] Task %s: max retries reached", task.id)
@@ -312,16 +347,22 @@ def _run_synthesize(
     fs = FileSystemTool()
     blocks = extract_code_blocks(llm_output)
     saved_files: list[Path] = []
+    final_code = ""
 
     name_source = user_request or task.goal
     for i, (lang, code) in enumerate(blocks):
         if lang in ("python", "py", "") and len(code.strip()) > 50:
+            final_code = code
             filename = suggest_filename(name_source, lang="py")
             if i > 0:
                 filename = filename.replace(".py", f"_{i}.py")
             saved_path = fs.write_file(filename, code)
             saved_files.append(saved_path)
             logger.info("[Synthesize] Saved code to %s", saved_path)
+
+    # Fix pip deps list — replace LLM-generated deps with accurate ones from real imports
+    if final_code:
+        llm_output = _fix_pip_deps_in_output(llm_output, final_code)
 
     if saved_files:
         paths_str = "\n".join(f"  → {p.resolve()}" for p in saved_files)
