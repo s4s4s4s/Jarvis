@@ -8,11 +8,12 @@ from typing import Literal
 class Task:
     id: str                    # "t1", "t2", ...
     goal: str                  # что сделать
-    type: Literal["research", "code", "audit", "synthesize", "chat"]
+    type: Literal["research", "code", "audit", "synthesize", "chat", "tool"]
     depends_on: list[str] = field(default_factory=list)  # ["t1"]
     inputs: dict = field(default_factory=dict)
     status: str = "pending"    # pending | running | done | failed
     artifact: str | None = None
+    tool_name: str | None = None  # only for type="tool"
 
     def to_dict(self) -> dict:
         return {
@@ -23,6 +24,7 @@ class Task:
             "inputs": self.inputs,
             "status": self.status,
             "artifact": self.artifact,
+            "tool_name": self.tool_name,
         }
 
     @classmethod
@@ -35,4 +37,5 @@ class Task:
             inputs=data.get("inputs", {}),
             status=data.get("status", "pending"),
             artifact=data.get("artifact"),
+            tool_name=data.get("tool_name"),
         )

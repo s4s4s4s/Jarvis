@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 import sys
@@ -141,6 +142,26 @@ def _fix_pip_deps_in_output(llm_output: str, final_code: str) -> str:
         flags=re.IGNORECASE,
     )
     return llm_output
+
+
+# ---------------------------------------------------------------------------
+# Tool handler
+# ---------------------------------------------------------------------------
+
+def _run_tool(task: Task, context: dict[str, str]) -> str:  # noqa: ARG001
+    from tools.registry import call_tool
+    result = call_tool(task.tool_name, task.inputs)
+    if result.ok:
+        data = result.data
+        if isinstance(data, (dict, list)):
+            return json.dumps(data, ensure_ascii=False, indent=2)
+        return str(data)
+    return f"[Tool error: {task.tool_name}] {result.error}"
+
+
+async def _run_tool_async(task: Task, context: dict[str, str]) -> str:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: _run_tool(task, context))
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +452,8 @@ async def _run_task_async(
         artifact = await _run_code_async(task, context, all_tasks)
     elif task.type == "chat":
         artifact = await _run_chat_async(task, context)
+    elif task.type == "tool":
+        artifact = await _run_tool_async(task, context)
     else:
         # audit / synthesize require shared mutable context — fall back to sync
         loop = asyncio.get_event_loop()
@@ -587,6 +610,8 @@ class Executor:
                     )
                 elif task.type == "code":
                     artifact = _run_code(task, context, all_tasks=effective_all)
+                elif task.type == "tool":
+                    artifact = _run_tool(task, context)
                 else:
                     handler: Callable[[Task, dict[str, str]], str] | None = {
                         "research": _run_research,
@@ -650,7 +675,8 @@ if __name__ == "__main__":
     print(f"[Pipeline] Plan: {len(plan)} tasks")
     for t in plan:
         deps = f" <- {t.depends_on}" if t.depends_on else ""
-        print(f"  {t.id} [{t.type}] {t.goal}{deps}")
+        tool = f" [tool={t.tool_name}]" if t.tool_name else ""
+        print(f"  {t.id} [{t.type}]{tool} {t.goal}{deps}")
     print()
 
     executor = Executor(critic_retries=args.retries, use_parallel=not args.no_parallel)

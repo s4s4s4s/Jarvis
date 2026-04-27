@@ -10,7 +10,7 @@ from brain.agents.types import Task
 
 logger = logging.getLogger(__name__)
 
-VALID_TYPES = {"research", "code", "audit", "synthesize", "chat"}
+VALID_TYPES = {"research", "code", "audit", "synthesize", "chat", "tool"}
 MAX_TASKS = 12
 
 _SYSTEM_PROMPT = f"""\
@@ -23,7 +23,8 @@ Each task object has exactly these fields:
   {{
     "id":         "t1",
     "goal":       "<what to do, concise>",
-    "type":       "<research|code|audit|synthesize|chat>",
+    "type":       "<research|code|audit|synthesize|chat|tool>",
+    "tool_name":  null,
     "depends_on": [],
     "inputs":     {{}}
   }}
@@ -69,6 +70,66 @@ TASK TYPES
 - synthesize : MANDATORY last task — merge ALL artifacts, save to disk, tell user path + run command.
                Must depend on ALL final audit/code tasks.
 - chat       : conversational answer only — do NOT use when code is produced.
+- tool       : call a real-time tool to get live data (weather, crypto, currency, time, timer).
+               Set "tool_name" to one of the available tools below.
+               Set "inputs" to the tool's arguments.
+               tool tasks are usually independent (depends_on: []).
+               A synthesize or chat task CAN depends_on a tool task to use its result.
+
+──────────────────────────────────────────
+AVAILABLE TOOLS  (use only for type="tool")
+──────────────────────────────────────────
+Use type="tool" when the request needs LIVE data: weather, exchange rates, crypto prices, current time, timers.
+
+  weather(location, language="ru")
+    → current weather at a location
+    inputs: {{"location": "Москва", "language": "ru"}}
+
+  crypto.search(query)
+    → search cryptocurrency by name or symbol
+    inputs: {{"query": "bitcoin"}}
+
+  crypto.price(ids[], vs_currency="usd")
+    → price(s) for one or more coins by CoinGecko id
+    inputs: {{"ids": ["bitcoin", "ethereum"], "vs_currency": "usd"}}
+
+  currency.rates()
+    → all current exchange rates (base USD)
+    inputs: {{}}
+
+  currency.convert(amount, from_code, to_code)
+    → convert amount between currencies
+    inputs: {{"amount": 100, "from_code": "USD", "to_code": "RUB"}}
+
+  time()
+    → current date and time
+    inputs: {{}}
+
+  timer.set(seconds, label)
+    → set a countdown timer
+    inputs: {{"seconds": 300, "label": "tea"}}
+
+  timer.list()
+    → list all active timers
+    inputs: {{}}
+
+  timer.cancel(timer_id)
+    → cancel a timer by id
+    inputs: {{"timer_id": "abc123"}}
+
+  auditor.run(files=[])
+    → run code auditor on given file paths
+    inputs: {{"files": ["output/script.py"]}}
+
+TOOL TASK EXAMPLES:
+  {{"id":"t1","type":"tool","goal":"get current weather in Moscow",
+    "tool_name":"weather","inputs":{{"location":"Москва","language":"ru"}},"depends_on":[]}}
+
+  {{"id":"t2","type":"tool","goal":"get USD to RUB exchange rate",
+    "tool_name":"currency.convert","inputs":{{"amount":1,"from_code":"USD","to_code":"RUB"}},"depends_on":[]}}
+
+  {{"id":"t3","type":"chat","goal":"write a report based on weather and currency data",
+    "tool_name":null,"inputs":{{}},"depends_on":["t1","t2"]}}
 
 ──────────────────────────────────────────
 FINAL CHECKS before outputting
@@ -77,6 +138,8 @@ FINAL CHECKS before outputting
 - synthesize depends_on ALL the last audit/code tasks (not just one).
 - Independent code tasks have depends_on: [].
 - No two code tasks depend on each other unless the second truly extends the first.
+- tool tasks always have "tool_name" set to a valid tool name.
+- chat/synthesize tasks always have "tool_name": null.
 
 OUTPUT ONLY the JSON array, starting with [ and ending with ].
 """
@@ -143,6 +206,9 @@ class PlannerAgent:
             if t_id in ids_seen:
                 raise ValueError(f"Duplicate task id '{t_id}'")
             ids_seen.add(t_id)
+
+            if t_type == "tool" and not raw.get("tool_name"):
+                raise ValueError(f"Task {t_id} has type='tool' but missing 'tool_name'")
 
             deps = raw.get("depends_on", [])
             for dep in deps:
@@ -216,7 +282,8 @@ if __name__ == "__main__":
     print(f"[Planner] Generated {len(plan)} tasks:\n")
     for task in plan:
         deps = f" (depends: {task.depends_on})" if task.depends_on else ""
-        print(f"  [{task.id}] [{task.type.upper()}] {task.goal}{deps}")
+        tool = f" [tool={task.tool_name}]" if task.tool_name else ""
+        print(f"  [{task.id}] [{task.type.upper()}]{tool} {task.goal}{deps}")
         if task.inputs:
             print(f"         inputs: {task.inputs}")
     print()
