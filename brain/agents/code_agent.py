@@ -132,6 +132,8 @@ def run(
 
     messages.append({"role": "user", "content": task})
 
+    last_written_code: str | None = None  # FIX BUG-A: track last written code content
+
     for iteration in range(MAX_ITER):
         logger.info("[code_agent] iteration %d/%d", iteration + 1, MAX_ITER)
         raw = chat(MODEL_HEAVY, messages, options={"temperature": 0.1, "num_ctx": 16384})
@@ -151,9 +153,15 @@ def run(
         logger.info("[code_agent] action=%s", action)
 
         if action == "done":
-            return action_data.get("result", "Задача выполнена.")
+            result_text = action_data.get("result", "Задача выполнена.")
+            # FIX BUG-A: if result doesn't already contain a code block, append last written code
+            if last_written_code is not None and "```" not in result_text:
+                return f"{result_text}\n\n```python\n{last_written_code}\n```"
+            return result_text
 
         elif action == "write":
+            # FIX BUG-A: remember the last written code content
+            last_written_code = action_data.get("content")
             result = write_file(action_data["path"], action_data["content"])
             messages.append({"role": "user", "content": f"Файл записан: {json.dumps(result, ensure_ascii=False)}"})
 
