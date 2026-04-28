@@ -33,6 +33,7 @@ _VOICE_TRUNCATE_TOOLS = {
     "code.run",
     "code.run_file",
     "code.test",
+    "self_test",
 }
 
 _VOICE_MAX_CHARS = 220
@@ -181,6 +182,10 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
     if route == "plan":
         from brain.agents.plan_agent import run as plan_run
         return plan_run(text, history)
+
+    if route == "test":
+        from brain.agents.self_test_agent import run as self_test_run
+        return self_test_run(text, history)
 
     from brain.agents.chat import run as chat_run
     return chat_run(text, history)
