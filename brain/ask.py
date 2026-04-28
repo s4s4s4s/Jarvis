@@ -20,8 +20,17 @@ atexit.register(lambda: _executor.shutdown(wait=False, cancel_futures=True))
 
 logger = logging.getLogger(__name__)
 
-_FALLBACK_TIMEOUT_MSG = "Сэр, не удалось получить ответ вовремя."
-_FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
+_FALLBACK_TIMEOUT_MSG = "\u0421\u044d\u0440, \u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u043e\u0442\u0432\u0435\u0442 \u0432\u043e\u0432\u0440\u0435\u043c\u044f."
+_FALLBACK_ERROR = "\u0421\u044d\u0440, \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442 \u0432\u0435\u0440\u043d\u0443\u043b \u043e\u0448\u0438\u0431\u043a\u0443: {error}"
+
+# Routes that need extended timeout (seconds)
+_ROUTE_TIMEOUTS: dict[str, float] = {
+    "test": 1800.0,   # self-test: up to 30 min (7 tests x ~2.5 min each)
+    "plan": 600.0,    # plan agent: multi-step, up to 10 min
+    "code": 300.0,    # code agent: compile + run, up to 5 min
+    "deep": 300.0,    # deep reasoning, up to 5 min
+}
+_DEFAULT_TIMEOUT = 120.0
 
 _VOICE_TRUNCATE_TOOLS = {
     "auditor.self",
@@ -43,15 +52,17 @@ _ROUTER_HISTORY_TURNS = 6
 @dataclass
 class AskResult:
     filler: str = ""
-    _text:        str = field(default="", repr=False)
+    _text:        str   = field(default="", repr=False)
     _future:      Future | None = field(default=None, repr=False)
-    _answer:      str = field(default="", repr=False)
-    _voice_reply: str = field(default="", repr=False)
+    _answer:      str   = field(default="", repr=False)
+    _voice_reply: str   = field(default="", repr=False)
+    _timeout:     float = field(default=_DEFAULT_TIMEOUT, repr=False)
 
-    def get_answer(self, timeout: float = 120.0) -> str:
+    def get_answer(self, timeout: float | None = None) -> str:
+        effective = timeout if timeout is not None else self._timeout
         if self._future is not None:
             try:
-                self._answer, self._voice_reply = self._future.result(timeout=timeout)
+                self._answer, self._voice_reply = self._future.result(timeout=effective)
             except Exception as e:
                 logger.error("[ask] Future error: %s", e)
                 self._answer = _FALLBACK_TIMEOUT_MSG
@@ -59,7 +70,7 @@ class AskResult:
             self._future = None
         return self._answer
 
-    def get_voice_reply(self, timeout: float = 120.0) -> str:
+    def get_voice_reply(self, timeout: float | None = None) -> str:
         if self._future is not None:
             self.get_answer(timeout=timeout)
         return self._voice_reply or self._answer
@@ -132,10 +143,10 @@ def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
     msgs = [
         {"role": "system", "content": TOOL_FORMAT_SYSTEM},
         {"role": "user", "content": (
-            f"Запрос пользователя: {text}\n\n"
-            f"Инструмент ({tool_name}) завершился с ошибкой:\n{error}\n\n"
-            f"Сообщи пользователю, что не удалось выполнить запрос, "
-            f"кратко объясни причину естественным языком."
+            f"\u0417\u0430\u043f\u0440\u043e\u0441 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f: {text}\n\n"
+            f"\u0418\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442 ({tool_name}) \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043b\u0441\u044f \u0441 \u043e\u0448\u0438\u0431\u043a\u043e\u0439:\n{error}\n\n"
+            f"\u0421\u043e\u043e\u0431\u0449\u0438 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044e, \u0447\u0442\u043e \u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0432\u044b\u043f\u043e\u043b\u043d\u0438\u0442\u044c \u0437\u0430\u043f\u0440\u043e\u0441, "
+            f"\u043a\u0440\u0430\u0442\u043a\u043e \u043e\u0431\u044a\u044f\u0441\u043d\u0438 \u043f\u0440\u0438\u0447\u0438\u043d\u0443 \u0435\u0441\u0442\u0435\u0441\u0442\u0432\u0435\u043d\u043d\u044b\u043c \u044f\u0437\u044b\u043a\u043e\u043c."
         )},
     ]
     try:
@@ -155,13 +166,13 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
             msgs = [
                 {"role": "system", "content": TOOL_FORMAT_SYSTEM},
                 {"role": "user", "content": (
-                    f"Запрос: {text}\n\n"
-                    f"Данные инструмента ({route_data['tool']}):\n"
+                    f"\u0417\u0430\u043f\u0440\u043e\u0441: {text}\n\n"
+                    f"\u0414\u0430\u043d\u043d\u044b\u0435 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u0430 ({route_data['tool']}):\n"
                     f"{json.dumps(result.data, ensure_ascii=False, indent=2)}"
                 )},
             ]
             return chat(MODEL_FAST, msgs, options={"temperature": 0.2, "num_ctx": 4096})
-        return _format_tool_error(text, route_data.get("tool"), result.error or "неизвестная ошибка")
+        return _format_tool_error(text, route_data.get("tool"), result.error or "\u043d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u0430\u044f \u043e\u0448\u0438\u0431\u043a\u0430")
 
     if route == "web":
         from brain.agents.web_agent import run as web_run
@@ -209,7 +220,13 @@ def ask_llm(text: str) -> AskResult:
         }
     route_ms = int((time.monotonic() - t_route0) * 1000)
 
-    result = AskResult(filler=route_data.get("filler", ""), _text=text)
+    route = route_data["route"]
+    timeout = _ROUTE_TIMEOUTS.get(route, _DEFAULT_TIMEOUT)
+    result = AskResult(
+        filler=route_data.get("filler", ""),
+        _text=text,
+        _timeout=timeout,
+    )
     tool_name = route_data.get("tool")
 
     def _run() -> tuple[str, str]:
@@ -219,7 +236,7 @@ def ask_llm(text: str) -> AskResult:
         hist.append("assistant", answer)
         log_route(
             text=text,
-            route=route_data["route"],
+            route=route,
             tool=tool_name,
             confidence=route_data.get("confidence", 0.0),
             reason=route_data.get("reason", ""),
