@@ -74,13 +74,15 @@ class JarvisBridge(QObject):
     assistant_text = Signal(str)
     system_log     = Signal(str)
     error          = Signal(str)
+    mute_changed   = Signal(bool)   # True = muted
 
     def __init__(self, parent: Optional[QObject] = None, **kwargs: Any) -> None:
         qt_parent = parent if parent is not None else kwargs.pop("parent", None)
         super().__init__(qt_parent)
 
         self._thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
+        self._stop_event  = threading.Event()
+        self._mute_event  = threading.Event()   # set = mic muted
         self._started = False
         self._orig_stdout = None
         self._orig_stderr = None
@@ -107,6 +109,36 @@ class JarvisBridge(QObject):
 
     def running(self) -> bool:
         return self.is_running()
+
+    def is_muted(self) -> bool:
+        return self._mute_event.is_set()
+
+    def mute(self) -> None:
+        if not self._mute_event.is_set():
+            self._mute_event.set()
+            try:
+                self.mute_changed.emit(True)
+                self.system_log.emit("[bridge] Microphone muted\n")
+            except Exception:
+                pass
+
+    def unmute(self) -> None:
+        if self._mute_event.is_set():
+            self._mute_event.clear()
+            try:
+                self.mute_changed.emit(False)
+                self.system_log.emit("[bridge] Microphone unmuted\n")
+            except Exception:
+                pass
+
+    def toggle_mute(self) -> bool:
+        """Toggle mute state. Returns new is_muted value."""
+        if self._mute_event.is_set():
+            self.unmute()
+            return False
+        else:
+            self.mute()
+            return True
 
     def start(self) -> None:
         if self.is_running():
@@ -141,10 +173,6 @@ class JarvisBridge(QObject):
         self.stop(timeout=timeout)
 
     def send_text(self, text: str) -> None:
-        """
-        Отправить текстовый запрос напрямую в brain.ask, минуя STT и wake-word.
-        Филлер не показывается — в текстовом режиме он бессмыслен (это filler для голоса).
-        """
         text = text.strip()
         if not text:
             return
@@ -161,12 +189,9 @@ class JarvisBridge(QObject):
             self.emit_state(_get_state("THINKING"))
 
             from brain.ask import ask_llm
-            ask_result = ask_llm(text)
+            ask_result = ask_llm(text, on_progress=self.emit_assistant_text)
 
-            # Филлер намеренно пропускаем:
-            # это короткая фраза для TTS-паузы, в чате она выглядит как мусор.
-            # Показываем только полный ответ.
-            answer = ask_result.get_answer(timeout=120.0)
+            answer = ask_result.get_answer()
             if answer:
                 self.emit_assistant_text(answer)
 
@@ -264,6 +289,7 @@ class JarvisBridge(QObject):
         try:
             main_fn(
                 stop_event=self._stop_event,
+                mute_event=self._mute_event,
                 on_state=self.emit_state,
                 on_user_text=self.emit_user_text,
                 on_assistant_text=self.emit_assistant_text,
@@ -289,7 +315,6 @@ class JarvisBridge(QObject):
 
 
 def _get_state(name: str):
-    """\u0411\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u043e \u0432\u0435\u0440\u043d\u0443\u0442\u044c AssistantState \u043f\u043e \u0438\u043c\u0435\u043d\u0438."""
     try:
         from voice.state import AssistantState
         return AssistantState[name]

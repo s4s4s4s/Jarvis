@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Callable, Optional
 
 from core.config import CHUNK_SIZE, POST_TTS_GRACE_SEC, IDLE_TIMEOUT_SEC
@@ -51,6 +52,7 @@ def _speak_turn(
 
 def main(
     stop_event: Optional[threading.Event] = None,
+    mute_event: Optional[threading.Event] = None,
     on_state: Optional[Callable] = None,
     on_user_text: Optional[Callable[[str], None]] = None,
     on_assistant_text: Optional[Callable[[str], None]] = None,
@@ -65,6 +67,8 @@ def main(
 
     if stop_event is None:
         stop_event = threading.Event()
+    if mute_event is None:
+        mute_event = threading.Event()  # never set = always listening
 
     def _log(msg: str) -> None:
         print(msg)
@@ -115,18 +119,36 @@ def main(
                 except Empty:
                     continue
 
+        _was_muted = False
+
         while not stop_event.is_set():
+            # ---- Mute check ----
+            if mute_event.is_set():
+                if not _was_muted:
+                    _log("[assistant] Микрофон отключён. Ожидаю разблокировку...")
+                    _state(AssistantState.IDLE)
+                    _was_muted = True
+                mute_event.wait(timeout=0.3)
+                continue
+            if _was_muted:
+                _log("[assistant] Микрофон включён. Снова слушаю...")
+                _was_muted = False
+
+            # ---- Wake-word ----
             _state(AssistantState.IDLE)
             wake_tap = audio_core.create_tap(pre_roll=False)
             _log("[assistant] Жду wake-word...")
             woke = False
             for chunk in _chunk_iter(wake_tap):
+                # Break out of wake loop immediately if muted
+                if mute_event.is_set():
+                    break
                 if wake_detector.process_chunk(chunk):
                     woke = True
                     break
             audio_core.remove_tap(wake_tap)
-            if not woke or stop_event.is_set():
-                break
+            if not woke or stop_event.is_set() or mute_event.is_set():
+                continue
 
             _log("[assistant] Wake! Слушаю команду...")
             _state(AssistantState.LISTENING)
@@ -156,8 +178,6 @@ def main(
                     pass
 
             _state(AssistantState.THINKING)
-
-            # Wire on_assistant_text as live progress sink for long routes
             ask_result = ask_llm(text, on_progress=on_assistant_text)
 
             if ask_result.filler:
@@ -217,7 +237,6 @@ def main(
                         set_state=_state,
                     )
             else:
-                import time
                 time.sleep(POST_TTS_GRACE_SEC)
 
     finally:
