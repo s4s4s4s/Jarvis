@@ -10,8 +10,8 @@ from tools.weather import get_weather
 from tools.timer import set_timer, list_timers, cancel_timer
 from tools.file_ops import read_file, write_file, list_dir
 from tools.executor import run_python, run_file, run_pytest
-# FIX BUG-10: import git_stash properly instead of __import__ in lambda
 from tools.git_ops import git_status, git_diff, git_commit, git_push, git_stash
+from tools.self_audit import self_audit
 from dev.auditor import AuditorAgent
 
 
@@ -114,6 +114,10 @@ _TOOL_MAP: dict[str, Any] = {
     "timer.list":       _call_timer_list,
     "timer.cancel":     _call_timer_cancel,
     "auditor.run":      _call_auditor,
+    # --- self-audit: Jarvis проверяет себя ---
+    "auditor.self":     lambda dirs=None, confidence_threshold=0.5: self_audit(
+                            dirs=dirs, confidence_threshold=confidence_threshold
+                        ),
     # --- phase 1: file ops ---
     "file.read":        lambda path: read_file(path),
     "file.write":       lambda path, content: write_file(path, content),
@@ -123,12 +127,10 @@ _TOOL_MAP: dict[str, Any] = {
     "code.run_file":    lambda path, args=None: run_file(path, args),
     "code.test":        lambda path=".": run_pytest(path),
     # --- phase 1: git ---
-    # FIX BUG-11: direct function references, no unnecessary lambdas
     "git.status":       git_status,
     "git.diff":         lambda path=None: git_diff(path),
     "git.commit":       lambda message, add_all=True: git_commit(message, add_all),
     "git.push":         git_push,
-    # FIX BUG-10: use properly imported git_stash
     "git.stash":        lambda message="": git_stash(message),
 }
 
