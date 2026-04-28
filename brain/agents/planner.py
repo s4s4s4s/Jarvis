@@ -67,9 +67,12 @@ TASK TYPES
 - research   : gather information / investigate a topic
 - code       : write or modify code (produces a complete code artifact)
 - audit      : review and test code from a prior task (always depends_on a code task)
-- synthesize : MANDATORY last task — merge ALL artifacts, save to disk, tell user path + run command.
+- synthesize : merge ALL code artifacts, save to disk, tell user path + run command.
+               USE ONLY when at least one task has type="code".
                Must depend on ALL final audit/code tasks.
-- chat       : conversational answer only — do NOT use when code is produced.
+               DO NOT use synthesize if there are NO code tasks in the plan.
+- chat       : conversational answer only — use for plans with NO code tasks.
+               Final task must be "chat" (not "synthesize") when no code is produced.
 - tool       : call a real-time tool to get live data (weather, crypto, currency, time, timer).
                Set "tool_name" to one of the available tools below.
                Set "inputs" to the tool's arguments.
@@ -134,7 +137,8 @@ TOOL TASK EXAMPLES:
 ──────────────────────────────────────────
 FINAL CHECKS before outputting
 ──────────────────────────────────────────
-- Last task is "synthesize" whenever any code task exists.
+- If ANY code task exists: last task MUST be "synthesize", depending on ALL final audit/code tasks.
+- If NO code tasks exist: last task MUST be "chat" (never "synthesize").
 - synthesize depends_on ALL the last audit/code tasks (not just one).
 - Independent code tasks have depends_on: [].
 - No two code tasks depend on each other unless the second truly extends the first.
@@ -232,6 +236,24 @@ class PlannerAgent:
             result.append(Task.from_dict(raw))
 
         has_code = any(t.type == "code" for t in result)
+
+        # FIX BUG-B: if LLM returned synthesize as last task but there are NO code tasks,
+        # downgrade it to "chat" type to avoid saving Python files for non-code plans
+        if not has_code and result and result[-1].type == "synthesize":
+            logger.warning(
+                "[PlannerAgent] Last task is 'synthesize' but no code tasks found — "
+                "downgrading to 'chat'"
+            )
+            last = result[-1]
+            result[-1] = Task(
+                id=last.id,
+                goal=last.goal,
+                type="chat",
+                tool_name=None,
+                depends_on=last.depends_on,
+                inputs=last.inputs,
+            )
+
         if has_code and result[-1].type != "synthesize":
             logger.warning(
                 "[PlannerAgent] Last task is '%s' but code was produced — "
