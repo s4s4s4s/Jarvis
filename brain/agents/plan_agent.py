@@ -18,12 +18,11 @@ def run(query: str, history: list[dict] | None = None) -> str:
 
     planner = PlannerAgent()
     try:
-        # FIX-1: пробрасываем history в planner, чтобы контекст предыдущего
-        # аудита/диалога был доступен при построении плана.
         tasks = planner.plan(query, history=history)
     except Exception as e:
         logger.error("[plan_agent] Planner failed: %s", e)
-        return f"Планировщик не смог разбить задачу: {e}"
+        # FIX: fallback — вернуть пользователю пошаговый текстовый план вместо внутренней ошибки
+        return _text_plan_fallback(query, e)
 
     plan_summary = "\n".join(
         f"  [{t.id}] [{t.type.upper()}] {t.goal}"
@@ -42,8 +41,6 @@ def run(query: str, history: list[dict] | None = None) -> str:
     done_tasks   = [t for t in tasks if t.status == "done"]
     failed_tasks = [t for t in tasks if t.status == "failed"]
 
-    # FIX-4: предпочитаем synthesize-таск как финальный артефакт;
-    # если его нет среди выполненных — берём последний done-таск.
     synth_task = next(
         (t for t in reversed(done_tasks) if t.type == "synthesize"), None
     )
@@ -57,3 +54,26 @@ def run(query: str, history: list[dict] | None = None) -> str:
     )
 
     return header + final_artifact if final_artifact else header + "Задачи выполнены, но финального артефакта нет."
+
+
+def _text_plan_fallback(query: str, error: Exception) -> str:
+    """Если планировщик упал — спрашиваем LLM за пошаговый текстовый план."""
+    from brain.client import chat, MODEL_HEAVY
+    logger.info("[plan_agent] Trying text-plan fallback after error: %s", error)
+    try:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Ты — помощник-планировщик. Пользователь дал многошаговую задачу. "
+                    "Разбей её на чёткие последовательные шаги на русском языке. "
+                    "Верни нумерованный список шагов без лишних пояснений."
+                ),
+            },
+            {"role": "user", "content": query},
+        ]
+        plan_text = chat(model=MODEL_HEAVY, messages=messages, options={"temperature": 0.3})
+        return f"⚠️ Автоматическое выполнение недоступно. Вот пошаговый план:\n\n{plan_text}"
+    except Exception as fallback_err:
+        logger.error("[plan_agent] Fallback also failed: %s", fallback_err)
+        return f"Планировщик не смог разбить задачу: {error}"

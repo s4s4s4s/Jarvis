@@ -153,8 +153,6 @@ class PlannerAgent:
         self, user_request: str, history: list[dict] | None = None
     ) -> list[dict]:
         messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
-        # FIX-1: вставляем историю (последние 6 сообщений) перед запросом,
-        # чтобы планировщик видел контекст предыдущего аудита / диалога.
         if history:
             for msg in history[-6:]:
                 role = msg.get("role", "user")
@@ -174,7 +172,6 @@ class PlannerAgent:
 
     @staticmethod
     def _extract_json(raw: str) -> str:
-        """Strip any accidental markdown fences or leading/trailing text."""
         raw = raw.strip()
         if raw.startswith("```"):
             lines = raw.splitlines()
@@ -205,7 +202,8 @@ class PlannerAgent:
         ids_seen: set[str] = set()
         result: list[Task] = []
         for i, raw in enumerate(tasks):
-            for field in ("id", "goal", "type", "depends_on", "inputs"):
+            # FIX: required fields without 'inputs' — inputs is optional
+            for field in ("id", "goal", "type", "depends_on"):
                 if field not in raw:
                     raise ValueError(f"Task #{i} missing field '{field}'")
             t_id: str = str(raw["id"])
@@ -226,9 +224,13 @@ class PlannerAgent:
                         f"Task {t_id} depends on '{dep}' which is not yet defined — "
                         "tasks must be in dependency order"
                     )
+
+            # FIX: inputs is optional — default to empty dict
+            raw_inputs = raw.get("inputs", {}) or {}
+            raw["inputs"] = raw_inputs if isinstance(raw_inputs, dict) else {}
+
             result.append(Task.from_dict(raw))
 
-        # Post-validation: if any code tasks exist, last task must be synthesize
         has_code = any(t.type == "code" for t in result)
         if has_code and result[-1].type != "synthesize":
             logger.warning(
@@ -251,7 +253,6 @@ class PlannerAgent:
     def plan(
         self, user_request: str, history: list[dict] | None = None
     ) -> list[Task]:
-        # FIX-1: передаём history в build_prompt
         messages = self.build_prompt(user_request, history=history)
         raw_output = self._call_llm(messages)
         logger.debug("[PlannerAgent] Raw LLM output: %s", raw_output[:500])
@@ -268,9 +269,6 @@ class PlannerAgent:
         return tasks
 
 
-# ----------------------------------------------------------------------
-# CLI: python -m brain.agents.planner "<user request>"
-# ----------------------------------------------------------------------
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
