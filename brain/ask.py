@@ -4,10 +4,11 @@ import atexit
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any
+from typing import Any, Callable
 
 from brain.client import chat, MODEL_ROUTER, MODEL_FAST
 from brain.prompts import ROUTER_SYSTEM
@@ -20,15 +21,15 @@ atexit.register(lambda: _executor.shutdown(wait=False, cancel_futures=True))
 
 logger = logging.getLogger(__name__)
 
-_FALLBACK_TIMEOUT_MSG = "\u0421\u044d\u0440, \u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u043e\u0442\u0432\u0435\u0442 \u0432\u043e\u0432\u0440\u0435\u043c\u044f."
-_FALLBACK_ERROR = "\u0421\u044d\u0440, \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442 \u0432\u0435\u0440\u043d\u0443\u043b \u043e\u0448\u0438\u0431\u043a\u0443: {error}"
+_FALLBACK_TIMEOUT_MSG = "Сэр, не удалось получить ответ вовремя."
+_FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
 
 # Routes that need extended timeout (seconds)
 _ROUTE_TIMEOUTS: dict[str, float] = {
-    "test": 1800.0,   # self-test: up to 30 min (7 tests x ~2.5 min each)
-    "plan": 600.0,    # plan agent: multi-step, up to 10 min
-    "code": 300.0,    # code agent: compile + run, up to 5 min
-    "deep": 300.0,    # deep reasoning, up to 5 min
+    "test": 1800.0,
+    "plan": 600.0,
+    "code": 300.0,
+    "deep": 300.0,
 }
 _DEFAULT_TIMEOUT = 120.0
 
@@ -48,6 +49,19 @@ _VOICE_TRUNCATE_TOOLS = {
 _VOICE_MAX_CHARS = 220
 _ROUTER_HISTORY_TURNS = 6
 
+# Thread-local storage: running agent can call report_progress(msg)
+_tl = threading.local()
+
+
+def report_progress(msg: str) -> None:
+    """Call from any agent running inside ask_llm thread to push a live update."""
+    cb = getattr(_tl, "progress_cb", None)
+    if cb is not None:
+        try:
+            cb(msg)
+        except Exception:
+            pass
+
 
 @dataclass
 class AskResult:
@@ -57,6 +71,7 @@ class AskResult:
     _answer:      str   = field(default="", repr=False)
     _voice_reply: str   = field(default="", repr=False)
     _timeout:     float = field(default=_DEFAULT_TIMEOUT, repr=False)
+    on_progress:  Callable[[str], None] | None = field(default=None, repr=False)
 
     def get_answer(self, timeout: float | None = None) -> str:
         effective = timeout if timeout is not None else self._timeout
@@ -143,10 +158,10 @@ def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
     msgs = [
         {"role": "system", "content": TOOL_FORMAT_SYSTEM},
         {"role": "user", "content": (
-            f"\u0417\u0430\u043f\u0440\u043e\u0441 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f: {text}\n\n"
-            f"\u0418\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442 ({tool_name}) \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043b\u0441\u044f \u0441 \u043e\u0448\u0438\u0431\u043a\u043e\u0439:\n{error}\n\n"
-            f"\u0421\u043e\u043e\u0431\u0449\u0438 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044e, \u0447\u0442\u043e \u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0432\u044b\u043f\u043e\u043b\u043d\u0438\u0442\u044c \u0437\u0430\u043f\u0440\u043e\u0441, "
-            f"\u043a\u0440\u0430\u0442\u043a\u043e \u043e\u0431\u044a\u044f\u0441\u043d\u0438 \u043f\u0440\u0438\u0447\u0438\u043d\u0443 \u0435\u0441\u0442\u0435\u0441\u0442\u0432\u0435\u043d\u043d\u044b\u043c \u044f\u0437\u044b\u043a\u043e\u043c."
+            f"Запрос пользователя: {text}\n\n"
+            f"Инструмент ({tool_name}) завершился с ошибкой:\n{error}\n\n"
+            f"Сообщи пользователю, что не удалось выполнить запрос, "
+            f"кратко объясни причину естественным языком."
         )},
     ]
     try:
@@ -166,13 +181,13 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
             msgs = [
                 {"role": "system", "content": TOOL_FORMAT_SYSTEM},
                 {"role": "user", "content": (
-                    f"\u0417\u0430\u043f\u0440\u043e\u0441: {text}\n\n"
-                    f"\u0414\u0430\u043d\u043d\u044b\u0435 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u0430 ({route_data['tool']}):\n"
+                    f"Запрос: {text}\n\n"
+                    f"Данные инструмента ({route_data['tool']}):\n"
                     f"{json.dumps(result.data, ensure_ascii=False, indent=2)}"
                 )},
             ]
             return chat(MODEL_FAST, msgs, options={"temperature": 0.2, "num_ctx": 4096})
-        return _format_tool_error(text, route_data.get("tool"), result.error or "\u043d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u0430\u044f \u043e\u0448\u0438\u0431\u043a\u0430")
+        return _format_tool_error(text, route_data.get("tool"), result.error or "неизвестная ошибка")
 
     if route == "web":
         from brain.agents.web_agent import run as web_run
@@ -202,7 +217,10 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
     return chat_run(text, history)
 
 
-def ask_llm(text: str) -> AskResult:
+def ask_llm(
+    text: str,
+    on_progress: Callable[[str], None] | None = None,
+) -> AskResult:
     history = hist.snapshot()
     hist.append("user", text)
 
@@ -226,32 +244,37 @@ def ask_llm(text: str) -> AskResult:
         filler=route_data.get("filler", ""),
         _text=text,
         _timeout=timeout,
+        on_progress=on_progress,
     )
     tool_name = route_data.get("tool")
 
     def _run() -> tuple[str, str]:
-        t0 = time.monotonic()
-        answer = _dispatch(route_data, text, history)
-        elapsed_ms = int((time.monotonic() - t0) * 1000)
-        hist.append("assistant", answer)
-        log_route(
-            text=text,
-            route=route,
-            tool=tool_name,
-            confidence=route_data.get("confidence", 0.0),
-            reason=route_data.get("reason", ""),
-            answer_ms=elapsed_ms + route_ms,
-        )
+        # Install progress callback into thread-local so agents can call report_progress()
+        _tl.progress_cb = on_progress
         try:
-            from tools.memory import extract_and_save_async
-            extract_and_save_async(text, answer)
-        except Exception as e:
-            logger.error("Memory extraction failed: %s", e)
+            t0 = time.monotonic()
+            answer = _dispatch(route_data, text, history)
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            hist.append("assistant", answer)
+            log_route(
+                text=text,
+                route=route,
+                tool=tool_name,
+                confidence=route_data.get("confidence", 0.0),
+                reason=route_data.get("reason", ""),
+                answer_ms=elapsed_ms + route_ms,
+            )
+            try:
+                from tools.memory import extract_and_save_async
+                extract_and_save_async(text, answer)
+            except Exception as e:
+                logger.error("Memory extraction failed: %s", e)
 
-        voice_reply = _trim_for_voice(answer, tool_name)
-        logger.debug("[ask] voice_reply (%d chars): %s", len(voice_reply), voice_reply[:80])
-
-        return answer, voice_reply
+            voice_reply = _trim_for_voice(answer, tool_name)
+            logger.debug("[ask] voice_reply (%d chars): %s", len(voice_reply), voice_reply[:80])
+            return answer, voice_reply
+        finally:
+            _tl.progress_cb = None
 
     result._future = _executor.submit(_run)
     return result

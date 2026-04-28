@@ -1,26 +1,9 @@
 """brain/agents/self_test_agent.py
 
-Self-Test Agent — Джарвис тестирует себя сам.
+Self-Test Agent.
 
-Поток:
-  1. LLM генерирует N реальных запросов, покрывающих все route-типы
-  2. Каждый запрос прогоняется через _route() + _dispatch() напрямую
-     (без ask_llm — исключаем вложенные Future и запись в history)
-  3. LLM-аудитор оценивает пару (query, response): pass/fail + issues + suggestions
-  4. Результаты сохраняются в logs/self_test_<ts>.json
-
-Формат каждой записи (готов для fine-tuning):
-  {
-    "timestamp": "...",
-    "query": "...",
-    "expected_route": "plan",
-    "actual_route": "plan",
-    "response": "...",
-    "elapsed_ms": 4200,
-    "verdict": "pass" | "fail",
-    "issues": ["..."],
-    "suggestions": ["..."]
-  }
+Each test calls report_progress() so the UI gets live updates
+without waiting for the full run to finish.
 """
 from __future__ import annotations
 
@@ -33,67 +16,46 @@ from pathlib import Path
 from typing import Any
 
 from brain.client import chat, MODEL_HEAVY
+from brain.ask import report_progress
 
 logger = logging.getLogger(__name__)
 
 LOGS_DIR = Path("logs")
 
-# Все route-типы, которые должны быть покрыты хотя бы одним тестом
 ALL_ROUTES = ["chat", "code", "plan", "web", "tool", "memory", "deep"]
 
-_GENERATE_SYSTEM = """\
-You are a test-case designer for an AI assistant called Jarvis.
-Jarvis routes user messages to one of these agents:
-  chat    — casual conversation, general questions
-  code    — write, run or fix a Python script
-  plan    — multi-step task that needs planning + execution
-  web     — search the internet for current information
-  tool    — live data: weather, crypto price, currency rate, timer, time
-  memory  — recall something from previous conversations
-  deep    — single heavy analytical / reasoning question
+_GENERATE_SYSTEM = (
+    "You are a test-case designer for an AI assistant called Jarvis.\n"
+    "Jarvis routes user messages to one of these agents:\n"
+    "  chat    - casual conversation, general questions\n"
+    "  code    - write, run or fix a Python script\n"
+    "  plan    - multi-step task that needs planning + execution\n"
+    "  web     - search the internet for current information\n"
+    "  tool    - live data: weather, crypto price, currency rate, timer, time\n"
+    "  memory  - recall something from previous conversations\n"
+    "  deep    - single heavy analytical / reasoning question\n"
+    "\n"
+    "Your job: generate realistic, diverse test queries that a real user might send.\n"
+    "Each query must clearly target ONE of the routes above.\n"
+    "\n"
+    "Rules:\n"
+    "- Queries must be in Russian (that is the user language).\n"
+    "- Each query must be a complete, natural sentence, not a category label.\n"
+    "- Cover ALL routes listed above at least once.\n"
+    "- Return ONLY a valid JSON array, no markdown, no extra text.\n"
+    "\n"
+    "Each element: {\"query\": \"<natural Russian sentence>\", \"expected_route\": \"<route>\"}"
+)
 
-Your job: generate realistic, diverse test queries that a real user might send.
-Each query must clearly target ONE of the routes above.
-
-Rules:
-- Queries must be in Russian (that is the user's language).
-- Each query must be a complete, natural sentence — not a category label.
-- Cover ALL routes listed above at least once.
-- If asked for more tests than 7, add extra queries varying difficulty and phrasing.
-- Return ONLY a valid JSON array, no markdown, no extra text.
-
-Each element:
-  {"query": "<natural Russian sentence>", "expected_route": "<route>"}
-"""
-
-_AUDIT_SYSTEM = """\
-You are a strict QA auditor evaluating an AI assistant called Jarvis.
-You receive:
-  - The original user query
-  - The route Jarvis chose (intended agent)
-  - Jarvis's full response
-
-Your job: decide if Jarvis FULLY and CORRECTLY handled the query.
-
-Criteria:
-  1. Did Jarvis understand what was asked?
-  2. Is the response complete and accurate for that type of request?
-  3. Are there errors, hallucinations, missing parts, or wrong format?
-  4. For code/plan routes: is the output actually useful / runnable?
-  5. For tool routes: did it return real structured data?
-  6. For web routes: did it actually answer with retrieved information?
-  7. For memory routes: did it recall relevant context?
-
-Respond with ONLY a valid JSON object, no markdown:
-{
-  "verdict": "pass" | "fail",
-  "score": <0.0 to 1.0>,
-  "issues": ["<issue1>", "<issue2>"],
-  "suggestions": ["<suggestion1>"]
-}
-
-If verdict is "pass" and no issues, issues and suggestions may be empty arrays.
-"""
+_AUDIT_SYSTEM = (
+    "You are a strict QA auditor evaluating an AI assistant called Jarvis.\n"
+    "You receive the original user query, the route Jarvis chose, and Jarvis full response.\n"
+    "\n"
+    "Decide if Jarvis FULLY and CORRECTLY handled the query.\n"
+    "Respond with ONLY a valid JSON object, no markdown:\n"
+    "{\"verdict\": \"pass\" | \"fail\", \"score\": <0.0-1.0>, "
+    "\"issues\": [...], \"suggestions\": [...]}"
+)
 
 
 def _extract_json_array(raw: str) -> list[dict]:
@@ -135,17 +97,14 @@ def _extract_json_object(raw: str) -> dict:
 
 
 def _parse_n_from_query(query: str) -> int | None:
-    """Extract explicit test count from query, e.g. 'прогони 15 тестов' → 15."""
     m = re.search(r"(\d+)\s*тест", query)
     return int(m.group(1)) if m else None
 
 
 def _generate_test_cases(n: int) -> list[dict]:
-    """Ask LLM to generate n test cases covering all routes."""
     prompt = (
         f"Generate exactly {n} test queries. "
-        f"Cover ALL 7 routes at least once. "
-        f"If {n} > 7, add more varied queries for existing routes."
+        f"Cover ALL 7 routes at least once."
     )
     messages = [
         {"role": "system", "content": _GENERATE_SYSTEM},
@@ -163,14 +122,12 @@ def _generate_test_cases(n: int) -> list[dict]:
 
 
 def _run_single_test(case: dict, test_num: int, total: int) -> dict:
-    """Run one test via _route() + _dispatch() directly — no nested ask_llm/Future."""
     query = case["query"]
     expected_route = case["expected_route"]
 
-    logger.info(
-        "[SelfTest] Test %d/%d — %s (expected=%s)",
-        test_num, total, query[:70], expected_route,
-    )
+    # Live progress: notify UI that this test is starting
+    report_progress(f"⏳ Тест {test_num}/{total}: {query[:80]}")
+    logger.info("[SelfTest] Test %d/%d - %s (expected=%s)", test_num, total, query[:70], expected_route)
 
     t0 = time.monotonic()
     actual_route = "unknown"
@@ -178,18 +135,10 @@ def _run_single_test(case: dict, test_num: int, total: int) -> dict:
     pipeline_error: str | None = None
 
     try:
-        # Импортируем здесь чтобы избежать циклических импортов на верхнем уровне
         from brain.ask import _route, _dispatch
-
-        # 1. Роутинг (без истории — изолированный тест)
         route_data = _route(query, history=[])
         actual_route = route_data.get("route", "unknown")
-
-        # 2. Запуск агента напрямую (синхронно, без ThreadPoolExecutor)
-        #    Это ключевое отличие от ask_llm() — нет вложенного Future,
-        #    нет записи в history, нет риска 'cannot schedule new futures'
         response = _dispatch(route_data, query, history=[])
-
     except Exception as e:
         pipeline_error = str(e)
         response = f"[PIPELINE ERROR] {e}"
@@ -197,7 +146,6 @@ def _run_single_test(case: dict, test_num: int, total: int) -> dict:
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
 
-    # --- LLM-аудит ---
     audit_result: dict[str, Any] = {
         "verdict": "fail",
         "score": 0.0,
@@ -209,21 +157,14 @@ def _run_single_test(case: dict, test_num: int, total: int) -> dict:
         try:
             audit_messages = [
                 {"role": "system", "content": _AUDIT_SYSTEM},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Query: {query}\n"
-                        f"Route used: {actual_route}\n"
-                        f"Expected route: {expected_route}\n\n"
-                        f"Jarvis response:\n{response[:4000]}"
-                    ),
-                },
+                {"role": "user", "content": (
+                    f"Query: {query}\n"
+                    f"Route used: {actual_route}\n"
+                    f"Expected route: {expected_route}\n\n"
+                    f"Jarvis response:\n{response[:4000]}"
+                )},
             ]
-            raw_audit = chat(
-                model=MODEL_HEAVY,
-                messages=audit_messages,
-                options={"temperature": 0.1},
-            )
+            raw_audit = chat(model=MODEL_HEAVY, messages=audit_messages, options={"temperature": 0.1})
             parsed = _extract_json_object(raw_audit)
             audit_result = {
                 "verdict":     parsed.get("verdict", "fail"),
@@ -249,12 +190,16 @@ def _run_single_test(case: dict, test_num: int, total: int) -> dict:
         "suggestions":    audit_result["suggestions"],
     }
 
+    # Live progress: notify UI of result
     status = "✅" if audit_result["verdict"] == "pass" else "❌"
     route_ok = "✔" if record["route_match"] else f"✘ got={actual_route}"
+    report_progress(
+        f"{status} {test_num}/{total}  route={route_ok}  "
+        f"score={audit_result['score']:.2f}  {elapsed_ms // 1000}s  «{query[:55]}»"
+    )
     logger.info(
-        "[SelfTest] %s %d/%d  route=%s  score=%.2f  elapsed=%dms  '%s'",
-        status, test_num, total, route_ok,
-        audit_result["score"], elapsed_ms, query[:55],
+        "[SelfTest] %s %d/%d  route=%s  score=%.2f  elapsed=%dms",
+        status, test_num, total, route_ok, audit_result["score"], elapsed_ms,
     )
     return record
 
@@ -285,35 +230,27 @@ def _build_summary(records: list[dict]) -> str:
     if route_mismatches:
         lines.append("\n⚠️  Неверный route:")
         for r in route_mismatches:
-            lines.append(
-                f"  • [{r['expected_route']} → {r['actual_route']}] «{r['query'][:70]}»"
-            )
+            lines.append(f"  - [{r['expected_route']} -> {r['actual_route']}] {r['query'][:70]}")
 
     if fail_records:
         lines.append("\n❌  Проваленные тесты:")
         for r in fail_records[:5]:
-            lines.append(f"  «{r['query'][:70]}»")
+            lines.append(f"  {r['query'][:70]}")
             for issue in r["issues"][:2]:
-                lines.append(f"    — {issue}")
-            for sug in r["suggestions"][:1]:
-                lines.append(f"    → {sug}")
+                lines.append(f"    - {issue}")
 
     return "\n".join(lines)
 
 
-def run(query: str, history: list[dict] | None = None) -> str:  # noqa: ARG001
-    """Entry point called by _dispatch() when route='test'.
-
-    Runs synchronously inside the ask_llm thread-pool worker.
-    Does NOT call ask_llm() internally to avoid nested Future submission.
-    """
+def run(query: str, history: list[dict] | None = None) -> str:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     explicit_n = _parse_n_from_query(query)
-    n = explicit_n if explicit_n and explicit_n > 0 else len(ALL_ROUTES)  # default: 7
-    n = min(n, 50)  # жёсткий лимит сверху
+    n = explicit_n if explicit_n and explicit_n > 0 else len(ALL_ROUTES)
+    n = min(n, 50)
 
     logger.info("[SelfTest] Starting run_id=%s  n=%d tests", run_id, n)
+    report_progress(f"🧠 Самотест: генерирую {n} тестовых запросов...")
 
     try:
         cases = _generate_test_cases(n)
@@ -323,6 +260,8 @@ def run(query: str, history: list[dict] | None = None) -> str:  # noqa: ARG001
 
     if not cases:
         return "Ошибка: LLM не вернул ни одного тестового запроса."
+
+    report_progress(f"🚀 Запускаю {len(cases)} тестов...")
 
     records: list[dict] = []
     for i, case in enumerate(cases, 1):
@@ -335,5 +274,5 @@ def run(query: str, history: list[dict] | None = None) -> str:  # noqa: ARG001
     return (
         f"🧠 Самотестирование завершено [{run_id}]\n\n"
         + summary
-        + f"\n📄 Лог: {log_path.resolve()}"
+        + f"\n\n📄 Лог: {log_path.resolve()}"
     )
