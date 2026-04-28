@@ -85,7 +85,6 @@ class JarvisBridge(QObject):
         self._orig_stdout = None
         self._orig_stderr = None
 
-        # Текстовый ввод: поток + очередь запросов
         self._text_queue: list[str] = []
         self._text_queue_lock = threading.Lock()
         self._text_event = threading.Event()
@@ -130,7 +129,7 @@ class JarvisBridge(QObject):
         if not self._started:
             return
         self._stop_event.set()
-        self._text_event.set()  # разблокируем send_text если ждёт
+        self._text_event.set()
         t = self._thread
         if t is not None and t.is_alive():
             t.join(timeout=timeout)
@@ -143,8 +142,8 @@ class JarvisBridge(QObject):
 
     def send_text(self, text: str) -> None:
         """
-        Отправить текстовый запрос напрямую в brain.ask, минуя STT.
-        Работает внезависимо от того, запущен ли голосовой ассистент.
+        Отправить текстовый запрос напрямую в brain.ask, минуя STT и wake-word.
+        Филлер не показывается — в текстовом режиме он бессмыслен (это filler для голоса).
         """
         text = text.strip()
         if not text:
@@ -162,16 +161,13 @@ class JarvisBridge(QObject):
             self.emit_state(_get_state("THINKING"))
 
             from brain.ask import ask_llm
-            from voice.state import AssistantState as _AS
-
             ask_result = ask_llm(text)
 
-            # Filler → чат (без TTS, текстовый режим)
-            if ask_result.filler:
-                self.emit_assistant_text(ask_result.filler)
-
+            # Филлер намеренно пропускаем:
+            # это короткая фраза для TTS-паузы, в чате она выглядит как мусор.
+            # Показываем только полный ответ.
             answer = ask_result.get_answer(timeout=120.0)
-            if answer and answer != ask_result.filler:
+            if answer:
                 self.emit_assistant_text(answer)
 
             self.emit_state(_get_state("IDLE"))
@@ -293,7 +289,7 @@ class JarvisBridge(QObject):
 
 
 def _get_state(name: str):
-    """Безопасно вернуть AssistantState по имени."""
+    """\u0411\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u043e \u0432\u0435\u0440\u043d\u0443\u0442\u044c AssistantState \u043f\u043e \u0438\u043c\u0435\u043d\u0438."""
     try:
         from voice.state import AssistantState
         return AssistantState[name]
