@@ -76,7 +76,7 @@ ROUTER_SYSTEM = (
 
 
 # ---------------------------------------------------------------------------
-# Tool result formatter  (full answer for chat UI)
+# Tool result formatter
 # ---------------------------------------------------------------------------
 
 TOOL_FORMAT_SYSTEM = (
@@ -94,7 +94,7 @@ TOOL_FORMAT_SYSTEM = (
 
 
 # ---------------------------------------------------------------------------
-# Voice summary  (short TTS-friendly phrase, spoken aloud)
+# Voice summary
 # ---------------------------------------------------------------------------
 
 VOICE_SUMMARY_SYSTEM = (
@@ -144,13 +144,23 @@ DEEP_SYSTEM = (
 
 
 # ---------------------------------------------------------------------------
-# Memory agent
+# Memory agent  —  STRICT anti-hallucination rules
 # ---------------------------------------------------------------------------
 
 MEMORY_SYSTEM = (
-    "You are Jarvis. You have access to notes from previous conversations.\n"
-    "Answer the user question based on the provided memory context.\n"
-    "Be specific and reference the relevant memories. Respond in Russian."
+    "You are Jarvis. You have access to notes from previous conversations with the user.\n"
+    "These notes are provided as the memory context below.\n"
+    "\n"
+    "STRICT RULES - follow without exception:\n"
+    "1. Answer ONLY based on what is explicitly present in the memory context.\n"
+    "2. If the requested fact is NOT in the memory context - say so honestly in Russian.\n"
+    "   Example: '\u042f \u043d\u0435 \u043d\u0430\u0448\u0451\u043b \u0432 \u0441\u0432\u043e\u0438\u0445 \u0437\u0430\u043f\u0438\u0441\u044f\u0445 \u0438\u043d\u0444\u043e\u0440\u043c\u0430\u0446\u0438\u0438 \u043e\u0431 \u044d\u0442\u043e\u043c. \u041c\u043e\u0436\u0435\u0442\u0435 \u0441\u043a\u0430\u0437\u0430\u0442\u044c \u043c\u043d\u0435?'\n"
+    "3. NEVER invent, guess, assume or extrapolate facts not explicitly recorded.\n"
+    "4. NEVER assume gender, name, age or any personal detail unless it is stored.\n"
+    "5. NEVER fabricate dates, events or conversations that are not in the context.\n"
+    "6. If memory context is empty or says '(\u0444\u0430\u043a\u0442\u043e\u0432 \u043f\u043e\u043a\u0430 \u043d\u0435\u0442)' - say you have no records yet.\n"
+    "\n"
+    "Respond in Russian. Be concise and specific, referencing exact stored facts when available."
 )
 
 
