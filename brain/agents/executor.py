@@ -23,6 +23,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -164,32 +165,64 @@ def _fix_pip_deps_in_output(llm_output: str, final_code: str) -> str:
     return llm_output
 
 
-def _git_commit_files(saved_files: list[Path], goal: str) -> None:
-    """FIX-6: auto git-commit files written by synthesize."""
+def _git_stage_and_commit(saved_files: list[Path], goal: str) -> str | None:
+    """FIX-6 (revised): commit generated files to an ISOLATED local branch.
+
+    Behaviour:
+    - Creates a new branch  jarvis/synthesize-<unix_ts>  off the current HEAD.
+    - Stages and commits only the saved files there.
+    - Does NOT push anything to remote — human must review and merge manually.
+    - Returns the branch name on success, None on failure.
+
+    This prevents Jarvis from silently modifying the active feature branch
+    or polluting the remote repository with unreviewed generated code.
+    """
+    branch_name = f"jarvis/synthesize-{int(time.time())}"
     try:
+        # 1. Create isolated branch from current HEAD (no checkout needed for commit)
+        subprocess.run(
+            ["git", "checkout", "-b", branch_name],
+            cwd=str(JARVIS_ROOT),
+            check=True,
+            capture_output=True,
+        )
+        # 2. Stage only the files produced by this synthesize run
         subprocess.run(
             ["git", "add"] + [str(p.resolve()) for p in saved_files],
             cwd=str(JARVIS_ROOT),
-            check=False,
+            check=True,
             capture_output=True,
         )
-        msg = f"jarvis: synthesize — {goal[:72]}"
-        result = subprocess.run(
+        # 3. Commit
+        msg = f"jarvis/synthesize: {goal[:72]}"
+        subprocess.run(
             ["git", "commit", "-m", msg],
+            cwd=str(JARVIS_ROOT),
+            check=True,
+            capture_output=True,
+        )
+        logger.info(
+            "[Synthesize] Committed to isolated branch '%s'. "
+            "Review with: git diff feature/planner-agent..%s",
+            branch_name, branch_name,
+        )
+        return branch_name
+    except subprocess.CalledProcessError as exc:
+        logger.warning(
+            "[Synthesize] git operation failed (non-fatal): %s\nstderr: %s",
+            exc, exc.stderr.decode(errors="replace") if exc.stderr else "",
+        )
+        # Attempt to return to original branch so we don't leave repo in detached state
+        subprocess.run(
+            ["git", "checkout", "-"],
             cwd=str(JARVIS_ROOT),
             check=False,
             capture_output=True,
-            text=True,
         )
-        if result.returncode == 0:
-            logger.info("[Synthesize] git commit ok: %s", msg)
-        else:
-            logger.warning(
-                "[Synthesize] git commit returned %d: %s",
-                result.returncode, result.stderr.strip(),
-            )
+        return None
     except Exception as exc:
         logger.warning("[Synthesize] git commit failed (non-fatal): %s", exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -427,10 +460,21 @@ def _run_synthesize(
         llm_output = _fix_pip_deps_in_output(llm_output, final_code)
 
     if saved_files:
-        # FIX-6: автоматически делаем git commit сохранённых файлов
-        _git_commit_files(saved_files, task.goal)
+        # FIX-6 (revised): commit to an ISOLATED local branch — never push to remote.
+        # The developer reviews via:  git diff feature/planner-agent..jarvis/synthesize-<ts>
+        branch = _git_stage_and_commit(saved_files, task.goal)
         paths_str = "\n".join(f"  → {p.resolve()}" for p in saved_files)
-        return f"[Synthesize] Done. Saved {len(saved_files)} file(s):\n{paths_str}\n\n" + llm_output
+        branch_note = (
+            f"\n⚠️  Код сохранён в изолированную ветку: {branch}\n"
+            f"    Проверь и смержь вручную: git diff feature/planner-agent..{branch}"
+            if branch else
+            "\n⚠️  git commit не удался — файлы сохранены на диск, но не закоммичены."
+        )
+        return (
+            f"[Synthesize] Done. Saved {len(saved_files)} file(s):\n{paths_str}"
+            + branch_note
+            + "\n\n" + llm_output
+        )
     else:
         logger.warning("[Synthesize] No code blocks found, returning raw output")
         return llm_output
