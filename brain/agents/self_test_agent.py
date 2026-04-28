@@ -4,7 +4,8 @@ Self-Test Agent — Джарвис тестирует себя сам.
 
 Поток:
   1. LLM генерирует N реальных запросов, покрывающих все route-типы
-  2. Каждый запрос прогоняется через полный pipeline ask_llm()
+  2. Каждый запрос прогоняется через _route() + _dispatch() напрямую
+     (без ask_llm — исключаем вложенные Future и запись в history)
   3. LLM-аудитор оценивает пару (query, response): pass/fail + issues + suggestions
   4. Результаты сохраняются в logs/self_test_<ts>.json
 
@@ -31,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from brain.client import chat, MODEL_HEAVY, MODEL_ROUTER
+from brain.client import chat, MODEL_HEAVY
 
 logger = logging.getLogger(__name__)
 
@@ -152,44 +153,51 @@ def _generate_test_cases(n: int) -> list[dict]:
     ]
     raw = chat(model=MODEL_HEAVY, messages=messages, options={"temperature": 0.7})
     cases = _extract_json_array(raw)
-    # валидация структуры
-    valid = []
-    for c in cases:
-        if isinstance(c, dict) and "query" in c and "expected_route" in c:
-            valid.append({"query": str(c["query"]), "expected_route": str(c["expected_route"])})
+    valid = [
+        {"query": str(c["query"]), "expected_route": str(c["expected_route"])}
+        for c in cases
+        if isinstance(c, dict) and "query" in c and "expected_route" in c
+    ]
     logger.info("[SelfTest] Generated %d test cases", len(valid))
     return valid
 
 
-def _run_single_test(case: dict) -> dict:
-    """Run one test case through the full Jarvis pipeline and audit the result."""
+def _run_single_test(case: dict, test_num: int, total: int) -> dict:
+    """Run one test via _route() + _dispatch() directly — no nested ask_llm/Future."""
     query = case["query"]
     expected_route = case["expected_route"]
 
-    logger.info("[SelfTest] Running: %s (expected=%s)", query[:80], expected_route)
+    logger.info(
+        "[SelfTest] Test %d/%d — %s (expected=%s)",
+        test_num, total, query[:70], expected_route,
+    )
 
-    # --- Прогон через полный pipeline ---
     t0 = time.monotonic()
     actual_route = "unknown"
     response = ""
     pipeline_error: str | None = None
 
     try:
-        from brain.ask import ask_llm, _route
-        # Сначала узнаём реальный route
+        # Импортируем здесь чтобы избежать циклических импортов на верхнем уровне
+        from brain.ask import _route, _dispatch
+
+        # 1. Роутинг (без истории — изолированный тест)
         route_data = _route(query, history=[])
         actual_route = route_data.get("route", "unknown")
-        # Полный ответ
-        result = ask_llm(query)
-        response = result.get_answer(timeout=180.0)
+
+        # 2. Запуск агента напрямую (синхронно, без ThreadPoolExecutor)
+        #    Это ключевое отличие от ask_llm() — нет вложенного Future,
+        #    нет записи в history, нет риска 'cannot schedule new futures'
+        response = _dispatch(route_data, query, history=[])
+
     except Exception as e:
         pipeline_error = str(e)
         response = f"[PIPELINE ERROR] {e}"
-        logger.error("[SelfTest] Pipeline error for query '%s': %s", query[:60], e)
+        logger.error("[SelfTest] Pipeline error for '%s': %s", query[:60], e)
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
 
-    # --- Аудит LLM ---
+    # --- LLM-аудит ---
     audit_result: dict[str, Any] = {
         "verdict": "fail",
         "score": 0.0,
@@ -224,7 +232,7 @@ def _run_single_test(case: dict) -> dict:
                 "suggestions": parsed.get("suggestions", []),
             }
         except Exception as e:
-            logger.error("[SelfTest] Auditor failed for query '%s': %s", query[:60], e)
+            logger.error("[SelfTest] Auditor failed for '%s': %s", query[:60], e)
             audit_result["issues"].append(f"Auditor error: {e}")
 
     record = {
@@ -242,10 +250,11 @@ def _run_single_test(case: dict) -> dict:
     }
 
     status = "✅" if audit_result["verdict"] == "pass" else "❌"
-    route_match_str = "✔" if record["route_match"] else f"✘ (got {actual_route})"
+    route_ok = "✔" if record["route_match"] else f"✘ got={actual_route}"
     logger.info(
-        "[SelfTest] %s  route=%s  score=%.2f  '%s'",
-        status, route_match_str, audit_result["score"], query[:60],
+        "[SelfTest] %s %d/%d  route=%s  score=%.2f  elapsed=%dms  '%s'",
+        status, test_num, total, route_ok,
+        audit_result["score"], elapsed_ms, query[:55],
     )
     return record
 
@@ -260,12 +269,12 @@ def _save_log(records: list[dict], run_id: str) -> Path:
 
 
 def _build_summary(records: list[dict]) -> str:
-    total   = len(records)
-    passed  = sum(1 for r in records if r["verdict"] == "pass")
-    failed  = total - passed
+    total     = len(records)
+    passed    = sum(1 for r in records if r["verdict"] == "pass")
+    failed    = total - passed
     avg_score = sum(r["score"] for r in records) / total if total else 0.0
     route_mismatches = [r for r in records if not r["route_match"]]
-    fail_records = [r for r in records if r["verdict"] == "fail"]
+    fail_records     = [r for r in records if r["verdict"] == "fail"]
 
     lines = [
         f"✅ Прошло: {passed}/{total}   "
@@ -282,7 +291,7 @@ def _build_summary(records: list[dict]) -> str:
 
     if fail_records:
         lines.append("\n❌  Проваленные тесты:")
-        for r in fail_records[:5]:  # показываем макс 5 чтобы не заспамить ответ
+        for r in fail_records[:5]:
             lines.append(f"  «{r['query'][:70]}»")
             for issue in r["issues"][:2]:
                 lines.append(f"    — {issue}")
@@ -293,17 +302,19 @@ def _build_summary(records: list[dict]) -> str:
 
 
 def run(query: str, history: list[dict] | None = None) -> str:  # noqa: ARG001
-    """Entry point for route='test'."""
+    """Entry point called by _dispatch() when route='test'.
+
+    Runs synchronously inside the ask_llm thread-pool worker.
+    Does NOT call ask_llm() internally to avoid nested Future submission.
+    """
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-    # Определяем количество тестов
     explicit_n = _parse_n_from_query(query)
     n = explicit_n if explicit_n and explicit_n > 0 else len(ALL_ROUTES)  # default: 7
     n = min(n, 50)  # жёсткий лимит сверху
 
     logger.info("[SelfTest] Starting run_id=%s  n=%d tests", run_id, n)
 
-    # Генерация тестовых запросов
     try:
         cases = _generate_test_cases(n)
     except Exception as e:
@@ -313,20 +324,16 @@ def run(query: str, history: list[dict] | None = None) -> str:  # noqa: ARG001
     if not cases:
         return "Ошибка: LLM не вернул ни одного тестового запроса."
 
-    # Прогон тестов
     records: list[dict] = []
     for i, case in enumerate(cases, 1):
-        logger.info("[SelfTest] Test %d/%d", i, len(cases))
-        record = _run_single_test(case)
+        record = _run_single_test(case, test_num=i, total=len(cases))
         records.append(record)
 
-    # Сохранение лога
     log_path = _save_log(records, run_id)
+    summary  = _build_summary(records)
 
-    # Отчёт пользователю
-    summary = _build_summary(records)
     return (
         f"🧠 Самотестирование завершено [{run_id}]\n\n"
         + summary
-        + f"\n\n📄 Лог: {log_path.resolve()}"
+        + f"\n📄 Лог: {log_path.resolve()}"
     )
