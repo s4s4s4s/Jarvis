@@ -7,7 +7,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any, Callable
 
 from brain.client import chat, MODEL_ROUTER, MODEL_FAST
@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 _FALLBACK_TIMEOUT_MSG = "Сэр, не удалось получить ответ вовремя."
 _FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
 
-# Routes that need extended timeout (seconds)
 _ROUTE_TIMEOUTS: dict[str, float] = {
     "test": 1800.0,
     "plan": 600.0,
@@ -49,7 +48,6 @@ _VOICE_TRUNCATE_TOOLS = {
 _VOICE_MAX_CHARS = 220
 _ROUTER_HISTORY_TURNS = 6
 
-# Thread-local storage: running agent can call report_progress(msg)
 _tl = threading.local()
 
 
@@ -78,8 +76,18 @@ class AskResult:
         if self._future is not None:
             try:
                 self._answer, self._voice_reply = self._future.result(timeout=effective)
+            except FutureTimeoutError:
+                logger.error(
+                    "[ask] Future timed out after %.0fs for: %.80s",
+                    effective, self._text,
+                )
+                self._answer = _FALLBACK_TIMEOUT_MSG
+                self._voice_reply = _FALLBACK_TIMEOUT_MSG
             except Exception as e:
-                logger.error("[ask] Future error: %s", e)
+                logger.error(
+                    "[ask] Future error (%s): %r  query=%.80s",
+                    type(e).__name__, e, self._text,
+                )
                 self._answer = _FALLBACK_TIMEOUT_MSG
                 self._voice_reply = _FALLBACK_TIMEOUT_MSG
             self._future = None
@@ -249,7 +257,6 @@ def ask_llm(
     tool_name = route_data.get("tool")
 
     def _run() -> tuple[str, str]:
-        # Install progress callback into thread-local so agents can call report_progress()
         _tl.progress_cb = on_progress
         try:
             t0 = time.monotonic()
