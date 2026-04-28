@@ -17,9 +17,13 @@ OLLAMA_RETRY_DELAY   = 1.5
 SAMPLE_RATE_MIC = 16000
 CHUNK_SIZE      = 512
 
+# Микрофон: fifine Microphone, Windows WASAPI (device 48)
+# WASAPI даёт чистый сигнал без MME-обработки — лучше для Silero VAD и Whisper.
+# Чтобы сменить устройство: python -c "import sounddevice as sd; print(sd.query_devices())"
+# и поставить нужный индекс. None = системный дефолт.
+MIC_DEVICE = 48
+
 # FIX: снижен с 1100 → 850 мс: при TURN_VAD_TRIGGER=0.48 / HOLD=0.30
-# детектор достаточно чувствителен, чтобы не ловить ложные паузы внутри фразы,
-# но 1100 мс — это заметное ожидание после каждой команды
 SILENCE_MS        = 850
 MAX_RECORD_SEC    = 15
 MIN_UTTERANCE_SEC = 0.35
@@ -31,15 +35,17 @@ WAKE_MIN_CHECK_INTERVAL_SEC = 0.9
 WAKE_FAIL_COOLDOWN_SEC      = 0.8
 WAKE_SUCCESS_COOLDOWN_SEC   = 1.5
 
-WAKE_VAD_TRIGGER        = 0.60
-WAKE_VAD_HOLD           = 0.40
-WAKE_MIN_SPEECH_CHUNKS  = 4
+# Снижен с 0.60 → 0.45: fifine на WASAPI даёт более тихий сигнал чем MME,
+# при 0.60 wake-детектор не триггерился на нормальную речь.
+WAKE_VAD_TRIGGER        = 0.45
+WAKE_VAD_HOLD           = 0.30
+WAKE_MIN_SPEECH_CHUNKS  = 3
 WAKE_MAX_SILENCE_CHUNKS = 8
 WAKE_MAX_TEXT_LEN       = 120
 
 # ─── Turn-менеджер ──────────────────────────────────────────────────────────────────────────
-TURN_VAD_TRIGGER = 0.48
-TURN_VAD_HOLD    = 0.30
+TURN_VAD_TRIGGER = 0.40
+TURN_VAD_HOLD    = 0.25
 
 # ─── Режимы ────────────────────────────────────────────────────────────────────────────────────
 POST_TTS_GRACE_SEC       = 1.5

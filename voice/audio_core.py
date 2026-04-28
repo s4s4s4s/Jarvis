@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 import sounddevice as sd
 
-from core.config import SAMPLE_RATE_MIC, CHUNK_SIZE, PRE_ROLL_SEC
+from core.config import SAMPLE_RATE_MIC, CHUNK_SIZE, PRE_ROLL_SEC, MIC_DEVICE
 
 _STOP_SENTINEL = object()
 
@@ -19,10 +19,10 @@ class AudioCore:
         self._taps: list[queue.Queue] = []
         self._taps_lock = threading.Lock()
         self._pre_roll_len = max(1, int(PRE_ROLL_SEC * SAMPLE_RATE_MIC / CHUNK_SIZE))
-        self._pre_roll: deque = deque(maxlen=self._pre_roll_len)  # O(1) append/pop
+        self._pre_roll: deque = deque(maxlen=self._pre_roll_len)
         self._stream = None
         self._stop_requested = False
-        self._dropped_chunks = 0  # счётчик дропнутых чанков для диагностики
+        self._dropped_chunks = 0
 
     def create_tap(self, pre_roll: bool = False) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=_TAP_QUEUE_MAXSIZE)
@@ -33,7 +33,7 @@ class AudioCore:
                     try:
                         q.put_nowait(chunk)
                     except queue.Full:
-                        pass  # pre-roll может быть больше maxsize — пропускаем старые
+                        pass
         return q
 
     def remove_tap(self, q: queue.Queue) -> None:
@@ -70,7 +70,6 @@ class AudioCore:
             return list(self._pre_roll)
 
     def get_dropped_chunks(self) -> int:
-        """Количество дропнутых чанков с момента старта — для диагностики."""
         return self._dropped_chunks
 
     def request_stop(self) -> None:
@@ -79,14 +78,13 @@ class AudioCore:
 
     def _callback(self, indata: np.ndarray, frames, time_, status):
         chunk = indata[:, 0].copy()
-        self._pre_roll.append(chunk)  # deque автоматически вытесняет старое
+        self._pre_roll.append(chunk)
         with self._taps_lock:
             dead = []
             for q in self._taps:
                 try:
                     q.put_nowait(chunk)
                 except queue.Full:
-                    # Очередь переполнена — consumer слишком медленный
                     self._dropped_chunks += 1
                 except Exception:
                     dead.append(q)
@@ -99,7 +97,24 @@ class AudioCore:
     def start(self):
         self._stop_requested = False
         self._dropped_chunks = 0
+
+        # Resolve device: prefer configured MIC_DEVICE, fallback to system default.
+        # WASAPI devices give cleaner signal than MME on Windows (no audio enhancements).
+        device = MIC_DEVICE
+        if device is not None:
+            try:
+                info = sd.query_devices(device)
+                if info["max_input_channels"] < 1:
+                    print(f"[AudioCore] WARNING: device {device} has no input channels, falling back to default")
+                    device = None
+                else:
+                    print(f"[AudioCore] Using mic: [{device}] {info['name']}")
+            except Exception as e:
+                print(f"[AudioCore] WARNING: cannot query device {device}: {e}, falling back to default")
+                device = None
+
         self._stream = sd.InputStream(
+            device=device,
             samplerate=SAMPLE_RATE_MIC,
             blocksize=CHUNK_SIZE,
             channels=1,
