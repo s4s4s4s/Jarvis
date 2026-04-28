@@ -17,10 +17,10 @@ Optimisations:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -32,14 +32,29 @@ from brain.agents.types import Task
 logger = logging.getLogger(__name__)
 
 DEFAULT_CRITIC_RETRIES = 3
+JARVIS_ROOT = Path("C:/jarvis")
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _findings_hash(report: str) -> str:
-    return hashlib.md5(report.strip().encode()).hexdigest()
+def _findings_key(finding_line: str) -> tuple[str, str]:
+    """Extract (type, line_number) from an audit finding line for stable comparison."""
+    type_match = re.search(r"\[([A-Z_]+)\]", finding_line)
+    line_match = re.search(r"line (\d+)", finding_line)
+    ftype = type_match.group(1) if type_match else ""
+    fline = line_match.group(1) if line_match else ""
+    return (ftype, fline)
+
+
+def _findings_normalized_set(report: str) -> frozenset[tuple[str, str]]:
+    """FIX-5: normalize findings to (type, line) pairs for stagnation detection.
+    MD5 of raw LLM text is unreliable because temperature>0 produces slight
+    variations each call even when the actual bugs are identical.
+    """
+    lines = [l.strip() for l in report.splitlines() if l.strip()]
+    return frozenset(_findings_key(l) for l in lines if "[" in l and "line" in l)
 
 
 def _build_context_block(task: Task, context: dict[str, str], max_chars: int = 3000) -> str:
@@ -149,6 +164,34 @@ def _fix_pip_deps_in_output(llm_output: str, final_code: str) -> str:
     return llm_output
 
 
+def _git_commit_files(saved_files: list[Path], goal: str) -> None:
+    """FIX-6: auto git-commit files written by synthesize."""
+    try:
+        subprocess.run(
+            ["git", "add"] + [str(p.resolve()) for p in saved_files],
+            cwd=str(JARVIS_ROOT),
+            check=False,
+            capture_output=True,
+        )
+        msg = f"jarvis: synthesize — {goal[:72]}"
+        result = subprocess.run(
+            ["git", "commit", "-m", msg],
+            cwd=str(JARVIS_ROOT),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            logger.info("[Synthesize] git commit ok: %s", msg)
+        else:
+            logger.warning(
+                "[Synthesize] git commit returned %d: %s",
+                result.returncode, result.stderr.strip(),
+            )
+    except Exception as exc:
+        logger.warning("[Synthesize] git commit failed (non-fatal): %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Tool handler
 # ---------------------------------------------------------------------------
@@ -223,9 +266,10 @@ def _run_code(
 
 
 def _run_audit_raw(task: Task, code_artifact: str) -> tuple[str, bool]:
+    # FIX-3: гарантируем существование папки logs/ перед созданием temp-файла
+    Path("logs").mkdir(parents=True, exist_ok=True)
     try:
         from dev.auditor import AuditorAgent, GENERIC_SYSTEM_PROMPT
-        # FIX BUG-07: use unique temp file per call to avoid race condition
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".py", prefix="jarvis_audit_",
             dir="logs", delete=False, encoding="utf-8"
@@ -280,7 +324,9 @@ def _run_audit(
         return chat(model=MODEL_HEAVY, messages=messages)
 
     current_code = _strip_code_fences(code_artifact)
-    prev_hash: str | None = None
+    # FIX-5: используем нормализованное множество (type, line) вместо MD5 строки.
+    # LLM при temperature>0 производит слегка разные тексты — MD5 никогда не совпадал.
+    prev_findings: frozenset[tuple[str, str]] | None = None
     combined_report = ""
 
     for attempt in range(1, max_retries + 1):
@@ -302,11 +348,12 @@ def _run_audit(
             logger.info("[Critic] Task %s passed audit on attempt %d ✅", task.id, attempt)
             return combined_report
 
-        current_hash = _findings_hash(combined_report)
-        if current_hash == prev_hash:
-            logger.warning("[Critic] Task %s: stagnation at attempt %d", task.id, attempt)
+        # FIX-5: stagnation по нормализованному множеству findings
+        current_findings = _findings_normalized_set(combined_report)
+        if prev_findings is not None and current_findings == prev_findings:
+            logger.warning("[Critic] Task %s: stagnation at attempt %d (same findings set)", task.id, attempt)
             return combined_report + f"\n\n[Critic] Stopped: stagnated at attempt {attempt}/{max_retries}."
-        prev_hash = current_hash
+        prev_findings = current_findings
 
         if attempt < max_retries:
             logger.info("[Critic] Issues found, requesting fix (attempt %d/%d)", attempt, max_retries)
@@ -380,6 +427,8 @@ def _run_synthesize(
         llm_output = _fix_pip_deps_in_output(llm_output, final_code)
 
     if saved_files:
+        # FIX-6: автоматически делаем git commit сохранённых файлов
+        _git_commit_files(saved_files, task.goal)
         paths_str = "\n".join(f"  → {p.resolve()}" for p in saved_files)
         return f"[Synthesize] Done. Saved {len(saved_files)} file(s):\n{paths_str}\n\n" + llm_output
     else:
@@ -568,7 +617,13 @@ class Executor:
             logger.info(
                 "[Executor] Serial phase: %d dependent tasks (Ollama)", len(dependent)
             )
-            self._run_serial(dependent, user_request, context=context, all_tasks=tasks)
+            # FIX-2: обновляем context результатами зависимых задач.
+            # Без этого context из serial-фазы терялся и финальный артефакт
+            # (synthesize) не имел доступа к результатам parallel-волны.
+            serial_context = self._run_serial(
+                dependent, user_request, context=context, all_tasks=tasks
+            )
+            context.update(serial_context)
 
         return context
 

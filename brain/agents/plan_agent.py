@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def run(query: str, history: list[dict] | None = None) -> str:  # noqa: ARG001
+def run(query: str, history: list[dict] | None = None) -> str:
     from brain.agents.planner import PlannerAgent
     from brain.agents.executor import Executor
 
@@ -18,7 +18,9 @@ def run(query: str, history: list[dict] | None = None) -> str:  # noqa: ARG001
 
     planner = PlannerAgent()
     try:
-        tasks = planner.plan(query)
+        # FIX-1: пробрасываем history в planner, чтобы контекст предыдущего
+        # аудита/диалога был доступен при построении плана.
+        tasks = planner.plan(query, history=history)
     except Exception as e:
         logger.error("[plan_agent] Planner failed: %s", e)
         return f"Планировщик не смог разбить задачу: {e}"
@@ -40,10 +42,13 @@ def run(query: str, history: list[dict] | None = None) -> str:  # noqa: ARG001
     done_tasks   = [t for t in tasks if t.status == "done"]
     failed_tasks = [t for t in tasks if t.status == "failed"]
 
-    # Финальный артефакт — последнее выполненное задание
-    final_artifact = ""
-    if done_tasks:
-        final_artifact = done_tasks[-1].artifact or ""
+    # FIX-4: предпочитаем synthesize-таск как финальный артефакт;
+    # если его нет среди выполненных — берём последний done-таск.
+    synth_task = next(
+        (t for t in reversed(done_tasks) if t.type == "synthesize"), None
+    )
+    final_task = synth_task or (done_tasks[-1] if done_tasks else None)
+    final_artifact = final_task.artifact if final_task else ""
 
     header = (
         f"✅ Выполнено {len(done_tasks)}/{len(tasks)} задач"

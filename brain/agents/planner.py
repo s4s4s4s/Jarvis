@@ -149,11 +149,20 @@ class PlannerAgent:
     def __init__(self, model: str = MODEL_HEAVY) -> None:
         self.model = model
 
-    def build_prompt(self, user_request: str) -> list[dict]:
-        return [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": f"User request: {user_request}"},
-        ]
+    def build_prompt(
+        self, user_request: str, history: list[dict] | None = None
+    ) -> list[dict]:
+        messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        # FIX-1: вставляем историю (последние 6 сообщений) перед запросом,
+        # чтобы планировщик видел контекст предыдущего аудита / диалога.
+        if history:
+            for msg in history[-6:]:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role in ("user", "assistant") and content:
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": f"User request: {user_request}"})
+        return messages
 
     def _call_llm(self, messages: list[dict]) -> str:
         logger.debug("[PlannerAgent] Calling LLM model=%s", self.model)
@@ -239,8 +248,11 @@ class PlannerAgent:
 
         return result
 
-    def plan(self, user_request: str) -> list[Task]:
-        messages = self.build_prompt(user_request)
+    def plan(
+        self, user_request: str, history: list[dict] | None = None
+    ) -> list[Task]:
+        # FIX-1: передаём history в build_prompt
+        messages = self.build_prompt(user_request, history=history)
         raw_output = self._call_llm(messages)
         logger.debug("[PlannerAgent] Raw LLM output: %s", raw_output[:500])
 
