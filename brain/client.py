@@ -201,3 +201,43 @@ async def chat_async(
     return await loop.run_in_executor(
         None, lambda: _chat_ollama(model, messages, options)
     )
+
+
+# ---------------------------------------------------------------------------
+# Model warmup (eliminates cold-start latency)
+# ---------------------------------------------------------------------------
+
+def _warmup_model(model: str, use_heavy_client: bool = False) -> None:
+    client = _client_heavy if use_heavy_client else _client
+    try:
+        logger.info("[warmup] Pinging model '%s'...", model)
+        client.chat(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            options={"num_predict": 1, "temperature": 0.0},
+            keep_alive="1h",
+        )
+        logger.info("[warmup] Model '%s' loaded into VRAM v", model)
+    except Exception as e:
+        logger.warning("[warmup] Model '%s' warmup failed: %s", model, e)
+
+
+def warmup_all(blocking: bool = False) -> None:
+    import threading
+    targets = [
+        (MODEL_ROUTER, False),
+        (MODEL_FAST,   False),
+        (MODEL_HEAVY,  True),
+    ]
+    threads = [
+        threading.Thread(target=_warmup_model, args=(m, h), daemon=True)
+        for m, h in targets
+    ]
+    for t in threads:
+        t.start()
+    if blocking:
+        for t in threads:
+            t.join()
+
+
+warmup_all(blocking=False)
