@@ -15,6 +15,46 @@ _running_lock = threading.Lock()
 _is_running = False
 
 
+def _speak_turn(
+    ask_result,
+    stop_event,
+    audio_core,
+    on_assistant_text: Optional[Callable[[str], None]] = None,
+    log_fn: Optional[Callable[[str], None]] = None,
+    set_state: Optional[Callable] = None,
+) -> Optional[object]:
+    """
+    Shared helper: send full answer to chat UI, short voice_reply to TTS.
+    Returns interrupted_audio (or None).
+    """
+    def _log(msg): log_fn and log_fn(msg)
+    def _state(s): set_state and set_state(s)
+
+    answer = ask_result.get_answer(timeout=120.0)
+    if not answer:
+        _log("[assistant] LLM вернул пустой ответ.")
+        return None
+
+    voice_reply = ask_result.get_voice_reply()  # short phrase for TTS
+
+    # Full answer → chat UI
+    _log(f"[assistant] Chat: {answer[:120]}{'...' if len(answer) > 120 else ''}")
+    if on_assistant_text:
+        try:
+            on_assistant_text(answer)
+        except Exception:
+            pass
+
+    # Short reply → TTS
+    _log(f"[assistant] TTS: {voice_reply}")
+    _state(AssistantState.SPEAKING)
+    return tts.speak_and_handle(
+        voice_reply,
+        stop_event=stop_event,
+        audio_core=audio_core,
+    )
+
+
 def main(
     stop_event: Optional[threading.Event] = None,
     on_state: Optional[Callable] = None,
@@ -54,18 +94,14 @@ def main(
 
         _log("[assistant] Ollama доступна.")
 
-        # ── Инициализация: загружаем всё ДО старта любых циклов ─────────
         _log("[assistant] Инициализация моделей...")
         import numpy as np
         from voice.stt import vad_prob
-        vad_prob(np.zeros(512, dtype="float32"))  # триггерит _ensure_models()
+        vad_prob(np.zeros(512, dtype="float32"))
         if stop_event.is_set():
             return
         _log("[assistant] Модели готовы.")
 
-        # FIX: подключаем TTS-callback для таймеров
-        # Используем замыкание на stop_event чтобы таймер не говорил
-        # когда ассистент уже остановлен
         from tools.timer import set_fire_callback
         set_fire_callback(lambda msg: tts.say(msg, stop_event=stop_event))
         _log("[assistant] Timer TTS callback установлен.")
@@ -129,9 +165,8 @@ def main(
             _state(AssistantState.THINKING)
             ask_result = ask_llm(text)
 
+            # Filler — чат + TTS (filler всегда короткий, весь целиком в TTS)
             if ask_result.filler:
-                # FIX (audit 5): филлер озвучивался, но не попадал ни в логи,
-                # ни в UI-диалог. Теперь дублируем в _log + on_assistant_text.
                 _log(f"[assistant] Filler: {ask_result.filler}")
                 if on_assistant_text:
                     try:
@@ -142,28 +177,21 @@ def main(
                 tts.say(ask_result.filler, stop_event=stop_event)
 
             _state(AssistantState.THINKING)
-            answer = ask_result.get_answer(timeout=120.0)
-            if not answer:
-                _log("[assistant] LLM вернул пустой ответ.")
-                continue
 
-            _log(f"[assistant] LLM: {answer[:120]}")
-            if on_assistant_text:
-                try:
-                    on_assistant_text(answer)
-                except Exception:
-                    pass
-
-            _state(AssistantState.SPEAKING)
-            interrupted_audio = tts.speak_and_handle(
-                answer,
+            # Main answer: full text → chat, short voice_reply → TTS
+            interrupted_audio = _speak_turn(
+                ask_result,
                 stop_event=stop_event,
                 audio_core=audio_core,
+                on_assistant_text=on_assistant_text,
+                log_fn=_log,
+                set_state=_state,
             )
 
             if stop_event.is_set():
                 break
 
+            # Interruption handling
             if interrupted_audio is not None:
                 _log("[assistant] Пользователь перебил TTS.")
                 _state(AssistantState.INTERRUPT_LISTEN)
@@ -179,7 +207,6 @@ def main(
                     _state(AssistantState.THINKING)
                     int_result = ask_llm(int_text)
                     if int_result.filler:
-                        # FIX (audit 5): филлер также должен попадать в лог/UI
                         _log(f"[assistant] Filler: {int_result.filler}")
                         if on_assistant_text:
                             try:
@@ -189,19 +216,14 @@ def main(
                         _state(AssistantState.SPEAKING)
                         tts.say(int_result.filler, stop_event=stop_event)
                     _state(AssistantState.THINKING)
-                    int_answer = int_result.get_answer(timeout=120.0)
-                    if int_answer:
-                        if on_assistant_text:
-                            try:
-                                on_assistant_text(int_answer)
-                            except Exception:
-                                pass
-                        _state(AssistantState.SPEAKING)
-                        tts.speak_and_handle(
-                            int_answer,
-                            stop_event=stop_event,
-                            audio_core=audio_core,
-                        )
+                    _speak_turn(
+                        int_result,
+                        stop_event=stop_event,
+                        audio_core=audio_core,
+                        on_assistant_text=on_assistant_text,
+                        log_fn=_log,
+                        set_state=_state,
+                    )
             else:
                 import time
                 time.sleep(POST_TTS_GRACE_SEC)
@@ -210,8 +232,6 @@ def main(
         with _running_lock:
             _is_running = False
         audio_core.stop()
-        # FIX: отменяем все активные таймеры при завершении ассистента,
-        # чтобы daemon-потоки не пытались вызвать tts.say() после остановки
         try:
             from tools.timer import cancel_all
             cancelled = cancel_all()
