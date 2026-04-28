@@ -3,13 +3,14 @@ from __future__ import annotations
 import atexit
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 from brain.client import chat, MODEL_ROUTER, MODEL_FAST
-from brain.prompts import ROUTER_SYSTEM, TOOL_FORMAT_SYSTEM, VOICE_SUMMARY_SYSTEM
+from brain.prompts import ROUTER_SYSTEM, TOOL_FORMAT_SYSTEM
 from brain import history as hist
 from brain.logger import log_route
 
@@ -21,8 +22,8 @@ logger = logging.getLogger(__name__)
 _FALLBACK_TIMEOUT_MSG = "Сэр, не удалось получить ответ вовремя."
 _FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
 
-# Tools whose output is too long for TTS — voice gets a short summary instead
-_VOICE_SUMMARY_TOOLS = {
+# Tools whose full output should never be read aloud verbatim
+_VOICE_TRUNCATE_TOOLS = {
     "auditor.self",
     "auditor.run",
     "file.read",
@@ -34,8 +35,8 @@ _VOICE_SUMMARY_TOOLS = {
     "code.test",
 }
 
-# Max chars in answer before we auto-summarise for voice
-_VOICE_MAX_CHARS = 300
+# Max chars before we trim for TTS (no LLM call)
+_VOICE_MAX_CHARS = 220
 
 
 @dataclass
@@ -90,28 +91,51 @@ def _route(text: str) -> dict[str, Any]:
     }
 
 
-def _make_voice_summary(full_answer: str, tool_name: str | None) -> str:
-    """Ask LLM to produce a short TTS-friendly summary of a long answer."""
-    msgs = [
-        {"role": "system", "content": VOICE_SUMMARY_SYSTEM},
-        {"role": "user", "content": full_answer[:2000]},
-    ]
-    try:
-        summary = chat(MODEL_FAST, msgs, options={"temperature": 0.2, "num_ctx": 2048})
-        return summary.strip()
-    except Exception as e:
-        logger.warning("[ask] voice summary failed for tool '%s': %s", tool_name, e)
-        # Safe fallback: first sentence of the answer
-        first = full_answer.split(".")[0].strip()
-        return (first[:120] + "...") if len(first) > 120 else first
+def _trim_for_voice(answer: str, tool_name: str | None) -> str:
+    """
+    Rule-based TTS trimmer. Zero extra LLM calls.
 
+    Strategy (in order):
+    1. Strip markdown (headers, bold, bullets, code fences).
+    2. For known long-output tools: keep only first 1-2 sentences.
+    3. For any answer > _VOICE_MAX_CHARS: keep first 1-2 sentences.
+    4. If still too long after 2 sentences: hard-cut at _VOICE_MAX_CHARS + ellipsis.
+    """
+    # 1. Strip markdown
+    text = answer
+    text = re.sub(r"```[\s\S]*?```", "", text)          # code blocks
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.M)  # headers
+    text = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", text) # bold/italic
+    text = re.sub(r"^[-*+]\s+", "", text, flags=re.M)   # bullets
+    text = re.sub(r"\|[^\n]+", "", text)                 # table rows
+    text = re.sub(r"\n{2,}", " ", text)                  # collapse newlines
+    text = re.sub(r"\s{2,}", " ", text).strip()
 
-def _should_summarise_for_voice(answer: str, tool_name: str | None) -> bool:
-    if tool_name in _VOICE_SUMMARY_TOOLS:
-        return True
-    if len(answer) > _VOICE_MAX_CHARS:
-        return True
-    return False
+    if not text:
+        # Fallback: strip everything, take raw first 120 chars
+        text = re.sub(r"[`*#|\n]", " ", answer).strip()
+        return text[:120].strip()
+
+    # 2-3. For tool results OR long answers: take 1-2 sentences
+    if tool_name in _VOICE_TRUNCATE_TOOLS or len(text) > _VOICE_MAX_CHARS:
+        # Split on sentence-ending punctuation followed by space/end
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        result = ""
+        for i, sent in enumerate(sentences):
+            candidate = (result + " " + sent).strip() if result else sent
+            if i >= 2 or len(candidate) > _VOICE_MAX_CHARS:
+                if not result:
+                    # Even 1st sentence is too long — hard cut
+                    result = candidate[:_VOICE_MAX_CHARS].rstrip() + "..."
+                break
+            result = candidate
+        text = result or text[:_VOICE_MAX_CHARS].rstrip() + "..."
+
+    # 4. Final hard cap
+    if len(text) > _VOICE_MAX_CHARS:
+        text = text[:_VOICE_MAX_CHARS].rstrip() + "..."
+
+    return text
 
 
 def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
@@ -188,8 +212,7 @@ def ask_llm(text: str) -> AskResult:
     route_ms = int((time.monotonic() - t_route0) * 1000)
 
     result = AskResult(filler=route_data.get("filler", ""), _text=text)
-
-    tool_name = route_data.get("tool")  # captured for voice logic
+    tool_name = route_data.get("tool")
 
     def _run() -> tuple[str, str]:
         t0 = time.monotonic()
@@ -210,11 +233,9 @@ def ask_llm(text: str) -> AskResult:
         except Exception as e:
             logger.error("Memory extraction failed: %s", e)
 
-        # Build voice reply
-        if _should_summarise_for_voice(answer, tool_name):
-            voice_reply = _make_voice_summary(answer, tool_name)
-        else:
-            voice_reply = answer
+        # Build voice reply — rule-based, zero extra LLM calls
+        voice_reply = _trim_for_voice(answer, tool_name)
+        logger.debug("[ask] voice_reply (%d chars): %s", len(voice_reply), voice_reply[:80])
 
         return answer, voice_reply
 
