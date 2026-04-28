@@ -11,6 +11,7 @@ parallel tasks and switches back to 'ollama' afterwards.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import logging
 from typing import Literal
@@ -35,7 +36,7 @@ MODEL_FAST   = OLLAMA_FAST_MODEL
 MODEL_HEAVY  = OLLAMA_HEAVY_MODEL
 
 # ---------------------------------------------------------------------------
-# Ollama clients (unchanged)
+# Ollama clients
 # ---------------------------------------------------------------------------
 _OLLAMA_BASE_URL = "http://localhost:11434"
 _client       = ollama.Client(host=_OLLAMA_BASE_URL, timeout=OLLAMA_TIMEOUT)
@@ -44,8 +45,8 @@ _client_heavy = ollama.Client(host=_OLLAMA_BASE_URL, timeout=OLLAMA_HEAVY_TIMEOU
 # ---------------------------------------------------------------------------
 # llama-server settings (OpenAI-compatible /v1/chat/completions)
 # ---------------------------------------------------------------------------
-_LLAMA_BASE_URL  = "http://127.0.0.1:8080"
-_LLAMA_TIMEOUT   = 300  # seconds — generation can be long for 32B
+_LLAMA_BASE_URL = "http://127.0.0.1:8080"
+_LLAMA_TIMEOUT  = 300
 
 # ---------------------------------------------------------------------------
 # Global backend selector
@@ -55,7 +56,6 @@ _active_backend: BackendType = "ollama"
 
 
 def set_backend(backend: BackendType) -> None:
-    """Switch the global backend used by chat()."""
     global _active_backend
     _active_backend = backend
     logger.info("[client] Backend switched to '%s'", backend)
@@ -70,7 +70,6 @@ def get_backend() -> BackendType:
 # ---------------------------------------------------------------------------
 
 def is_ollama_available() -> bool:
-    """Quick check — called at startup."""
     try:
         _client.list()
         return True
@@ -92,7 +91,8 @@ def is_llama_server_available(base_url: str = _LLAMA_BASE_URL) -> bool:
 # ---------------------------------------------------------------------------
 
 def _chat_ollama(model: str, messages: list[dict], options: dict | None = None) -> str:
-    opts = options or {"temperature": 0.2, "num_ctx": 8192}
+    # FIX BUG-03: merge defaults with caller options, caller wins
+    opts = {"temperature": 0.2, "num_ctx": 8192, **(options or {})}
     client = _client_heavy if model == MODEL_HEAVY else _client
     last_err = None
     for attempt in range(OLLAMA_RETRIES + 1):
@@ -109,7 +109,7 @@ def _chat_ollama(model: str, messages: list[dict], options: dict | None = None) 
 
 
 # ---------------------------------------------------------------------------
-# Async chat  (llama-server backend — OpenAI /v1/chat/completions)
+# Async chat  (llama-server backend)
 # ---------------------------------------------------------------------------
 
 async def _chat_llama_async(
@@ -125,10 +125,7 @@ async def _chat_llama_async(
         "stream": False,
     }
     async with httpx.AsyncClient(timeout=_LLAMA_TIMEOUT) as client:
-        resp = await client.post(
-            f"{base_url}/v1/chat/completions",
-            json=payload,
-        )
+        resp = await client.post(f"{base_url}/v1/chat/completions", json=payload)
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"].strip()
@@ -140,11 +137,14 @@ def _chat_llama_sync(
     temperature: float = 0.2,
     max_tokens: int = 4096,
 ) -> str:
-    """Sync wrapper around the async llama call (for non-async callers)."""
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # Already inside an event loop — use a thread-safe approach
+        # FIX BUG-01: use asyncio.run() for fresh loop; thread-executor for running loops
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(
@@ -152,7 +152,7 @@ def _chat_llama_sync(
                     _chat_llama_async(messages, base_url, temperature, max_tokens),
                 )
                 return future.result(timeout=_LLAMA_TIMEOUT)
-        return loop.run_until_complete(
+        return asyncio.run(
             _chat_llama_async(messages, base_url, temperature, max_tokens)
         )
     except Exception as e:
@@ -170,12 +170,6 @@ def chat(
     options: dict | None = None,
     backend: BackendType | None = None,
 ) -> str:
-    """
-    Send a chat request.
-    - If backend='llama' (or global backend is 'llama'), use llama-server.
-    - Otherwise use Ollama.
-    `model` is ignored for llama-server (model is fixed at server start).
-    """
     effective = backend or _active_backend
     if effective == "llama":
         temperature = (options or {}).get("temperature", 0.2)
@@ -189,15 +183,12 @@ async def chat_async(
     options: dict | None = None,
     backend: BackendType | None = None,
 ) -> str:
-    """
-    Async version — used by the parallel executor path.
-    """
     effective = backend or _active_backend
     if effective == "llama":
         temperature = (options or {}).get("temperature", 0.2)
         return await _chat_llama_async(messages, temperature=temperature)
-    # Ollama is blocking — run in thread pool to not block event loop
-    loop = asyncio.get_event_loop()
+    # FIX BUG-01: use get_running_loop() instead of deprecated get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None, lambda: _chat_ollama(model, messages, options)
     )
@@ -217,7 +208,7 @@ def _warmup_model(model: str, use_heavy_client: bool = False) -> None:
             options={"num_predict": 1, "temperature": 0.0},
             keep_alive="1h",
         )
-        logger.info("[warmup] Model '%s' loaded into VRAM v", model)
+        logger.info("[warmup] Model '%s' loaded into VRAM ✓", model)
     except Exception as e:
         logger.warning("[warmup] Model '%s' warmup failed: %s", model, e)
 
@@ -240,4 +231,6 @@ def warmup_all(blocking: bool = False) -> None:
             t.join()
 
 
-warmup_all(blocking=False)
+# FIX BUG-02: guard warmup behind env var so pytest/CLI won't trigger it
+if os.getenv("JARVIS_WARMUP", "1") != "0":
+    warmup_all(blocking=False)

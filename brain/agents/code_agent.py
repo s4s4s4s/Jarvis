@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from brain.client import chat, MODEL_HEAVY
 from tools.executor import run_python, run_pytest
@@ -37,21 +38,36 @@ SYSTEM = """Ты — автономный инженер-разработчик.
 """
 
 
-def run(task: str, history: list[dict] | None = None) -> str:
+def _strip_json_fences(raw: str) -> str:
+    """FIX BUG-14: use regex to strip code fences, not str.strip() which strips chars."""
+    text = raw.strip()
+    # Remove leading ```json or ``` fence
+    text = re.sub(r'^```[\w]*\n?', '', text)
+    # Remove trailing ``` fence
+    text = re.sub(r'\n?```$', '', text)
+    return text.strip()
+
+
+def run(
+    task: str,
+    history: list[dict] | None = None,  # FIX BUG-15: actually use history if provided
+) -> str:
     """Execute a coding task iteratively. Returns final summary string."""
-    messages: list[dict] = [
-        {"role": "system",    "content": SYSTEM},
-        {"role": "user",      "content": task},
-    ]
+    messages: list[dict] = [{"role": "system", "content": SYSTEM}]
+
+    # FIX BUG-15: inject history context if provided
+    if history:
+        for msg in history[-6:]:  # last 3 turns for context window
+            messages.append(msg)
+
+    messages.append({"role": "user", "content": task})
 
     for iteration in range(MAX_ITER):
         logger.info("[code_agent] iteration %d/%d", iteration + 1, MAX_ITER)
         raw = chat(MODEL_HEAVY, messages, options={"temperature": 0.1, "num_ctx": 16384})
 
-        # strip possible markdown code fences
-        clean = raw.strip()
-        for fence in ("```json", "```"):
-            clean = clean.strip(fence).strip()
+        # FIX BUG-14: safe fence stripping via regex
+        clean = _strip_json_fences(raw)
 
         try:
             action_data = json.loads(clean)

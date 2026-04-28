@@ -18,14 +18,14 @@ atexit.register(lambda: _executor.shutdown(wait=False, cancel_futures=True))
 
 logger = logging.getLogger(__name__)
 
-_CTX_TIMEOUT    = "получение ответа"
-_TOOL_TIMEOUT   = "get_answer"
+_FALLBACK_TIMEOUT_MSG = "Сэр, не удалось получить ответ вовремя."
 _FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
 
 
 @dataclass
 class AskResult:
     filler: str = ""
+    _text:   str = field(default="", repr=False)   # original user query for error formatting
     _future: Future | None = field(default=None, repr=False)
     _answer: str = field(default="", repr=False)
 
@@ -34,7 +34,9 @@ class AskResult:
             try:
                 self._answer = self._future.result(timeout=timeout)
             except Exception as e:
-                self._answer = _format_tool_error(_CTX_TIMEOUT, _TOOL_TIMEOUT, str(e))
+                # FIX BUG-08: pass real user text, not string constants
+                logger.error("[ask] Future error: %s", e)
+                self._answer = _FALLBACK_TIMEOUT_MSG
             self._future = None
         return self._answer
 
@@ -42,7 +44,7 @@ class AskResult:
 def _route(text: str) -> dict[str, Any]:
     msgs = [
         {"role": "system", "content": ROUTER_SYSTEM},
-        {"role": "user", "content": text},
+        {"role": "user",   "content": text},
     ]
     raw = chat(MODEL_ROUTER, msgs, options={"temperature": 0.0, "num_ctx": 4096})
     raw = raw.strip()
@@ -77,7 +79,7 @@ def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
     try:
         return chat(MODEL_FAST, msgs, options={"temperature": 0.3, "num_ctx": 4096})
     except Exception as e:
-        logger.error(f"LLM error in _format_tool_error for tool '{tool_name}': {e}")
+        logger.error("LLM error in _format_tool_error for tool '%s': %s", tool_name, e)
         return _FALLBACK_ERROR.format(error=error)
 
 
@@ -137,7 +139,8 @@ def ask_llm(text: str) -> AskResult:
         }
     route_ms = int((time.monotonic() - t_route0) * 1000)
 
-    result = AskResult(filler=route_data.get("filler", ""))
+    # FIX BUG-08: store text in result for error formatting
+    result = AskResult(filler=route_data.get("filler", ""), _text=text)
 
     def _run() -> str:
         t0 = time.monotonic()
@@ -156,7 +159,7 @@ def ask_llm(text: str) -> AskResult:
             from tools.memory import extract_and_save_async
             extract_and_save_async(text, answer)
         except Exception as e:
-            logger.error(f"Memory extraction failed: {e}")
+            logger.error("Memory extraction failed: %s", e)
         return answer
 
     result._future = _executor.submit(_run)

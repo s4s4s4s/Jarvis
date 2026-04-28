@@ -22,6 +22,7 @@ import json
 import logging
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Callable
 
@@ -164,7 +165,7 @@ def _run_tool(task: Task, context: dict[str, str]) -> str:  # noqa: ARG001
 
 
 async def _run_tool_async(task: Task, context: dict[str, str]) -> str:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, lambda: _run_tool(task, context))
 
 
@@ -224,11 +225,18 @@ def _run_code(
 def _run_audit_raw(task: Task, code_artifact: str) -> tuple[str, bool]:
     try:
         from dev.auditor import AuditorAgent, GENERIC_SYSTEM_PROMPT
-        tmp_path = Path("logs/_executor_audit_tmp.py")
-        tmp_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path.write_text(code_artifact, encoding="utf-8")
-        agent = AuditorAgent(system_prompt=GENERIC_SYSTEM_PROMPT)
-        findings = agent.audit([str(tmp_path)])
+        # FIX BUG-07: use unique temp file per call to avoid race condition
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", prefix="jarvis_audit_",
+            dir="logs", delete=False, encoding="utf-8"
+        ) as tmp:
+            tmp.write(code_artifact)
+            tmp_path = Path(tmp.name)
+        try:
+            agent = AuditorAgent(system_prompt=GENERIC_SYSTEM_PROMPT)
+            findings = agent.audit([str(tmp_path)])
+        finally:
+            tmp_path.unlink(missing_ok=True)
         confirmed = [f for f in findings if f.status == "confirmed"]
         if not confirmed:
             return "Audit complete: no issues found.", False
@@ -447,7 +455,6 @@ async def _run_task_async(
     context: dict[str, str],
     all_tasks: list[Task],
 ) -> tuple[str, str]:
-    """Dispatch a single task asynchronously. Returns (task.id, artifact)."""
     logger.info("[Executor][parallel] %s [%s]: %s", task.id, task.type, task.goal)
     task.status = "running"
     if task.type == "research":
@@ -459,7 +466,8 @@ async def _run_task_async(
     elif task.type == "tool":
         artifact = await _run_tool_async(task, context)
     else:
-        loop = asyncio.get_event_loop()
+        # FIX BUG-01: use get_running_loop() instead of deprecated get_event_loop()
+        loop = asyncio.get_running_loop()
         if task.type == "audit":
             artifact = await loop.run_in_executor(
                 None, lambda: _run_audit(task, context, all_tasks=all_tasks)
@@ -482,19 +490,6 @@ async def _run_task_async(
 # ---------------------------------------------------------------------------
 
 class Executor:
-    """
-    Executes a task plan produced by PlannerAgent.
-
-    Parallel mode (use_parallel=True, default):
-      - If independent tasks include LLM types → launches llama-server
-      - If ALL independent tasks are type="tool" → skips llama-server entirely
-        (tool calls are pure HTTP, no LLM needed)
-      - Falls back to serial for dependent tasks
-
-    Serial mode (use_parallel=False):
-      - Pure sequential execution via Ollama
-    """
-
     def __init__(
         self,
         critic_retries: int = DEFAULT_CRITIC_RETRIES,
@@ -504,10 +499,22 @@ class Executor:
         self.use_parallel   = use_parallel
 
     def run(self, tasks: list[Task], user_request: str = "") -> dict[str, str]:
-        """Synchronous wrapper — auto-selects parallel or serial mode."""
         if self.use_parallel:
             independent = [t for t in tasks if not t.depends_on]
             if len(independent) > 1:
+                # FIX BUG-06: handle already-running event loop
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+                if loop and loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(
+                            asyncio.run,
+                            self._run_with_parallel(tasks, user_request)
+                        )
+                        return future.result()
                 return asyncio.run(self._run_with_parallel(tasks, user_request))
         return self._run_serial(tasks, user_request)
 
@@ -535,14 +542,17 @@ class Executor:
                 "[Executor] Parallel wave: %d tasks (LLM) → launching llama-server",
                 len(independent),
             )
-            async with LlamaServerManager() as srv:
-                set_backend("llama")
-                logger.info("[Executor] llama-server ready at %s", srv.base_url)
-                results = await asyncio.gather(
-                    *[_run_task_async(t, context, tasks) for t in independent],
-                    return_exceptions=True,
-                )
-            set_backend("ollama")
+            # FIX BUG-04: always restore backend via try/finally
+            try:
+                async with LlamaServerManager() as srv:
+                    set_backend("llama")
+                    logger.info("[Executor] llama-server ready at %s", srv.base_url)
+                    results = await asyncio.gather(
+                        *[_run_task_async(t, context, tasks) for t in independent],
+                        return_exceptions=True,
+                    )
+            finally:
+                set_backend("ollama")
 
         for res in results:
             if isinstance(res, Exception):
@@ -572,21 +582,28 @@ class Executor:
         if context is None:
             context = {}
         effective_all = all_tasks or tasks
+        errors: list[str] = []
 
         for task in tasks:
+            # FIX BUG-05: check dependencies but don't abort entire pipeline on one failure
+            dep_failed = False
             for dep in task.depends_on:
                 dep_task = next((t for t in effective_all if t.id == dep), None)
                 if dep_task is None:
-                    logger.error("[Executor] Dependency '%s' not found", dep)
-                    task.status = "failed"
-                    return context
+                    logger.error("[Executor] Dependency '%s' not found for task '%s'", dep, task.id)
+                    dep_failed = True
+                    break
                 if dep_task.status != "done":
                     logger.error(
-                        "[Executor] Task %s depends on %s (status=%s)",
+                        "[Executor] Task %s depends on %s (status=%s) — skipping",
                         task.id, dep, dep_task.status,
                     )
-                    task.status = "failed"
-                    return context
+                    dep_failed = True
+                    break
+            if dep_failed:
+                task.status = "failed"
+                errors.append(task.id)
+                continue  # skip this task but continue with others
 
             logger.info("[Executor] Running %s [%s]: %s", task.id, task.type, task.goal)
             task.status = "running"
@@ -615,7 +632,8 @@ class Executor:
                     if handler is None:
                         logger.error("[Executor] Unknown task type '%s'", task.type)
                         task.status = "failed"
-                        return context
+                        errors.append(task.id)
+                        continue
                     artifact = handler(task, context)
 
                 task.artifact = artifact
@@ -625,8 +643,11 @@ class Executor:
             except Exception as e:
                 logger.error("[Executor] Task %s failed: %s", task.id, e)
                 task.status = "failed"
-                return context
+                errors.append(task.id)
+                # FIX BUG-05: continue instead of return — don't abort remaining tasks
 
+        if errors:
+            logger.warning("[Executor] Pipeline completed with %d failed task(s): %s", len(errors), errors)
         return context
 
 

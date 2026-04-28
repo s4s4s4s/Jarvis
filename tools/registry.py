@@ -10,7 +10,8 @@ from tools.weather import get_weather
 from tools.timer import set_timer, list_timers, cancel_timer
 from tools.file_ops import read_file, write_file, list_dir
 from tools.executor import run_python, run_file, run_pytest
-from tools.git_ops import git_status, git_diff, git_commit, git_push
+# FIX BUG-10: import git_stash properly instead of __import__ in lambda
+from tools.git_ops import git_status, git_diff, git_commit, git_push, git_stash
 from dev.auditor import AuditorAgent
 
 
@@ -122,11 +123,13 @@ _TOOL_MAP: dict[str, Any] = {
     "code.run_file":    lambda path, args=None: run_file(path, args),
     "code.test":        lambda path=".": run_pytest(path),
     # --- phase 1: git ---
-    "git.status":       lambda: git_status(),
+    # FIX BUG-11: direct function references, no unnecessary lambdas
+    "git.status":       git_status,
     "git.diff":         lambda path=None: git_diff(path),
     "git.commit":       lambda message, add_all=True: git_commit(message, add_all),
-    "git.push":         lambda: git_push(),
-    "git.stash":        lambda message="": __import__('tools.git_ops', fromlist=['git_stash']).git_stash(message),
+    "git.push":         git_push,
+    # FIX BUG-10: use properly imported git_stash
+    "git.stash":        lambda message="": git_stash(message),
 }
 
 
