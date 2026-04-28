@@ -10,7 +10,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 from brain.client import chat, MODEL_ROUTER, MODEL_FAST
-from brain.prompts import ROUTER_SYSTEM, TOOL_FORMAT_SYSTEM
+from brain.prompts import ROUTER_SYSTEM
+from brain.prompts import TOOL_FORMAT_SYSTEM
 from brain import history as hist
 from brain.logger import log_route
 
@@ -22,7 +23,6 @@ logger = logging.getLogger(__name__)
 _FALLBACK_TIMEOUT_MSG = "Сэр, не удалось получить ответ вовремя."
 _FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
 
-# Tools whose full output should never be read aloud verbatim
 _VOICE_TRUNCATE_TOOLS = {
     "auditor.self",
     "auditor.run",
@@ -35,8 +35,10 @@ _VOICE_TRUNCATE_TOOLS = {
     "code.test",
 }
 
-# Max chars before we trim for TTS (no LLM call)
 _VOICE_MAX_CHARS = 220
+
+# Кол-во последних сообщений истории, передаваемых в роутер для контекста
+_ROUTER_HISTORY_TURNS = 6
 
 
 @dataclass
@@ -44,11 +46,10 @@ class AskResult:
     filler: str = ""
     _text:        str = field(default="", repr=False)
     _future:      Future | None = field(default=None, repr=False)
-    _answer:      str = field(default="", repr=False)   # full answer → shown in chat
-    _voice_reply: str = field(default="", repr=False)   # short phrase → spoken aloud
+    _answer:      str = field(default="", repr=False)
+    _voice_reply: str = field(default="", repr=False)
 
     def get_answer(self, timeout: float = 120.0) -> str:
-        """Full answer for the chat UI."""
         if self._future is not None:
             try:
                 self._answer, self._voice_reply = self._future.result(timeout=timeout)
@@ -60,15 +61,27 @@ class AskResult:
         return self._answer
 
     def get_voice_reply(self, timeout: float = 120.0) -> str:
-        """Short phrase for TTS. Auto-populated after get_answer()."""
         if self._future is not None:
             self.get_answer(timeout=timeout)
         return self._voice_reply or self._answer
 
 
-def _route(text: str) -> dict[str, Any]:
+def _route(text: str, history: list[dict]) -> dict[str, Any]:
+    """
+    Определяем маршрут с учётом последних сообщений истории.
+    Это позволяет роутеру понять контекст: напр., что предыдущий ответ был аудитом и
+    текущая команда "исправь" означает авто-фикс найденных проблем.
+    """
+    # Обрезаем: последние N сообщений истории (каждое обрезается до 800 символов чтобы не забивать контекст роутера)
+    recent = history[-_ROUTER_HISTORY_TURNS:] if history else []
+    history_msgs = [
+        {"role": m["role"], "content": m["content"][:800]}
+        for m in recent
+    ]
+
     msgs = [
         {"role": "system", "content": ROUTER_SYSTEM},
+        *history_msgs,
         {"role": "user",   "content": text},
     ]
     raw = chat(MODEL_ROUTER, msgs, options={"temperature": 0.0, "num_ctx": 4096})
@@ -92,46 +105,31 @@ def _route(text: str) -> dict[str, Any]:
 
 
 def _trim_for_voice(answer: str, tool_name: str | None) -> str:
-    """
-    Rule-based TTS trimmer. Zero extra LLM calls.
-
-    Strategy (in order):
-    1. Strip markdown (headers, bold, bullets, code fences).
-    2. For known long-output tools: keep only first 1-2 sentences.
-    3. For any answer > _VOICE_MAX_CHARS: keep first 1-2 sentences.
-    4. If still too long after 2 sentences: hard-cut at _VOICE_MAX_CHARS + ellipsis.
-    """
-    # 1. Strip markdown
     text = answer
-    text = re.sub(r"```[\s\S]*?```", "", text)          # code blocks
-    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.M)  # headers
-    text = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", text) # bold/italic
-    text = re.sub(r"^[-*+]\s+", "", text, flags=re.M)   # bullets
-    text = re.sub(r"\|[^\n]+", "", text)                 # table rows
-    text = re.sub(r"\n{2,}", " ", text)                  # collapse newlines
+    text = re.sub(r"```[\s\S]*?```", "", text)
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.M)
+    text = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", text)
+    text = re.sub(r"^[-*+]\s+", "", text, flags=re.M)
+    text = re.sub(r"\|[^\n]+", "", text)
+    text = re.sub(r"\n{2,}", " ", text)
     text = re.sub(r"\s{2,}", " ", text).strip()
 
     if not text:
-        # Fallback: strip everything, take raw first 120 chars
         text = re.sub(r"[`*#|\n]", " ", answer).strip()
         return text[:120].strip()
 
-    # 2-3. For tool results OR long answers: take 1-2 sentences
     if tool_name in _VOICE_TRUNCATE_TOOLS or len(text) > _VOICE_MAX_CHARS:
-        # Split on sentence-ending punctuation followed by space/end
         sentences = re.split(r'(?<=[.!?])\s+', text)
         result = ""
         for i, sent in enumerate(sentences):
             candidate = (result + " " + sent).strip() if result else sent
             if i >= 2 or len(candidate) > _VOICE_MAX_CHARS:
                 if not result:
-                    # Even 1st sentence is too long — hard cut
                     result = candidate[:_VOICE_MAX_CHARS].rstrip() + "..."
                 break
             result = candidate
         text = result or text[:_VOICE_MAX_CHARS].rstrip() + "..."
 
-    # 4. Final hard cap
     if len(text) > _VOICE_MAX_CHARS:
         text = text[:_VOICE_MAX_CHARS].rstrip() + "..."
 
@@ -199,7 +197,7 @@ def ask_llm(text: str) -> AskResult:
 
     t_route0 = time.monotonic()
     try:
-        route_data = _route(text)
+        route_data = _route(text, history)   # <-- передаём историю
     except Exception as e:
         route_data = {
             "route":      "chat",
@@ -233,7 +231,6 @@ def ask_llm(text: str) -> AskResult:
         except Exception as e:
             logger.error("Memory extraction failed: %s", e)
 
-        # Build voice reply — rule-based, zero extra LLM calls
         voice_reply = _trim_for_voice(answer, tool_name)
         logger.debug("[ask] voice_reply (%d chars): %s", len(voice_reply), voice_reply[:80])
 
