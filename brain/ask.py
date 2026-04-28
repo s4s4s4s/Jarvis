@@ -36,8 +36,6 @@ _VOICE_TRUNCATE_TOOLS = {
 }
 
 _VOICE_MAX_CHARS = 220
-
-# Кол-во последних сообщений истории, передаваемых в роутер для контекста
 _ROUTER_HISTORY_TURNS = 6
 
 
@@ -67,18 +65,11 @@ class AskResult:
 
 
 def _route(text: str, history: list[dict]) -> dict[str, Any]:
-    """
-    Определяем маршрут с учётом последних сообщений истории.
-    Это позволяет роутеру понять контекст: напр., что предыдущий ответ был аудитом и
-    текущая команда "исправь" означает авто-фикс найденных проблем.
-    """
-    # Обрезаем: последние N сообщений истории (каждое обрезается до 800 символов чтобы не забивать контекст роутера)
     recent = history[-_ROUTER_HISTORY_TURNS:] if history else []
     history_msgs = [
         {"role": m["role"], "content": m["content"][:800]}
         for m in recent
     ]
-
     msgs = [
         {"role": "system", "content": ROUTER_SYSTEM},
         *history_msgs,
@@ -187,6 +178,10 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
         from brain.agents.code_agent import run as code_run
         return code_run(text, history)
 
+    if route == "plan":
+        from brain.agents.plan_agent import run as plan_run
+        return plan_run(text, history)
+
     from brain.agents.chat import run as chat_run
     return chat_run(text, history)
 
@@ -197,7 +192,7 @@ def ask_llm(text: str) -> AskResult:
 
     t_route0 = time.monotonic()
     try:
-        route_data = _route(text, history)   # <-- передаём историю
+        route_data = _route(text, history)
     except Exception as e:
         route_data = {
             "route":      "chat",
