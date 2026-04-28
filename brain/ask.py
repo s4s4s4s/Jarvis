@@ -18,7 +18,6 @@ atexit.register(lambda: _executor.shutdown(wait=False, cancel_futures=True))
 
 logger = logging.getLogger(__name__)
 
-# Константы для фоллбэк-сообщений (используются только если Ollama недоступна)
 _CTX_TIMEOUT    = "получение ответа"
 _TOOL_TIMEOUT   = "get_answer"
 _FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
@@ -56,20 +55,16 @@ def _route(text: str) -> dict[str, Any]:
     except (json.JSONDecodeError, ValueError):
         data = {}
     return {
-        "route": data.get("route", "chat"),
-        "tool": data.get("tool"),
-        "tool_args": data.get("tool_args") or {},
+        "route":      data.get("route", "chat"),
+        "tool":       data.get("tool"),
+        "tool_args":  data.get("tool_args") or {},
         "confidence": data.get("confidence", 0.0),
-        "filler": data.get("filler") or "",
-        "reason": data.get("reason") or "",
+        "filler":     data.get("filler") or "",
+        "reason":     data.get("reason") or "",
     }
 
 
 def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
-    """LLM генерирует естественный ответ об ошибке инструмента.
-
-    Fallback на константу _FALLBACK_ERROR только если Ollama недоступна.
-    """
     msgs = [
         {"role": "system", "content": TOOL_FORMAT_SYSTEM},
         {"role": "user", "content": (
@@ -116,6 +111,10 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
         from brain.agents.memory_agent import run as memory_run
         return memory_run(text, history)
 
+    if route == "code":
+        from brain.agents.code_agent import run as code_run
+        return code_run(text, history)
+
     from brain.agents.chat import run as chat_run
     return chat_run(text, history)
 
@@ -129,12 +128,12 @@ def ask_llm(text: str) -> AskResult:
         route_data = _route(text)
     except Exception as e:
         route_data = {
-            "route": "chat",
-            "tool": None,
-            "tool_args": {},
+            "route":      "chat",
+            "tool":       None,
+            "tool_args":  {},
             "confidence": 0.0,
-            "filler": "",
-            "reason": f"router error: {e}",
+            "filler":     "",
+            "reason":     f"router error: {e}",
         }
     route_ms = int((time.monotonic() - t_route0) * 1000)
 
