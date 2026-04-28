@@ -60,7 +60,7 @@ IMPORTANT: output ONLY the JSON object. No markdown, no explanation."""
 
 
 # ---------------------------------------------------------------------------
-# Tool result formatter
+# Tool result formatter  (full answer for chat UI)
 # ---------------------------------------------------------------------------
 
 TOOL_FORMAT_SYSTEM = """\
@@ -74,6 +74,30 @@ For self-audit results (auditor.self):
 - Group findings by severity: сначала критичные, потом мелкие.
 - For each confirmed finding briefly explain the problem and proposed fix.
 - If no issues found — say so confidently."""
+
+
+# ---------------------------------------------------------------------------
+# Voice summary  (short TTS-friendly phrase, spoken aloud)
+# ---------------------------------------------------------------------------
+
+VOICE_SUMMARY_SYSTEM = """\
+You are Jarvis. You have just produced a detailed written answer that is shown in the chat.
+Now generate a SHORT spoken phrase (1-2 sentences MAX, under 25 words) to say aloud via TTS.
+
+Rules:
+- Speak naturally in Russian, first person.
+- Summarise the KEY outcome only — no details, no lists, no markdown.
+- If it was an audit — say how many issues were found.
+- If it was a file/code operation — confirm it's done.
+- If it was a search result — give one key fact.
+- End with: "Подробности — в чате."
+
+Examples:
+  audit with 3 issues → "Я нашёл 3 проблемы в коде. Подробности — в чате."
+  audit clean         → "Код чистый, серьёзных проблем не обнаружено."
+  file read           → "Файл прочитан. Подробности — в чате."
+  git status          → "Есть 2 изменённых файла. Подробности — в чате."
+  code ran OK         → "Код выполнен успешно. Подробности — в чате."""
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 from brain.client import chat, MODEL_ROUTER, MODEL_FAST
-from brain.prompts import ROUTER_SYSTEM, TOOL_FORMAT_SYSTEM
+from brain.prompts import ROUTER_SYSTEM, TOOL_FORMAT_SYSTEM, VOICE_SUMMARY_SYSTEM
 from brain import history as hist
 from brain.logger import log_route
 
@@ -21,24 +21,48 @@ logger = logging.getLogger(__name__)
 _FALLBACK_TIMEOUT_MSG = "Сэр, не удалось получить ответ вовремя."
 _FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
 
+# Tools whose output is too long for TTS — voice gets a short summary instead
+_VOICE_SUMMARY_TOOLS = {
+    "auditor.self",
+    "auditor.run",
+    "file.read",
+    "file.list",
+    "git.diff",
+    "git.status",
+    "code.run",
+    "code.run_file",
+    "code.test",
+}
+
+# Max chars in answer before we auto-summarise for voice
+_VOICE_MAX_CHARS = 300
+
 
 @dataclass
 class AskResult:
     filler: str = ""
-    _text:   str = field(default="", repr=False)   # original user query for error formatting
-    _future: Future | None = field(default=None, repr=False)
-    _answer: str = field(default="", repr=False)
+    _text:        str = field(default="", repr=False)
+    _future:      Future | None = field(default=None, repr=False)
+    _answer:      str = field(default="", repr=False)   # full answer → shown in chat
+    _voice_reply: str = field(default="", repr=False)   # short phrase → spoken aloud
 
     def get_answer(self, timeout: float = 120.0) -> str:
+        """Full answer for the chat UI."""
         if self._future is not None:
             try:
-                self._answer = self._future.result(timeout=timeout)
+                self._answer, self._voice_reply = self._future.result(timeout=timeout)
             except Exception as e:
-                # FIX BUG-08: pass real user text, not string constants
                 logger.error("[ask] Future error: %s", e)
                 self._answer = _FALLBACK_TIMEOUT_MSG
+                self._voice_reply = _FALLBACK_TIMEOUT_MSG
             self._future = None
         return self._answer
+
+    def get_voice_reply(self, timeout: float = 120.0) -> str:
+        """Short phrase for TTS. Auto-populated after get_answer()."""
+        if self._future is not None:
+            self.get_answer(timeout=timeout)
+        return self._voice_reply or self._answer
 
 
 def _route(text: str) -> dict[str, Any]:
@@ -64,6 +88,30 @@ def _route(text: str) -> dict[str, Any]:
         "filler":     data.get("filler") or "",
         "reason":     data.get("reason") or "",
     }
+
+
+def _make_voice_summary(full_answer: str, tool_name: str | None) -> str:
+    """Ask LLM to produce a short TTS-friendly summary of a long answer."""
+    msgs = [
+        {"role": "system", "content": VOICE_SUMMARY_SYSTEM},
+        {"role": "user", "content": full_answer[:2000]},
+    ]
+    try:
+        summary = chat(MODEL_FAST, msgs, options={"temperature": 0.2, "num_ctx": 2048})
+        return summary.strip()
+    except Exception as e:
+        logger.warning("[ask] voice summary failed for tool '%s': %s", tool_name, e)
+        # Safe fallback: first sentence of the answer
+        first = full_answer.split(".")[0].strip()
+        return (first[:120] + "...") if len(first) > 120 else first
+
+
+def _should_summarise_for_voice(answer: str, tool_name: str | None) -> bool:
+    if tool_name in _VOICE_SUMMARY_TOOLS:
+        return True
+    if len(answer) > _VOICE_MAX_CHARS:
+        return True
+    return False
 
 
 def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
@@ -139,10 +187,11 @@ def ask_llm(text: str) -> AskResult:
         }
     route_ms = int((time.monotonic() - t_route0) * 1000)
 
-    # FIX BUG-08: store text in result for error formatting
     result = AskResult(filler=route_data.get("filler", ""), _text=text)
 
-    def _run() -> str:
+    tool_name = route_data.get("tool")  # captured for voice logic
+
+    def _run() -> tuple[str, str]:
         t0 = time.monotonic()
         answer = _dispatch(route_data, text, history)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
@@ -150,7 +199,7 @@ def ask_llm(text: str) -> AskResult:
         log_route(
             text=text,
             route=route_data["route"],
-            tool=route_data.get("tool"),
+            tool=tool_name,
             confidence=route_data.get("confidence", 0.0),
             reason=route_data.get("reason", ""),
             answer_ms=elapsed_ms + route_ms,
@@ -160,7 +209,14 @@ def ask_llm(text: str) -> AskResult:
             extract_and_save_async(text, answer)
         except Exception as e:
             logger.error("Memory extraction failed: %s", e)
-        return answer
+
+        # Build voice reply
+        if _should_summarise_for_voice(answer, tool_name):
+            voice_reply = _make_voice_summary(answer, tool_name)
+        else:
+            voice_reply = answer
+
+        return answer, voice_reply
 
     result._future = _executor.submit(_run)
     return result
