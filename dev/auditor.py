@@ -1,6 +1,6 @@
 """
 dev/auditor.py
-Verifier-agent: аудит файлов → list[Finding] → Level 1 верификация → дедупликация.
+Verifier-agent: аудит файлов → list[Finding] → Level-1 (fact-check) → Level-2 (semantic re-verify) → дедупликация.
 Usage: python -m dev.auditor brain/ask.py brain/agents/chat.py ...
 
 Backend: Ollama (brain.client) — тот же что и основной Jarvis, нет конфликта по VRAM.
@@ -57,6 +57,7 @@ IMPORTANT exclusions - do NOT flag these as HARDCODED_STRING:
   - Format string templates used as constants (e.g. _FALLBACK_ERROR = "..{error}")
   - Code comments
   - Internal label strings passed to logging/debugging functions
+  - Lookup tables, data constants, WMO codes, mapping dicts
 
 confidence: float 0.0-1.0
 Do NOT output any text outside the JSON lines. Do NOT wrap in markdown fences.
@@ -70,11 +71,17 @@ For each finding output a JSON object on a single line with EXACTLY these keys:
 
 Types allowed:
   BUG                 - logic error, wrong algorithm, off-by-one, incorrect condition
-  SECURITY            - injection, hardcoded secrets, insecure defaults, unvalidated input
+  SECURITY            - injection, hardcoded secrets (API keys, passwords, tokens), insecure defaults, unvalidated input
   UNHANDLED_EXCEPTION - bare except, silent exception swallowing, missing logging on catch
   RESOURCE_LEAK       - file handles, threads, connections, sockets not properly closed/joined
   PERFORMANCE         - unnecessary loops, blocking calls in async context, inefficient data structures
   RACE_CONDITION      - shared state accessed from multiple threads without synchronization
+
+IMPORTANT: SECURITY findings must involve actual secrets (passwords, API keys, tokens), NOT:
+  - Hardcoded lookup tables (WMO codes, language codes, country codes)
+  - i18n / localization text in any language
+  - Data constants, mapping dicts
+  - Internal log messages
 
 confidence: float 0.0-1.0
 Do NOT output any text outside the JSON lines. Do NOT wrap in markdown fences.
@@ -84,6 +91,32 @@ USER_TEMPLATE = """\
 Audit the following files. Output one JSON object per line, no other text.
 
 {file_blocks}"""
+
+# Level-2: semantic re-verification prompt
+_VERIFY_SYSTEM = """\
+You are a senior code reviewer doing a second-pass verification of audit findings.
+For each finding you will be shown:
+  1. The finding (type, description, suggestion)
+  2. The ACTUAL code context around the reported line
+
+Your job: decide if this finding is VALID or INVALID.
+
+A finding is INVALID if:
+- The described problem does NOT exist in the shown code
+- The "issue" is just a data constant, lookup table, mapping dict, or i18n text
+- The "security issue" is not an actual secret (API key / password / token)
+- The code already handles the reported exception with logging
+- The file handle / resource IS already properly closed (with-statement or try/finally)
+- The description contradicts what the code actually does
+
+A finding is VALID if:
+- The exact problem described is clearly present in the shown code
+- The issue is a genuine bug, real unhandled exception, real resource leak, or real race condition
+
+Output ONLY a JSON array, one object per finding:
+  [{"index": 0, "verdict": "VALID", "reason": "..."},
+   {"index": 1, "verdict": "INVALID", "reason": "..."}]
+No other text."""
 
 
 class AuditorAgent:
@@ -103,8 +136,9 @@ class AuditorAgent:
         prompt = self._build_prompt(file_paths)
         raw_text = self._call_llm(prompt)
         raw_findings = self._parse_findings(raw_text)
-        verified = self._verify_facts(raw_findings)
-        return self._dedupe(verified)
+        level1 = self._verify_facts(raw_findings)       # L1: file/line existence
+        level2 = self._verify_semantic(level1)           # L2: LLM cross-check
+        return self._dedupe(level2)
 
     def _build_prompt(self, file_paths: list[str]) -> str:
         blocks = []
@@ -145,7 +179,6 @@ class AuditorAgent:
           2. JSON array on one or multiple lines: [{...}, {...}]
           3. Mixed garbage with embedded JSON objects
         """
-        # Try full parse first (handles array or single object spanning multiple lines)
         stripped = raw.strip()
         # Remove markdown fences if present
         if stripped.startswith("```"):
@@ -162,7 +195,6 @@ class AuditorAgent:
                     inner.append(ln)
             stripped = "\n".join(inner).strip()
 
-        # Attempt full-document parse (array or single object)
         try:
             parsed = json.loads(stripped)
             if isinstance(parsed, list):
@@ -176,7 +208,6 @@ class AuditorAgent:
         except json.JSONDecodeError:
             pass
 
-        # Fall back to line-by-line parsing
         for line in raw.splitlines():
             line = line.strip()
             if not line or line.startswith("//") or line.startswith("#") or line.startswith("```"):
@@ -192,7 +223,6 @@ class AuditorAgent:
                 continue
             except json.JSONDecodeError:
                 pass
-            # Last resort: extract first {...} from line
             match = re.search(r"\{[^{}]+\}", line)
             if match:
                 try:
@@ -223,6 +253,7 @@ class AuditorAgent:
         return findings
 
     def _verify_facts(self, findings: list[Finding]) -> list[Finding]:
+        """Level-1: file exists, line number valid, line is not a comment."""
         result = []
         for f in findings:
             path = Path(f.file)
@@ -240,13 +271,112 @@ class AuditorAgent:
                 continue
             actual_line = lines[f.line - 1].strip()
             if not actual_line or actual_line.startswith("#"):
-                f.status = "needs_review"
+                f.status = "rejected"
                 f.reject_reason = "LINE_IS_COMMENT_OR_EMPTY"
                 result.append(f)
                 continue
-            f.status = "confirmed"
+            f.status = "confirmed"  # tentative — will be re-checked in L2
             result.append(f)
         return result
+
+    def _verify_semantic(self, findings: list[Finding]) -> list[Finding]:
+        """
+        Level-2: LLM cross-check.
+        For each confirmed finding, show the model the actual code context
+        and ask: is this finding real or hallucinated?
+        Batch into one call to save latency.
+        """
+        candidates = [f for f in findings if f.status == "confirmed"]
+        rejected   = [f for f in findings if f.status != "confirmed"]
+
+        if not candidates:
+            return findings
+
+        # Build context snippets (5 lines around reported line)
+        items = []
+        for idx, f in enumerate(candidates):
+            path = Path(f.file)
+            lines = path.read_text(encoding="utf-8").splitlines()
+            lo = max(0, f.line - 3)
+            hi = min(len(lines), f.line + 2)
+            context_lines = "\n".join(
+                f"{lo+i+1:4d} | {lines[lo+i]}" for i in range(hi - lo)
+            )
+            items.append({
+                "index": idx,
+                "file": f.file,
+                "type": f.type,
+                "description": f.description,
+                "suggestion": f.suggestion,
+                "reported_line": f.line,
+                "code_context": context_lines,
+            })
+
+        user_content = json.dumps(items, ensure_ascii=False, indent=2)
+        messages = [
+            {"role": "system", "content": _VERIFY_SYSTEM},
+            {"role": "user",   "content": user_content},
+        ]
+
+        try:
+            raw = chat(
+                self.model,
+                messages,
+                options={"temperature": 0.0, "num_ctx": 8192},
+            )
+            verdicts = self._parse_verdicts(raw)
+        except Exception as e:
+            logger.warning("[Auditor] L2 verify failed (%s) — skipping L2, keeping L1 results", e)
+            return findings
+
+        for v in verdicts:
+            idx = v.get("index")
+            if idx is None or idx >= len(candidates):
+                continue
+            f = candidates[idx]
+            verdict = str(v.get("verdict", "")).upper()
+            reason  = str(v.get("reason", ""))
+            if verdict == "INVALID":
+                f.status = "rejected"
+                f.reject_reason = f"L2_SEMANTIC: {reason}"
+                logger.info(
+                    "[Auditor] L2 rejected [%s] %s:%d — %s",
+                    f.type, f.file, f.line, reason,
+                )
+            else:
+                logger.debug("[Auditor] L2 confirmed [%s] %s:%d", f.type, f.file, f.line)
+
+        return candidates + rejected
+
+    @staticmethod
+    def _parse_verdicts(raw: str) -> list[dict]:
+        raw = raw.strip()
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            inner = []
+            in_block = False
+            for ln in lines:
+                if ln.startswith("```") and not in_block:
+                    in_block = True; continue
+                if ln.startswith("```") and in_block:
+                    break
+                if in_block:
+                    inner.append(ln)
+            raw = "\n".join(inner).strip()
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [x for x in parsed if isinstance(x, dict)]
+        except json.JSONDecodeError:
+            pass
+        # fallback: extract array
+        m = re.search(r"\[.*\]", raw, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group())
+            except json.JSONDecodeError:
+                pass
+        return []
 
     def _dedupe(self, findings: list[Finding]) -> list[Finding]:
         unique: list[Finding] = []
