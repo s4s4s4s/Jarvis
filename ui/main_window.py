@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from .bridge import JarvisBridge
-from voice.state import AssistantState  # noqa: F401  (used via state.name in slots)
+from voice.state import AssistantState  # noqa: F401
 
 
 class JarvisWindow(QMainWindow):
@@ -43,18 +43,31 @@ class JarvisWindow(QMainWindow):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
 
+        # ── Header ──
         header = QFrame(); header.setObjectName("Card")
         hl = QHBoxLayout(header); hl.setContentsMargins(22, 18, 22, 18)
         tb = QVBoxLayout()
         t = QLabel("JARVIS"); t.setObjectName("Title")
         s = QLabel("Голосовой ассистент Jarvis"); s.setObjectName("Subtitle")
         tb.addWidget(t); tb.addWidget(s)
+
         self.status_label = QLabel("Отключён")
         self.status_label.setObjectName("StatusIdle")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setMinimumWidth(190); self.status_label.setFixedHeight(38)
-        hl.addLayout(tb); hl.addStretch(); hl.addWidget(self.status_label)
 
+        # Кнопка настроек
+        self.settings_btn = QPushButton("⚙  Настройки")
+        self.settings_btn.setObjectName("SecondaryButton")
+        self.settings_btn.clicked.connect(self._open_settings)
+
+        hl.addLayout(tb)
+        hl.addStretch()
+        hl.addWidget(self.settings_btn)
+        hl.addSpacing(12)
+        hl.addWidget(self.status_label)
+
+        # ── Controls ──
         ctrl = QFrame(); ctrl.setObjectName("Card")
         cl = QHBoxLayout(ctrl); cl.setContentsMargins(20, 18, 20, 18); cl.setSpacing(12)
         self.start_btn = QPushButton("Запустить Jarvis"); self.start_btn.setObjectName("PrimaryButton")
@@ -69,6 +82,7 @@ class JarvisWindow(QMainWindow):
             cl.addWidget(b)
         cl.addStretch()
 
+        # ── Grid ──
         grid = QGridLayout(); grid.setSpacing(16)
 
         def _card(title_text, obj_name):
@@ -82,11 +96,7 @@ class JarvisWindow(QMainWindow):
         dlg_card, self.dialog_view = _card("Диалог", "DialogBox")
         sys_card, self.system_view = _card("Системный лог", "SystemBox")
         inf_card, self.info_view   = _card("Справка", "InfoBox")
-        self.info_view.setPlainText(
-            "Jarvis — голосовой ассистент\n"
-            "TTS: Edge TTS (streaming, +20%)\nSTT: Whisper large-v3\n"
-            "LLM: Ollama router+fast+heavy\nПамять: долгосрочная"
-        )
+        self._refresh_info_box()
 
         grid.addWidget(dlg_card, 0, 0, 2, 2)
         grid.addWidget(sys_card, 0, 2, 1, 1)
@@ -120,7 +130,40 @@ class JarvisWindow(QMainWindow):
             }
         """)
 
-    # ---- Слоты ----
+    # ── Настройки ──
+
+    def _open_settings(self):
+        from .settings_dialog import SettingsDialog
+        dlg = SettingsDialog(self)
+        if dlg.exec():
+            # Обновить справку — в ней теперь отображается текущий микрофон
+            self._refresh_info_box()
+            self._on_system_log("[settings] Настройки сохранены. Перезапустите Jarvis чтобы применить микрофон.")
+
+    def _refresh_info_box(self):
+        from core import settings as cfg
+        import sounddevice as sd
+        mic_idx = cfg.get("mic_device")
+        if mic_idx is None:
+            mic_str = "Системный по умолчанию"
+        else:
+            try:
+                info = sd.query_devices(mic_idx)
+                mic_str = f"[{mic_idx}] {info['name']}"
+            except Exception:
+                mic_str = f"[{mic_idx}] (неизвестно)"
+        self.info_view.setPlainText(
+            "Jarvis — голосовой ассистент\n"
+            f"TTS: Edge TTS (+30%)\n"
+            f"STT: Whisper large-v3\n"
+            f"LLM: Ollama router+fast+heavy\n"
+            f"Память: долгосрочная\n"
+            f"\n"
+            f"🎙 Микрофон: {mic_str}\n"
+            f"\nДля смены микрофона: ⚙ Настройки → сохранить → перезапустить."
+        )
+
+    # ── Слоты ──
 
     def _on_user_text(self, text: str):
         if text:
@@ -151,11 +194,18 @@ class JarvisWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
         self.start_btn.setEnabled(True)
 
-    # ---- Запуск / стоп ----
+    # ── Запуск / стоп ──
 
     def _start(self):
         if self.bridge.is_running():
             return
+        # Применяем сохранённый MIC_DEVICE перед стартом
+        try:
+            from core import settings as cfg
+            import core.config as _cfg
+            _cfg.MIC_DEVICE = cfg.get("mic_device")
+        except Exception:
+            pass
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self._set_status("Запуск...", "StatusThinking")
@@ -170,11 +220,8 @@ class JarvisWindow(QMainWindow):
     def _do_stop(self):
         self.bridge.stop(timeout=6.0)
         from PySide6.QtCore import QMetaObject, Qt as _Qt
-        # FIX: _after_stop помечен @Slot() — без этого PySide6 invokeMethod
-        # по имени строки не находит метод и кнопка "Запустить" зависает
         QMetaObject.invokeMethod(self, "_after_stop", _Qt.QueuedConnection)
 
-    # FIX: декоратор @Slot() обязателен для QMetaObject.invokeMethod по имени
     @Slot()
     def _after_stop(self):
         self.start_btn.setEnabled(True)
@@ -185,7 +232,7 @@ class JarvisWindow(QMainWindow):
         self.dialog_view.clear()
         self.system_view.clear()
 
-    # ---- Flush ----
+    # ── Flush ──
 
     def _flush_buffers(self):
         if self.system_buffer:
@@ -216,6 +263,7 @@ class JarvisWindow(QMainWindow):
         if "router" in low:                       return "#fcd34d"
         if "stt" in low or "tts" in low:         return "#93c5fd"
         if "wake" in low:                         return "#86efac"
+        if "settings" in low:                     return "#c4b5fd"
         return "#d7deea"
 
     def _set_status(self, text: str, obj: str = "StatusIdle"):
