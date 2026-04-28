@@ -8,7 +8,7 @@ from typing import Callable, Optional, Any
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from voice.state import AssistantState  # noqa: F401  (re-exported for callers)
+from voice.state import AssistantState  # noqa: F401
 
 _CALLBACK_ALIASES = {
     "on_state": "state",        "on_status": "state",       "state_changed": "state",
@@ -20,7 +20,6 @@ _CALLBACK_ALIASES = {
 
 
 class _LineBuffer:
-    """Буферизует текст и вызывает callback построчно."""
     def __init__(self, callback: Callable[[str], None]):
         self._cb = callback
         self._buf = ""
@@ -38,10 +37,6 @@ class _LineBuffer:
 
 
 class _StreamRedirector:
-    """
-    Перехватывает один stream (stdout ИЛИ stderr).
-    Пишет в original И шлёт построчно в callback.
-    """
     def __init__(self, original, callback: Callable[[str], None]):
         self._original = original
         self._lb = _LineBuffer(callback)
@@ -90,6 +85,11 @@ class JarvisBridge(QObject):
         self._orig_stdout = None
         self._orig_stderr = None
 
+        # Текстовый ввод: поток + очередь запросов
+        self._text_queue: list[str] = []
+        self._text_queue_lock = threading.Lock()
+        self._text_event = threading.Event()
+
         self._external_callbacks: dict[str, list[Callable[..., None]]] = {
             k: [] for k in ("state", "user_text", "assistant_text", "system_log", "error")
         }
@@ -114,14 +114,13 @@ class JarvisBridge(QObject):
             return
         self._started = True
         self._stop_event.clear()
-        self._install_redirect()   # stdout/stderr → system_log ОДИН раз
+        self._install_redirect()
         self._thread = threading.Thread(
             target=self._run_assistant,
             name="JarvisAssistantThread",
             daemon=True,
         )
         self._thread.start()
-        # НЕ используем print здесь — redirect ещё не читается GUI
         try:
             self.system_log.emit("[bridge] assistant thread started\n")
         except Exception:
@@ -131,6 +130,7 @@ class JarvisBridge(QObject):
         if not self._started:
             return
         self._stop_event.set()
+        self._text_event.set()  # разблокируем send_text если ждёт
         t = self._thread
         if t is not None and t.is_alive():
             t.join(timeout=timeout)
@@ -140,6 +140,44 @@ class JarvisBridge(QObject):
 
     def shutdown(self, timeout: float = 5.0) -> None:
         self.stop(timeout=timeout)
+
+    def send_text(self, text: str) -> None:
+        """
+        Отправить текстовый запрос напрямую в brain.ask, минуя STT.
+        Работает внезависимо от того, запущен ли голосовой ассистент.
+        """
+        text = text.strip()
+        if not text:
+            return
+        threading.Thread(
+            target=self._text_worker,
+            args=(text,),
+            daemon=True,
+            name="jarvis-text-input",
+        ).start()
+
+    def _text_worker(self, text: str) -> None:
+        try:
+            self.emit_user_text(text)
+            self.emit_state(_get_state("THINKING"))
+
+            from brain.ask import ask_llm
+            from voice.state import AssistantState as _AS
+
+            ask_result = ask_llm(text)
+
+            # Filler → чат (без TTS, текстовый режим)
+            if ask_result.filler:
+                self.emit_assistant_text(ask_result.filler)
+
+            answer = ask_result.get_answer(timeout=120.0)
+            if answer and answer != ask_result.filler:
+                self.emit_assistant_text(answer)
+
+            self.emit_state(_get_state("IDLE"))
+        except Exception as e:
+            print(f"[bridge] text_worker error: {e}\n{traceback.format_exc()}")
+            self.emit_state(_get_state("IDLE"))
 
     # ---- Emitters ----
 
@@ -168,7 +206,6 @@ class JarvisBridge(QObject):
             pass
         self._call_external("assistant_text", str(text))
 
-    # backward-compat
     def on_state(self, s):          self.emit_state(s)
     def on_status(self, s):         self.emit_state(s)
     def on_user_text(self, t):      self.emit_user_text(t)
@@ -179,7 +216,6 @@ class JarvisBridge(QObject):
     # ---- Internal ----
 
     def _sys_log(self, line: str) -> None:
-        """Одна строка лога → system_log signal. Вызывается из StreamRedirector."""
         if not line:
             return
         msg = line.rstrip("\r\n") + "\n"
@@ -202,20 +238,15 @@ class JarvisBridge(QObject):
 
     def _install_redirect(self) -> None:
         if self._orig_stdout is not None:
-            return  # уже установлен
+            return
         self._orig_stdout = sys.stdout
         self._orig_stderr = sys.stderr
-        # stdout и stderr используют ОДИН И ТОТ ЖЕ _sys_log callback
-        # но это один объект — нет дублей
         sys.stdout = _StreamRedirector(self._orig_stdout, self._sys_log)  # type: ignore
-        # stderr намеренно НЕ редиректим — pygame/warnings пишут туда мусор
-        # и они не нужны в GUI-логе
 
     def _restore_redirect(self) -> None:
         if self._orig_stdout is not None:
             sys.stdout = self._orig_stdout
             self._orig_stdout = None
-        # stderr не трогали — не восстанавливаем
 
     def _run_assistant(self) -> None:
         try:
@@ -240,7 +271,6 @@ class JarvisBridge(QObject):
                 on_state=self.emit_state,
                 on_user_text=self.emit_user_text,
                 on_assistant_text=self.emit_assistant_text,
-                # on_system_log намеренно НЕ передаём — логи идут через stdout
             )
         except Exception as e:
             print(f"[bridge] assistant crashed: {e}\n{traceback.format_exc()}")
@@ -250,10 +280,6 @@ class JarvisBridge(QObject):
                 pass
 
         print("[bridge] assistant thread exiting")
-        # FIX (audit 3): восстанавливаем stdout, если ассистент завершился сам
-        # (напр. Ollama недоступна). Иначе stop() не вызывается → редирект
-        # остаётся висеть, и повторный start() не установит новый (из-за
-        # проверки `if self._orig_stdout is not None: return`).
         self._started = False
         self._restore_redirect()
 
@@ -264,3 +290,12 @@ class JarvisBridge(QObject):
     @Slot()
     def slot_stop(self) -> None:
         self.stop()
+
+
+def _get_state(name: str):
+    """Безопасно вернуть AssistantState по имени."""
+    try:
+        from voice.state import AssistantState
+        return AssistantState[name]
+    except Exception:
+        return name

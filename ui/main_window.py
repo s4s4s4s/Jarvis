@@ -3,10 +3,11 @@ import sys
 import threading
 
 from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor, QKeyEvent
 from PySide6.QtWidgets import (
     QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QMainWindow, QPushButton, QTextEdit, QVBoxLayout, QWidget,
+    QLineEdit,
 )
 
 from .bridge import JarvisBridge
@@ -56,7 +57,6 @@ class JarvisWindow(QMainWindow):
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setMinimumWidth(190); self.status_label.setFixedHeight(38)
 
-        # Кнопка настроек
         self.settings_btn = QPushButton("⚙  Настройки")
         self.settings_btn.setObjectName("SecondaryButton")
         self.settings_btn.clicked.connect(self._open_settings)
@@ -85,6 +85,30 @@ class JarvisWindow(QMainWindow):
         # ── Grid ──
         grid = QGridLayout(); grid.setSpacing(16)
 
+        # Диалог — карточка с полем ввода внизу
+        dlg_card = QFrame(); dlg_card.setObjectName("Card")
+        dlg_v = QVBoxLayout(dlg_card); dlg_v.setContentsMargins(18, 18, 18, 14); dlg_v.setSpacing(10)
+        dlg_lbl = QLabel("Диалог"); dlg_lbl.setObjectName("SectionTitle")
+        self.dialog_view = QTextEdit(); self.dialog_view.setObjectName("DialogBox"); self.dialog_view.setReadOnly(True)
+
+        # Поле ввода + кнопка Отправить
+        input_row = QHBoxLayout(); input_row.setSpacing(8)
+        self.text_input = QLineEdit()
+        self.text_input.setObjectName("TextInput")
+        self.text_input.setPlaceholderText("Напишите запрос... (Enter)")
+        self.text_input.setFixedHeight(40)
+        self.text_input.returnPressed.connect(self._send_text)
+        self.send_btn = QPushButton("↑ Отправить")
+        self.send_btn.setObjectName("SendButton")
+        self.send_btn.setFixedHeight(40)
+        self.send_btn.clicked.connect(self._send_text)
+        input_row.addWidget(self.text_input)
+        input_row.addWidget(self.send_btn)
+
+        dlg_v.addWidget(dlg_lbl)
+        dlg_v.addWidget(self.dialog_view)
+        dlg_v.addLayout(input_row)
+
         def _card(title_text, obj_name):
             f = QFrame(); f.setObjectName("Card")
             v = QVBoxLayout(f); v.setContentsMargins(18,18,18,18); v.setSpacing(10)
@@ -93,7 +117,6 @@ class JarvisWindow(QMainWindow):
             v.addWidget(lbl); v.addWidget(box)
             return f, box
 
-        dlg_card, self.dialog_view = _card("Диалог", "DialogBox")
         sys_card, self.system_view = _card("Системный лог", "SystemBox")
         inf_card, self.info_view   = _card("Справка", "InfoBox")
         self._refresh_info_box()
@@ -124,11 +147,40 @@ class JarvisWindow(QMainWindow):
             QPushButton#DangerButton:disabled { background:#1e2430; color:#4a5568; border-color:#2d3748; }
             QPushButton#SecondaryButton{ background:#1e2430; color:#d9e1ee; border:1px solid #30384a; border-radius:12px; padding:12px 18px; font-weight:700; }
             QPushButton#SecondaryButton:hover { background:#252c3a; }
+            QPushButton#SendButton { background:#2563eb; color:white; border:none; border-radius:10px; padding:0 20px; font-weight:700; min-width:110px; }
+            QPushButton#SendButton:hover { background:#2f74ff; }
+            QPushButton#SendButton:disabled { background:#273041; color:#7e8aa0; }
+            QLineEdit#TextInput {
+                background:#0c0f14; color:#e8ecf3; border:1px solid #2d3547;
+                border-radius:10px; padding:0 14px; font-size:14px;
+                selection-background-color:#2563eb;
+            }
+            QLineEdit#TextInput:focus { border:1px solid #2563eb; }
+            QLineEdit#TextInput::placeholder { color:#4a5568; }
             QTextEdit#DialogBox,QTextEdit#SystemBox,QTextEdit#InfoBox {
                 background:#0c0f14; border:1px solid #232938; border-radius:12px;
                 padding:10px; color:#d7deea; selection-background-color:#2f74ff;
             }
         """)
+
+    # ── Текстовый ввод ──
+
+    def _send_text(self):
+        text = self.text_input.text().strip()
+        if not text:
+            return
+        self.text_input.clear()
+        self.send_btn.setEnabled(False)
+        self.text_input.setEnabled(False)
+        self.bridge.send_text(text)
+        # Разблокируем поле после ответа (при state=IDLE)
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(300, self._unlock_input)
+
+    def _unlock_input(self):
+        self.send_btn.setEnabled(True)
+        self.text_input.setEnabled(True)
+        self.text_input.setFocus()
 
     # ── Настройки ──
 
@@ -136,7 +188,6 @@ class JarvisWindow(QMainWindow):
         from .settings_dialog import SettingsDialog
         dlg = SettingsDialog(self)
         if dlg.exec():
-            # Обновить справку — в ней теперь отображается текущий микрофон
             self._refresh_info_box()
             self._on_system_log("[settings] Настройки сохранены. Перезапустите Jarvis чтобы применить микрофон.")
 
@@ -188,18 +239,21 @@ class JarvisWindow(QMainWindow):
         }
         txt, obj = mapping.get(name, (str(name), "StatusIdle"))
         self._set_status(txt, obj)
+        # Разблокируем поле ввода как только Jarvis перешёл в IDLE
+        if name == "IDLE":
+            self._unlock_input()
 
     def _on_error(self, text: str):
         self.system_buffer.append(f"[ERROR] {text}\n")
         self.stop_btn.setEnabled(False)
         self.start_btn.setEnabled(True)
+        self._unlock_input()
 
     # ── Запуск / стоп ──
 
     def _start(self):
         if self.bridge.is_running():
             return
-        # Применяем сохранённый MIC_DEVICE перед стартом
         try:
             from core import settings as cfg
             import core.config as _cfg
