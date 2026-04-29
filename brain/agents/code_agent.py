@@ -19,7 +19,8 @@ from tools.file_ops import write_file, read_file
 
 logger = logging.getLogger(__name__)
 
-MAX_ITER = 5
+# FIX: increased from 5 to 7 to handle complex tasks that need more iterations
+MAX_ITER = 7
 
 SYSTEM = """Ты — автономный инженер-разработчик.
 Тебе дана задача написать Python-код.
@@ -50,6 +51,17 @@ _RUN_INTENT_PATTERNS = [
     r"прогон[иь]",
 ]
 
+# Ключевые фразы, указывающие что пользователь хочет НАПИСАТЬ код
+# FIX: explicit write-intent guard so 'напиши скрипт' never triggers run-path
+_WRITE_INTENT_PATTERNS = [
+    r"напиш[иь]",
+    r"создай",
+    r"сгенерируй",
+    r"сделай",
+    r"реализуй",
+    r"написать",
+]
+
 
 def _extract_code_block(text: str) -> str | None:
     """Извлечь код из ```python ... ``` блока."""
@@ -66,6 +78,9 @@ def _extract_py_path(text: str) -> str | None:
 def _has_run_intent(text: str) -> bool:
     """Проверить, хочет ли пользователь запустить (а не написать) скрипт."""
     lower = text.lower()
+    # FIX: if write intent is explicit, never treat as run intent
+    if any(re.search(p, lower) for p in _WRITE_INTENT_PATTERNS):
+        return False
     return any(re.search(p, lower) for p in _RUN_INTENT_PATTERNS)
 
 

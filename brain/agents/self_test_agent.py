@@ -41,7 +41,7 @@ BASE_BRANCH = "feature/planner-agent"
 ALL_ROUTES = ["chat", "code", "plan", "web", "tool", "memory", "deep"]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Repo map (injected into analyst prompt — Commit A)
+# Repo map (injected into analyst prompt)
 # ─────────────────────────────────────────────────────────────────────────────
 
 REPO_MAP = """\
@@ -114,9 +114,14 @@ _GENERATE_SYSTEM = (
     "- For route 'code': ask to WRITE or FIX code, never to run code without providing it.\n"
     "- For route 'memory': ask to recall facts Jarvis would plausibly know about the user.\n"
     "- For route 'deep': ONLY genuinely complex questions like financial modelling or system design.\n"
+    "  MANDATORY deep examples (include at least 2 per batch):\n"
+    "    'Если я куплю 50 акций Tesla по $250, сколько мне нужно денег?'\n"
+    "    'Если я инвестирую $10000 на 5 лет с доходом 12%, сколько получу?'\n"
+    "    'Если цена продукта $300 и я снижу её на 30%, какова будет новая цена?'\n"
     "  Do NOT generate 'deep' queries for: science explanations, history, language learning, ML concepts.\n"
     "  Those should be 'chat'.\n"
     "- For route 'tool'/'weather': always specify a city.\n"
+    "- For route 'tool'/'currency': use phrases like 'курс евро к рублю сейчас', 'какой курс доллара'.\n"
     "- Return ONLY a valid JSON array, no markdown, no extra text.\n"
     "\n"
     "Each element: {\"query\": \"<natural Russian sentence>\", \"expected_route\": \"<route>\"}"
@@ -137,9 +142,20 @@ _AUDIT_SYSTEM = (
     "Verdict rule: 'pass' if score >= 0.5, 'fail' if score < 0.5.\n"
     "Be fair — a useful, mostly-correct response at the right route deserves >= 0.6.\n"
     "\n"
-    "IMPORTANT: If the expected_route is 'deep' but the query is a simple science/history/\n"
-    "language question, the expected_route in the test is WRONG. In that case:\n"
-    "  - If Jarvis used 'chat' and gave a good answer, score >= 0.6, verdict=pass.\n"
+    "SPECIAL CASES (override default scoring):\n"
+    "  1. MEMORY route with no stored data: If the query asks about past interactions and\n"
+    "     Jarvis honestly says 'I don't have records of this' — this is CORRECT behaviour.\n"
+    "     Score >= 0.6, verdict=pass. Only fail if Jarvis hallucinates fake memories.\n"
+    "  2. WRONG expected_route: If the expected_route in the test is clearly wrong for\n"
+    "     the query type (e.g. expected=deep but query is simple science fact), and Jarvis\n"
+    "     used the correct route and gave a good answer — score >= 0.6, verdict=pass.\n"
+    "  3. FINANCIAL CALCULATIONS: If query contains 'если я куплю', 'если цена',\n"
+    "     'увеличу/уменьшу цену на X%', 'инвестирую $N на Y лет' — expected route is 'deep'.\n"
+    "     If Jarvis used 'tool' or 'code' for these — that is a route error, score <= 0.4.\n"
+    "  4. CURRENCY/CRYPTO LIVE PRICES: If query asks for current exchange rate or crypto price\n"
+    "     and Jarvis used 'web' instead of 'tool' — score <= 0.4 (wrong route).\n"
+    "  5. COOKING/RECIPES: If query asks how to cook something and Jarvis used 'web'\n"
+    "     instead of 'plan' — score <= 0.4 (wrong route).\n"
     "\n"
     "Respond with ONLY a valid JSON object, no markdown:\n"
     "{\"verdict\": \"pass\" | \"fail\", \"score\": <0.0-1.0>, "
@@ -166,7 +182,8 @@ Rules:
   - CRITICAL: Only include bugs in files that ACTUALLY EXIST. Use the repo map below.
   - NEVER reference brain/agents/web.py, tool.py, plan.py, memory.py or chat_agent.py
     — these files do NOT exist.
-  - Routing bugs belong in brain/ask.py (router) or brain/prompts.py (ROUTER_SYSTEM).
+  - Routing bugs belong in brain/ask.py (router) or brain/prompts.py (ROUTER_SYSTEM prompt).
+  - Memory failures where Jarvis says 'no records found' are NOT bugs — skip them.
   - After listing affected_files, add a field "files_verified": true only if ALL listed
     files are in the repo map.
 
@@ -205,6 +222,7 @@ Rules:
   - If the bug does not affect this file, return the original content unchanged.
   - NEVER add empty if/else branches where both paths do the same thing.
   - NEVER make changes that don't actually fix the described bug.
+  - NEVER change routing logic without adding explicit keyword matching.
 """
 
 
@@ -312,7 +330,9 @@ def _generate_test_cases(n: int) -> list[dict]:
     prompt = (
         f"Generate exactly {n} test queries. "
         f"Cover ALL 7 routes at least once. "
-        f"Every query must be self-contained."
+        f"Every query must be self-contained. "
+        f"Include at least 2 'deep' route queries with financial calculations "
+        f"(e.g. buying stocks, investment growth, price changes)."
     )
     messages = [
         {"role": "system", "content": _GENERATE_SYSTEM},
@@ -561,8 +581,9 @@ def _fix_bug(bug: dict, failures: list[dict]) -> dict[str, str]:
 def _verify_fix(bug: dict, failures: list[dict], fixed_files: dict[str, str]) -> bool:
     """
     Write fixed files to disk, re-run the bug's test cases.
-    Return True if pass-rate improved vs 0 (at least 1 test passes now).
-    Revert files if fix made things worse (0 pass-rate).
+    Return True if pass-rate > 0.3 (at least some tests pass now).
+    Revert files if fix is worse than threshold.
+    FIX: threshold changed from 0.0 to 0.3 to allow partial fixes through.
     """
     if not fixed_files or not bug.get("test_ids"):
         return True  # no verification possible, accept
@@ -585,12 +606,11 @@ def _verify_fix(bug: dict, failures: list[dict], fixed_files: dict[str, str]) ->
     pass_rate = _quick_retest(test_cases)
     logger.info("[SelfTest] Re-test %s: pass_rate=%.2f", bug["id"], pass_rate)
 
-    if pass_rate == 0.0:
-        # Revert — fix didn't help
-        logger.warning("[SelfTest] Fix for %s has 0%% pass-rate — reverting", bug["id"])
+    # FIX: revert only if truly zero improvement (< 0.3 threshold)
+    if pass_rate < 0.3:
+        logger.warning("[SelfTest] Fix for %s has low pass-rate %.2f — reverting", bug["id"], pass_rate)
         for rel_path, orig in original_contents.items():
             (REPO_ROOT / rel_path).write_text(orig, encoding="utf-8")
-        # Also restore from disk state so caller doesn't push reverted content
         fixed_files.clear()
         return False
 
@@ -759,14 +779,14 @@ def run(query: str, history: list[dict] | None = None) -> str:
         if not fixed:
             continue
 
-        # Re-test verification — revert if 0% pass-rate
+        # Re-test verification — revert if pass-rate < 0.3
         verified = _verify_fix(bug, failures, fixed)
         if verified and fixed:
             all_fixed.update(fixed)
             verified_bug_ids.append(bug["id"])
             report_progress(f"✅ {bug['id']} verified OK")
         else:
-            report_progress(f"❌ {bug['id']} fix reverted (0%% pass-rate)")
+            report_progress(f"❌ {bug['id']} fix reverted (low pass-rate)")
 
     if not all_fixed:
         return (
