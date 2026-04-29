@@ -2,6 +2,9 @@
 """
 Persistent user settings stored in data/settings.json.
 Used at runtime instead of hardcoded values in core/config.py.
+
+FIX: renamed public `set()` to `set_value()` to avoid shadowing Python builtin `set`.
+The old name `set` is kept as an alias for backward compatibility.
 """
 from __future__ import annotations
 import json
@@ -47,13 +50,18 @@ def get(key: str, default=None):
         return _cache.get(key, default)
 
 
-def set(key: str, value) -> None:  # noqa: A001
+def set_value(key: str, value) -> None:  # noqa: A001
+    """Save a setting. Preferred name to avoid shadowing builtin `set`."""
     global _cache
     with _lock:
         if _cache is None:
             _cache = _load()
         _cache[key] = value
         _save(_cache)
+
+
+# Backward-compat alias — existing call sites that use settings.set() still work
+set = set_value  # noqa: A001
 
 
 def all_settings() -> dict:

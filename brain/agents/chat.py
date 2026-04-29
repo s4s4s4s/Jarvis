@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from core.config import MAX_HISTORY
 from brain.client import chat, MODEL_FAST
-from brain.prompts import CHAT_SYSTEM
+from brain.prompts import build_chat_system
 from tools.memory import get_memory_context
 
 
 def run(query: str, history: list[dict]) -> str:
-    msgs = [{"role": "system", "content": CHAT_SYSTEM}]
+    # FIX: use build_chat_system() to always get fresh date injection
+    msgs = [{"role": "system", "content": build_chat_system()}]
 
     # Inject long-term memory into every chat turn
     mem = get_memory_context(max_facts=15)

@@ -1,11 +1,14 @@
+from __future__ import annotations
+
 from core.config import MAX_HISTORY
 from brain.client import chat, MODEL_HEAVY
-from brain.prompts import DEEP_SYSTEM
+from brain.prompts import build_deep_system
 from tools.memory import get_memory_context
 
 
 def run(query: str, history: list[dict]) -> str:
-    msgs = [{"role": "system", "content": DEEP_SYSTEM}]
+    # FIX: use build_deep_system() for fresh date injection on every call
+    msgs = [{"role": "system", "content": build_deep_system()}]
 
     # Инжекция долгосрочной памяти — для персонализации глубоких ответов
     mem = get_memory_context(max_facts=15)

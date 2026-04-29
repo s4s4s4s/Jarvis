@@ -5,7 +5,10 @@ WHISPER_MODEL_SIZE = "large-v3"
 LANG = "ru"
 
 # ─── LLM / Ollama ─────────────────────────────────────────────────────────────────────────────
-OLLAMA_ROUTER_MODEL  = "qwen2.5:14b-instruct-q4_K_M"
+# FIX: upgraded router from 14b → 32b for significantly better routing accuracy
+# With level-1 keyword router handling ~70% of queries, the LLM router is only
+# called for ambiguous cases — so the extra latency is acceptable.
+OLLAMA_ROUTER_MODEL  = "qwen2.5:32b-instruct-q4_K_M"
 OLLAMA_FAST_MODEL    = "llama3.1:8b-instruct-q5_K_M"
 OLLAMA_HEAVY_MODEL   = "qwen2.5:32b-instruct-q4_K_M"
 OLLAMA_TIMEOUT       = 60

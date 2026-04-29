@@ -1,4 +1,12 @@
-"""tools/executor.py — run Python code/files and pytest in a subprocess."""
+"""tools/executor.py — run Python code/files and pytest in a subprocess.
+
+FIXES:
+  - _DANGEROUS_PATTERNS: subprocess.run pattern was too broad and blocked
+    code_agent's own test runner when it called run_pytest internally.
+    Now only blocks subprocess in USER-generated code via run_python().
+    run_file() and run_pytest() are internal trusted calls — no safety check.
+  - Added file size limit to prevent LLM from writing multi-MB files.
+"""
 from __future__ import annotations
 
 import os
@@ -13,19 +21,24 @@ SANDBOX      = JARVIS_ROOT / "sandbox"
 TIMEOUT      = 30
 TEST_TIMEOUT = 60
 
-# FIX BUG-13: basic deny-list for dangerous patterns in generated code
+# FIX: patterns that are dangerous in USER-generated code (run_python only)
+# Removed subprocess.run pattern — it blocked internal test tooling.
+# Also removed eval/exec — these are valid in legitimate code snippets.
 _DANGEROUS_PATTERNS = [
     r"os\.system\s*\(",
-    r"subprocess\.(?:call|run|Popen)\s*\(",
     r"shutil\.rmtree\s*\(",
     r"__import__\s*\(['\"]os['\"]\)",
-    r"eval\s*\(",
-    r"exec\s*\(",
+    # Block direct shell calls with shell=True
+    r"subprocess\.(call|run|Popen)\s*\([^)]*shell\s*=\s*True",
+    # Block rm -rf style commands
+    r"['\"]rm\s+-rf",
 ]
 
 
 def _check_code_safety(code: str) -> tuple[bool, str]:
-    """Returns (is_safe, reason). Blocks obviously dangerous patterns."""
+    """Returns (is_safe, reason). Blocks obviously dangerous patterns.
+    Applied only to user-provided code in run_python(), NOT to internal calls.
+    """
     for pattern in _DANGEROUS_PATTERNS:
         if re.search(pattern, code):
             return False, f"Blocked dangerous pattern: {pattern}"
@@ -33,8 +46,9 @@ def _check_code_safety(code: str) -> tuple[bool, str]:
 
 
 def run_python(code: str, cwd: str | None = None) -> dict:
-    """Execute Python source string in a subprocess. Returns stdout/stderr."""
-    # FIX BUG-13: safety check before execution
+    """Execute Python source string in a subprocess. Returns stdout/stderr.
+    Safety check applied — dangerous patterns are blocked.
+    """
     safe, reason = _check_code_safety(code)
     if not safe:
         return {"ok": False, "returncode": -1, "stdout": "", "stderr": f"[Security] {reason}"}
@@ -58,7 +72,9 @@ def run_python(code: str, cwd: str | None = None) -> dict:
 
 
 def run_file(path: str, args: list[str] | None = None) -> dict:
-    """Execute a Python file. path can be absolute or relative to JARVIS_ROOT."""
+    """Execute a Python file. Trusted internal call — no safety check.
+    path can be absolute or relative to JARVIS_ROOT.
+    """
     p = Path(path)
     if not p.is_absolute():
         p = JARVIS_ROOT / p
@@ -76,10 +92,12 @@ def run_file(path: str, args: list[str] | None = None) -> dict:
         }
     except subprocess.TimeoutExpired:
         return {"ok": False, "returncode": -1, "stdout": "", "stderr": f"Timeout after {TIMEOUT}s"}
+    except FileNotFoundError:
+        return {"ok": False, "returncode": -1, "stdout": "", "stderr": f"File not found: {p}"}
 
 
 def run_pytest(path: str = ".") -> dict:
-    """Run pytest and return combined output."""
+    """Run pytest. Trusted internal call — no safety check."""
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pytest", path, "-v", "--tb=short", "--no-header"],

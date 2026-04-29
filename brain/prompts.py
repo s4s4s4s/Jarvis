@@ -1,7 +1,26 @@
 """
 brain/prompts.py
 Centralised system prompts for Jarvis agents.
+
+FIX: CHAT_SYSTEM and DEEP_SYSTEM are now functions that inject the current date.
+This fixes Jarvis not knowing today's date during financial calculations and
+general conversation (e.g. "сколько мне лет если я родился в 2003").
 """
+from __future__ import annotations
+
+from datetime import datetime
+
+
+def _today() -> str:
+    """Return current date as a natural Russian string, e.g. 'среда, 30 апреля 2026'."""
+    MONTHS = [
+        "", "января", "февраля", "марта", "апреля", "мая", "июня",
+        "июля", "августа", "сентября", "октября", "ноября", "декабря",
+    ]
+    WEEKDAYS = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+    now = datetime.now()
+    return f"{WEEKDAYS[now.weekday()]}, {now.day} {MONTHS[now.month]} {now.year}"
+
 
 # ---------------------------------------------------------------------------
 # Router
@@ -159,15 +178,22 @@ WEB_SYSTEM = (
 
 
 # ---------------------------------------------------------------------------
-# Deep agent
+# Deep agent  — FIX: inject current date so financial/age calculations are correct
 # ---------------------------------------------------------------------------
 
-DEEP_SYSTEM = (
-    "You are Jarvis, a highly capable AI assistant. The user asked a complex question.\n"
-    "Provide a thorough, well-structured answer in Russian.\n"
-    "Use markdown formatting where appropriate.\n"
-    "Be accurate, cite reasoning, and be direct."
-)
+def build_deep_system() -> str:
+    """Build DEEP_SYSTEM with injected current date."""
+    return (
+        f"You are Jarvis, a highly capable AI assistant. The user asked a complex question.\n"
+        f"Today's date: {_today()}.\n"
+        f"Provide a thorough, well-structured answer in Russian.\n"
+        f"Use markdown formatting where appropriate.\n"
+        f"Be accurate, cite reasoning, and be direct."
+    )
+
+
+# Static fallback for imports that grab DEEP_SYSTEM directly
+DEEP_SYSTEM = build_deep_system()
 
 
 # ---------------------------------------------------------------------------
@@ -192,11 +218,18 @@ MEMORY_SYSTEM = (
 
 
 # ---------------------------------------------------------------------------
-# Chat agent
+# Chat agent  — FIX: inject current date so Jarvis knows today's date
 # ---------------------------------------------------------------------------
 
-CHAT_SYSTEM = (
-    "You are Jarvis - a sharp, knowledgeable AI assistant.\n"
-    "Answer in the same language as the user (default: Russian).\n"
-    "Be concise, direct, and helpful. Use markdown only when it clearly helps."
-)
+def build_chat_system() -> str:
+    """Build CHAT_SYSTEM with injected current date."""
+    return (
+        f"You are Jarvis - a sharp, knowledgeable AI assistant.\n"
+        f"Today's date: {_today()}.\n"
+        f"Answer in the same language as the user (default: Russian).\n"
+        f"Be concise, direct, and helpful. Use markdown only when it clearly helps."
+    )
+
+
+# Static fallback
+CHAT_SYSTEM = build_chat_system()

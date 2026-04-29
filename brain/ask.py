@@ -54,6 +54,9 @@ _VOICE_TRUNCATE_TOOLS = {
 _VOICE_MAX_CHARS = 220
 _ROUTER_HISTORY_TURNS = 6
 
+# FIX: routes where memory extraction is skipped (tool results have no personal data)
+_NO_MEMORY_ROUTES = frozenset({"tool", "git"})
+
 _tl = threading.local()
 
 
@@ -106,7 +109,7 @@ class AskResult:
 
 
 def _route(text: str, history: list[dict]) -> dict[str, Any]:
-    # BUG-FIX: Level-1 keyword router — skips LLM for obvious cases (~70% of queries)
+    # Level-1: instant keyword router — no LLM needed for ~70% of queries
     try:
         from brain.router_keywords import fast_route
         fast = fast_route(text)
@@ -300,9 +303,10 @@ def ask_llm(
                 reason=route_data.get("reason", ""),
                 answer_ms=elapsed_ms + route_ms,
             )
+            # FIX: pass route to extract_and_save_async so tool/git routes are skipped
             try:
                 from tools.memory import extract_and_save_async
-                extract_and_save_async(text, answer)
+                extract_and_save_async(text, answer, route=route)
             except Exception as e:
                 logger.error("Memory extraction failed: %s", e)
 
