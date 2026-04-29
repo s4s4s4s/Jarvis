@@ -232,25 +232,93 @@ def _save_metrics(slug: str, **fields) -> None:
 
 
 # ─── PHASE 1: intake ────────────────────────────────────────────────────────
+def _normalize_intake_spec(spec: dict, query: str) -> dict:
+    """P6: пост-обработка spec от LLM — структурные гарантии, без ключевых слов."""
+    from tools.projects import slugify
+
+    if not isinstance(spec, dict):
+        spec = {}
+
+    # title
+    title = str(spec.get("title") or "").strip()
+    if not title or len(title) > 100:
+        words = (query or "").strip().split()[:5]
+        title = " ".join(words) if words else "untitled-project"
+    spec["title"] = title
+
+    # slug — обязательно непустой и валидный
+    slug = str(spec.get("slug") or "").strip().lower()
+    if not slug or not re.match(r"^[a-z0-9\-]{1,40}$", slug):
+        slug = slugify(title)
+    if not slug:
+        slug = "untitled-project"
+    spec["slug"] = slug[:40]
+
+    # kind / language — разрешённые множества
+    allowed_kind = {"script", "cli", "web", "bot", "library", "data"}
+    kind = str(spec.get("kind") or "").strip().lower()
+    spec["kind"] = kind if kind in allowed_kind else "script"
+
+    allowed_lang = {"python", "javascript", "typescript", "html", "other"}
+    lang = str(spec.get("language") or "").strip().lower()
+    spec["language"] = lang if lang in allowed_lang else "python"
+
+    # summary
+    summary = str(spec.get("summary") or "").strip()
+    if not summary:
+        summary = (query or "").strip()[:200]
+    spec["summary"] = summary[:300]
+
+    # requirements: список строк; флаг эхо если LLM выдала весь query одним пунктом
+    reqs_raw = spec.get("requirements") or []
+    if not isinstance(reqs_raw, list):
+        reqs_raw = [str(reqs_raw)]
+    reqs = [str(r).strip() for r in reqs_raw if str(r).strip()]
+    q_norm = (query or "").strip().lower()
+    is_echo = (
+        len(reqs) == 1
+        and q_norm
+        and reqs[0].lower().startswith(q_norm[: min(40, len(q_norm))])
+    )
+    spec["requirements"] = reqs
+    if is_echo:
+        spec["_intake_warning"] = "requirements is echo of query"
+
+    # deliverables
+    dlv_raw = spec.get("deliverables") or []
+    if not isinstance(dlv_raw, list):
+        dlv_raw = [str(dlv_raw)]
+    spec["deliverables"] = [str(d).strip() for d in dlv_raw if str(d).strip()] or ["main.py"]
+
+    # acceptance_criteria
+    ac_raw = spec.get("acceptance_criteria") or []
+    if not isinstance(ac_raw, list):
+        ac_raw = [str(ac_raw)]
+    spec["acceptance_criteria"] = (
+        [str(a).strip() for a in ac_raw if str(a).strip()]
+        or ["скрипт запускается без ошибок"]
+    )
+
+    return spec
+
+
 def _intake(query: str, budget: Budget) -> dict:
     raw = _llm(budget, MODEL_INTAKE, PROJECT_INTAKE_SYSTEM, query,
                temperature=0.1, num_ctx=4096, where="intake")
     spec = _safe_parse(raw)
     if not isinstance(spec, dict) or not spec.get("title"):
+        # P6: пустые requirements (не эхо запроса)
         spec = {
-            "title": "untitled-project",
+            "title": " ".join((query or "").strip().split()[:5]) or "untitled-project",
             "slug": "",
             "kind": "script",
             "language": "python",
-            "summary": query[:200],
-            "requirements": [query[:200]],
+            "summary": (query or "")[:200],
+            "requirements": [],
             "deliverables": ["main.py"],
             "acceptance_criteria": ["скрипт запускается без ошибок"],
         }
-    spec.setdefault("requirements", [])
-    spec.setdefault("deliverables", [])
-    spec.setdefault("acceptance_criteria", [])
-    return spec
+    return _normalize_intake_spec(spec, query)
 
 
 # ─── PHASE 2: architect ─────────────────────────────────────────────────────

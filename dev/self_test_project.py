@@ -874,6 +874,77 @@ class TestDeterministicHealers(_IsolatedJarvisRoot):
         self.assertIsNone(diag)
 
 
+# ─── P6: smart intake normalization ─────────────────────────────────────────
+class TestIntakeNormalization(_IsolatedJarvisRoot):
+    """P6: _normalize_intake_spec — структурные гарантии, без ключевых слов."""
+
+    def test_empty_slug_filled_from_title(self):
+        spec = {"title": "Lenta RSS Parser", "slug": ""}
+        out = self.project_mod._normalize_intake_spec(spec, "q")
+        self.assertTrue(out["slug"])
+        self.assertRegex(out["slug"], r"^[a-z0-9\-]{1,40}$")
+
+    def test_invalid_slug_replaced(self):
+        spec = {"title": "Test", "slug": "Не валидный!!!"}
+        out = self.project_mod._normalize_intake_spec(spec, "q")
+        self.assertRegex(out["slug"], r"^[a-z0-9\-]{1,40}$")
+
+    def test_kind_outside_set_falls_back_to_script(self):
+        out = self.project_mod._normalize_intake_spec({"title": "X", "kind": "weird"}, "q")
+        self.assertEqual(out["kind"], "script")
+
+    def test_lang_outside_set_falls_back_to_python(self):
+        out = self.project_mod._normalize_intake_spec({"title": "X", "language": "cobol"}, "q")
+        self.assertEqual(out["language"], "python")
+
+    def test_echo_requirement_flagged(self):
+        """Если LLM выдала весь query одним пунктом — выставляется флаг."""
+        q = "скачай новости с ленты и сохрани в csv"
+        spec = {"title": "News", "requirements": [q]}
+        out = self.project_mod._normalize_intake_spec(spec, q)
+        self.assertEqual(out.get("_intake_warning"), "requirements is echo of query")
+
+    def test_multi_requirements_not_flagged_as_echo(self):
+        q = "скачай новости и сохрани в csv"
+        spec = {"title": "X", "requirements": ["скачать rss", "распарсить", "сохранить"]}
+        out = self.project_mod._normalize_intake_spec(spec, q)
+        self.assertNotIn("_intake_warning", out)
+
+    def test_empty_requirements_not_echo(self):
+        """Пустой список НЕ считается эхо."""
+        out = self.project_mod._normalize_intake_spec(
+            {"title": "X", "requirements": []}, "some long query"
+        )
+        self.assertNotIn("_intake_warning", out)
+
+    def test_deliverables_default_when_empty(self):
+        out = self.project_mod._normalize_intake_spec({"title": "X"}, "q")
+        self.assertEqual(out["deliverables"], ["main.py"])
+
+    def test_acceptance_default_when_empty(self):
+        out = self.project_mod._normalize_intake_spec({"title": "X"}, "q")
+        self.assertGreaterEqual(len(out["acceptance_criteria"]), 1)
+
+    def test_title_too_long_truncated_to_words(self):
+        long_title = "A" * 200
+        out = self.project_mod._normalize_intake_spec({"title": long_title}, "один два три четыре")
+        self.assertLessEqual(len(out["title"]), 100)
+
+    def test_non_dict_spec_handled(self):
+        out = self.project_mod._normalize_intake_spec(None, "простой запрос")
+        self.assertTrue(out["title"])
+        self.assertTrue(out["slug"])
+        self.assertEqual(out["kind"], "script")
+        self.assertEqual(out["language"], "python")
+
+    def test_string_requirements_coerced_to_list(self):
+        out = self.project_mod._normalize_intake_spec(
+            {"title": "X", "requirements": "один пункт"}, "q"
+        )
+        self.assertIsInstance(out["requirements"], list)
+        self.assertEqual(out["requirements"], ["один пункт"])
+
+
 # ─── P4: role-split models ───────────────────────────────────────────────────
 class TestRoleSplitModels(unittest.TestCase):
     """P4: проверяем что ролевые алиасы существуют и приходят из config."""
