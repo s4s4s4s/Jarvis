@@ -12,13 +12,13 @@ from brain.client import chat, MODEL_ROUTER, MODEL_FAST
 from brain.prompts import ROUTER_SYSTEM, TOOL_FORMAT_SYSTEM
 from brain import history as hist
 from brain.logger import log_route
+from brain.router_embed import route_embed
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jarvis-ask")
 atexit.register(lambda: _executor.shutdown(wait=False, cancel_futures=True))
 
 logger = logging.getLogger(__name__)
 
-# Константы для фоллбэк-сообщений (используются только если Ollama недоступна)
 _CTX_TIMEOUT    = "получение ответа"
 _TOOL_TIMEOUT   = "get_answer"
 _FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
@@ -40,7 +40,8 @@ class AskResult:
         return self._answer
 
 
-def _route(text: str) -> dict[str, Any]:
+def _route_llm(text: str) -> dict[str, Any]:
+    """LLM-based routing via qwen2.5:14b. Used as fallback when embed is uncertain."""
     msgs = [
         {"role": "system", "content": ROUTER_SYSTEM},
         {"role": "user", "content": text},
@@ -56,19 +57,33 @@ def _route(text: str) -> dict[str, Any]:
     except (json.JSONDecodeError, ValueError):
         data = {}
     return {
-        "route": data.get("route", "chat"),
-        "tool": data.get("tool"),
+        "route":     data.get("route", "chat"),
+        "tool":      data.get("tool"),
         "tool_args": data.get("tool_args") or {},
         "confidence": data.get("confidence", 0.0),
-        "filler": data.get("filler") or "",
-        "reason": data.get("reason") or "",
+        "filler":    data.get("filler") or "",
+        "reason":    data.get("reason") or "",
+        "_source":   "llm",
     }
+
+
+def _route_smart(text: str) -> dict[str, Any]:
+    """
+    Two-stage routing:
+    1. Embed router (~30ms) — returns result if confident
+    2. LLM router (~500-1500ms) — fallback for ambiguous queries
+    """
+    result = route_embed(text)
+    if result is not None:
+        logger.debug(f"[router] embed hit: route={result['route']} conf={result['confidence']}")
+        return result
+    logger.debug("[router] embed uncertain → LLM fallback")
+    return _route_llm(text)
 
 
 def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
     """LLM генерирует естественный ответ об ошибке инструмента.
-
-    Fallback на константу _FALLBACK_ERROR только если Ollama недоступна.
+    Fallback на константу только если Ollama недоступна.
     """
     msgs = [
         {"role": "system", "content": TOOL_FORMAT_SYSTEM},
@@ -86,8 +101,19 @@ def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
         return _FALLBACK_ERROR.format(error=error)
 
 
-def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str:
+def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> tuple[str, bool]:
+    """
+    Dispatches to the right agent.
+    Returns (answer, tool_ok) for feedback evaluation.
+    """
     route = route_data["route"]
+
+    if route == "feedback":
+        from brain.explicit_feedback import user_says_correct, user_says_wrong
+        tool = route_data.get("tool") or ""
+        if tool == "feedback.correct":
+            return user_says_correct(), True
+        return user_says_wrong(), True
 
     if route == "tool":
         from brain.agents.tool_agent import tool_agent
@@ -101,23 +127,23 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
                     f"{json.dumps(result.data, ensure_ascii=False, indent=2)}"
                 )},
             ]
-            return chat(MODEL_FAST, msgs, options={"temperature": 0.2, "num_ctx": 4096})
-        return _format_tool_error(text, route_data.get("tool"), result.error or "неизвестная ошибка")
+            return chat(MODEL_FAST, msgs, options={"temperature": 0.2, "num_ctx": 4096}), True
+        return _format_tool_error(text, route_data.get("tool"), result.error or "неизвестная ошибка"), False
 
     if route == "web":
         from brain.agents.web_agent import run as web_run
-        return web_run(text, history)
+        return web_run(text, history), True
 
     if route == "deep":
         from brain.agents.deep import run as deep_run
-        return deep_run(text, history)
+        return deep_run(text, history), True
 
     if route == "memory":
         from brain.agents.memory_agent import run as memory_run
-        return memory_run(text, history)
+        return memory_run(text, history), True
 
     from brain.agents.chat import run as chat_run
-    return chat_run(text, history)
+    return chat_run(text, history), True
 
 
 def ask_llm(text: str) -> AskResult:
@@ -126,15 +152,16 @@ def ask_llm(text: str) -> AskResult:
 
     t_route0 = time.monotonic()
     try:
-        route_data = _route(text)
+        route_data = _route_smart(text)
     except Exception as e:
         route_data = {
-            "route": "chat",
-            "tool": None,
+            "route":     "chat",
+            "tool":      None,
             "tool_args": {},
             "confidence": 0.0,
-            "filler": "",
-            "reason": f"router error: {e}",
+            "filler":    "",
+            "reason":    f"router error: {e}",
+            "_source":   "error",
         }
     route_ms = int((time.monotonic() - t_route0) * 1000)
 
@@ -142,9 +169,37 @@ def ask_llm(text: str) -> AskResult:
 
     def _run() -> str:
         t0 = time.monotonic()
-        answer = _dispatch(route_data, text, history)
+        answer, tool_ok = _dispatch(route_data, text, history)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         hist.append("assistant", answer)
+
+        # Оценка + запись фидбека
+        try:
+            from brain.implicit_eval import evaluate as implicit_eval
+            from brain.feedback_store import record as fb_record
+            from brain.explicit_feedback import set_last_id
+
+            outcome, reason = implicit_eval(
+                route=route_data["route"],
+                tool=route_data.get("tool"),
+                confidence=route_data.get("confidence", 0.0),
+                answer=answer,
+                tool_ok=tool_ok,
+            )
+            record_id = fb_record(
+                text=text,
+                route=route_data["route"],
+                tool=route_data.get("tool"),
+                confidence=route_data.get("confidence", 0.0),
+                source=route_data.get("_source", "llm"),
+                answer=answer,
+                outcome=outcome,
+                reason=reason,
+            )
+            set_last_id(record_id)
+        except Exception as e:
+            logger.error(f"[ask] feedback error: {e}")
+
         log_route(
             text=text,
             route=route_data["route"],
