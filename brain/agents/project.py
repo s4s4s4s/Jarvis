@@ -52,6 +52,11 @@ from brain.prompts import (
 )
 from brain.agents import coder as coder_agent
 from brain.agents import reviewer as reviewer_agent
+from tools.static_checks import (
+    static_check,
+    static_errors_to_feedback,
+    static_warnings_to_hint,
+)
 from tools.projects import (
     create_project,
     write_project_file,
@@ -307,10 +312,20 @@ def _phase_env(slug: str, plan: dict) -> dict:
 
 # ─── PHASE 4: build (coder ↔ reviewer loop) ────────────────────────────────
 def _build_one_file(slug: str, spec: dict, plan: dict, target: dict, budget: Budget) -> dict:
+    """Build-loop с детерминистической статикой перед LLM-Reviewer (P1).
+
+    На каждой итерации:
+      1. Coder пишет/патчит код.
+      2. static_check (ast.parse + ruff/pyflakes если есть).
+      3. Если синтаксис битый → пропускаем LLM-Reviewer, ast-ошибка — feedback.
+      4. Иначе вызываем Reviewer (при наличии lint-warnings — пробросим их как hint).
+    """
     feedback = ""
     code = ""
     final_review: dict[str, Any] = {}
+    last_static: dict[str, Any] = {}
     existing = get_project_files(slug)
+    static_fail_streak = 0
     for it in range(MAX_REVIEW_ITERS + 1):
         budget.check(f"build:{target.get('path')}:iter{it}")
         if it == 0:
@@ -319,8 +334,33 @@ def _build_one_file(slug: str, spec: dict, plan: dict, target: dict, budget: Bud
             code = coder_agent.patch_file(spec, plan, target, code, feedback, existing=existing)
         budget.spend(1)
 
+        # P1: детерминистическая статика до Reviewer.
+        sc = static_check(target.get("path", ""), code)
+        last_static = sc
+        if sc.get("applicable") and not sc.get("ok"):
+            # Синтаксис битый — не тратим LLM на Reviewer.
+            static_fail_streak += 1
+            feedback = static_errors_to_feedback(sc.get("errors") or [])
+            final_review = {
+                "verdict": "revise",
+                "issues": [{"severity": "error", "message": e} for e in sc.get("errors", [])],
+                "summary": f"static: {sc.get('errors', [''])[0][:120]}",
+                "_source": "static",
+            }
+            # Если это последняя допустимая итерация — выходим, файл останется писаться как
+            # есть (пусть хилер ловит на фазе test или проект упадёт честно).
+            if it >= MAX_REVIEW_ITERS:
+                break
+            continue
+
         budget.check(f"review:{target.get('path')}:iter{it}")
-        rv = reviewer_agent.review(spec, target, code)
+        # Пробрасываем lint-warnings как hint Reviewer'у через spec'овый слот без ломки API.
+        # Reviewer.review не знает про это, но в promt-сборке spec выводится целиком — линт будет виден.
+        review_spec = spec
+        warnings = sc.get("warnings") or []
+        if warnings:
+            review_spec = {**spec, "_static_lint_hint": static_warnings_to_hint(warnings)}
+        rv = reviewer_agent.review(review_spec, target, code)
         budget.spend(1 if rv.get("_source") == "llm" else 0)
         final_review = rv
         if rv["verdict"] == "approve":
@@ -342,6 +382,13 @@ def _build_one_file(slug: str, spec: dict, plan: dict, target: dict, budget: Bud
         "issues":   len(final_review.get("issues") or []),
         "summary":  final_review.get("summary", "")[:200],
         "iters":    it + 1,
+        "static":   {
+            "tools":          last_static.get("tools") or [],
+            "errors":         last_static.get("errors") or [],
+            "warnings":       last_static.get("warnings") or [],
+            "fail_streak":    static_fail_streak,
+            "final_ast_ok":   bool(last_static.get("ok", True)),
+        },
     }
 
 

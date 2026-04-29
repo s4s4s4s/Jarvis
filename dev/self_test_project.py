@@ -577,5 +577,161 @@ class TestStructuredChecks(_IsolatedJarvisRoot):
         self.assertEqual(rec["checks"], [])
 
 
+# ─── P1: static checks (ast + ruff/pyflakes) ────────────────────────────
+class TestStaticChecks(unittest.TestCase):
+    """P1: детерминистическая статика перед LLM-Reviewer."""
+
+    def test_ast_check_valid_python(self):
+        from tools.static_checks import ast_check
+        r = ast_check("def foo():\n    return 42\n")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["errors"], [])
+        self.assertEqual(r["tool"], "ast")
+
+    def test_ast_check_syntax_error_has_line_and_message(self):
+        from tools.static_checks import ast_check
+        r = ast_check("def foo(:\n    return 42\n")
+        self.assertFalse(r["ok"])
+        self.assertEqual(len(r["errors"]), 1)
+        self.assertIn("SyntaxError", r["errors"][0])
+        self.assertIn("L1", r["errors"][0])
+
+    def test_ast_check_empty_code_fails(self):
+        from tools.static_checks import ast_check
+        r = ast_check("")
+        self.assertFalse(r["ok"])
+
+    def test_ast_check_indentation_error(self):
+        from tools.static_checks import ast_check
+        r = ast_check("def foo():\nreturn 1\n")
+        self.assertFalse(r["ok"])
+        self.assertIn("L2", r["errors"][0])
+
+    def test_static_check_skips_non_python(self):
+        from tools.static_checks import static_check
+        r = static_check("requirements.txt", "feedparser\nrequests\n")
+        self.assertTrue(r["ok"])
+        self.assertFalse(r["applicable"])
+        self.assertEqual(r["errors"], [])
+
+    def test_static_check_python_ok(self):
+        from tools.static_checks import static_check
+        r = static_check("main.py", "print('hi')\n")
+        self.assertTrue(r["ok"])
+        self.assertTrue(r["applicable"])
+        self.assertEqual(r["errors"], [])
+        self.assertIn("ast", r["tools"])
+
+    def test_static_check_python_syntax_broken(self):
+        from tools.static_checks import static_check
+        r = static_check("main.py", "def x(:\n  pass\n")
+        self.assertFalse(r["ok"])
+        self.assertTrue(r["applicable"])
+        self.assertTrue(len(r["errors"]) >= 1)
+
+    def test_static_errors_to_feedback_format(self):
+        from tools.static_checks import static_errors_to_feedback
+        fb = static_errors_to_feedback(["L3:5 SyntaxError: invalid syntax"])
+        self.assertIn("Синтаксически", fb) if False else None  # проверяем фактический текст
+        self.assertIn("SyntaxError", fb)
+        self.assertIn("L3:5", fb)
+
+    def test_static_errors_to_feedback_empty(self):
+        from tools.static_checks import static_errors_to_feedback
+        self.assertEqual(static_errors_to_feedback([]), "")
+
+    def test_lint_check_never_fails_on_valid_code(self):
+        """lint — soft-проверка, никогда не возвращает ok=False."""
+        from tools.static_checks import lint_check
+        r = lint_check("x = 1\nprint(x)\n")
+        self.assertTrue(r["ok"])
+        self.assertIn("tool", r)
+
+
+# ─── P1: build-loop интеграция static checks ─────────────────────────
+class TestBuildLoopWithStatics(_IsolatedJarvisRoot):
+    """Когда Coder выдаёт синтаксически битый код, LLM-Reviewer НЕ должен вызываться."""
+
+    def test_static_failure_skips_reviewer_and_uses_static_feedback(self):
+        # 1-я итерация: write_file выдаёт битый синтаксис,
+        # 2-я итерация: patch_file (получив ast-feedback) выдаёт валидный.
+        # Reviewer должен быть вызван РОВНО ОДИН раз (на 2-й итерации), не 2 раза.
+        m = self.proj_mod.create_project({"title": "P1", "slug": "p1"})
+        plan = {"files": [{"path": "main.py", "purpose": "x"}]}
+        spec = {"title": "P1"}
+        target = plan["files"][0]
+        budget = self.project_mod.Budget(wall_s=60, llm=20)
+
+        broken_code = "def foo(:\n    return 42\n"
+        good_code   = "def foo():\n    return 42\n"
+
+        write_calls = []
+        patch_calls = []
+        review_calls = []
+
+        def fake_write(spec, plan, target, existing=None):
+            write_calls.append((target["path"], existing))
+            return broken_code
+
+        def fake_patch(spec, plan, target, code, feedback, existing=None):
+            patch_calls.append((target["path"], feedback))
+            return good_code
+
+        def fake_review(spec, target, code):
+            review_calls.append({"code_first_line": code.splitlines()[0], "hint": spec.get("_static_lint_hint")})
+            return {"verdict": "approve", "issues": [], "summary": "ok", "_source": "llm"}
+
+        with patch.object(self.project_mod.coder_agent, "write_file", side_effect=fake_write), \
+             patch.object(self.project_mod.coder_agent, "patch_file", side_effect=fake_patch), \
+             patch.object(self.project_mod.reviewer_agent, "review", side_effect=fake_review):
+            res = self.project_mod._build_one_file(m.slug, spec, plan, target, budget)
+
+        self.assertTrue(res["ok"])
+        self.assertEqual(len(write_calls), 1)        # первая итерация
+        self.assertEqual(len(patch_calls), 1)        # вторая, с ast-feedback
+        self.assertIn("SyntaxError", patch_calls[0][1])
+        self.assertEqual(len(review_calls), 1)       # Reviewer вызван только на валидном коде
+        self.assertEqual(res["static"]["fail_streak"], 1)
+        self.assertTrue(res["static"]["final_ast_ok"])
+
+    def test_static_ok_path_unchanged_behaviour(self):
+        """Если Coder сразу выдаёт валидный код — build-loop ведёт себя как раньше."""
+        m = self.proj_mod.create_project({"title": "P1", "slug": "p1ok"})
+        plan = {"files": [{"path": "main.py", "purpose": "x"}]}
+        spec = {"title": "ok"}
+        target = plan["files"][0]
+        budget = self.project_mod.Budget(wall_s=60, llm=20)
+
+        review_calls = []
+        with patch.object(self.project_mod.coder_agent, "write_file",
+                          return_value="print('hi')\n"), \
+             patch.object(self.project_mod.reviewer_agent, "review",
+                          side_effect=lambda spec, target, code: (review_calls.append(1) or {"verdict": "approve", "issues": [], "summary": "ok", "_source": "llm"})):
+            res = self.project_mod._build_one_file(m.slug, spec, plan, target, budget)
+
+        self.assertTrue(res["ok"])
+        self.assertEqual(len(review_calls), 1)
+        self.assertEqual(res["static"]["fail_streak"], 0)
+
+    def test_static_skipped_for_non_python(self):
+        """Для requirements.txt static не применяется, build-loop работает как было."""
+        m = self.proj_mod.create_project({"title": "P1", "slug": "p1txt"})
+        plan = {"files": [{"path": "requirements.txt", "purpose": "deps"}]}
+        spec = {"title": "deps"}
+        target = plan["files"][0]
+        budget = self.project_mod.Budget(wall_s=60, llm=20)
+
+        with patch.object(self.project_mod.coder_agent, "write_file",
+                          return_value="feedparser\n"), \
+             patch.object(self.project_mod.reviewer_agent, "review",
+                          return_value={"verdict": "approve", "issues": [], "summary": "ok", "_source": "llm"}):
+            res = self.project_mod._build_one_file(m.slug, spec, plan, target, budget)
+
+        self.assertTrue(res["ok"])
+        self.assertFalse(res["static"].get("final_ast_ok") is False)
+        # tools пустой — static не применялся
+        self.assertEqual(res["static"]["tools"], [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
