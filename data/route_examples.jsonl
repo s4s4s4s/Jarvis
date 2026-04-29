@@ -106,3 +106,51 @@
 {"text": "как работает блокчейн", "route": "chat", "tool": null, "tool_args": {}, "filler": ""}
 {"text": "стоит ли инвестировать в крипту", "route": "deep", "tool": null, "tool_args": {}, "filler": "Анализирую"}
 {"text": "что будет с биткоином в 2025", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети"}
+{"text": "открой гугл", "route": "tool", "tool": "browser.open", "tool_args": {"url": "https://google.com"}, "filler": "Открываю"}
+{"text": "открой сайт youtube", "route": "tool", "tool": "browser.open", "tool_args": {"url": "https://youtube.com"}, "filler": "Открываю"}
+{"text": "открой github", "route": "tool", "tool": "browser.open", "tool_args": {"url": "https://github.com"}, "filler": "Открываю"}
+{"text": "поищи в браузере openai", "route": "tool", "tool": "browser.search", "tool_args": {"query": "openai"}, "filler": "Ищу"}
+{"text": "найди в браузере python tutorial", "route": "tool", "tool": "browser.search", "tool_args": {"query": "python tutorial"}, "filler": "Ищу"}
+{"text": "достань текст со страницы", "route": "tool", "tool": "browser.get_text", "tool_args": {"url": ""}, "filler": "Читаю страницу"}
+{"text": "почитай файл requirements.txt", "route": "tool", "tool": "file.read", "tool_args": {"path": "requirements.txt"}, "filler": "Читаю"}
+{"text": "открой файл readme", "route": "tool", "tool": "file.read", "tool_args": {"path": "README.md"}, "filler": "Читаю"}
+{"text": "покажи содержимое файла config.py", "route": "tool", "tool": "file.read", "tool_args": {"path": "core/config.py"}, "filler": "Читаю"}
+{"text": "что в папке desktop", "route": "tool", "tool": "file.list", "tool_args": {"path": "~/Desktop"}, "filler": "Смотрю"}
+{"text": "покажи содержимое папки документы", "route": "tool", "tool": "file.list", "tool_args": {"path": "~/Documents"}, "filler": "Смотрю"}
+{"text": "найди все py файлы в проекте", "route": "tool", "tool": "file.search", "tool_args": {"root": "C:/jarvis", "pattern": "*.py"}, "filler": "Ищу"}
+{"text": "удали этот файл", "route": "tool", "tool": "file.delete", "tool_args": {"path": ""}, "filler": "Удаляю"}
+{"text": "запусти блокнот", "route": "tool", "tool": "app.launch", "tool_args": {"command": "notepad"}, "filler": "Запускаю"}
+{"text": "открой калькулятор", "route": "tool", "tool": "app.launch", "tool_args": {"command": "calc"}, "filler": "Запускаю"}
+{"text": "запусти проводник", "route": "tool", "tool": "app.launch", "tool_args": {"command": "explorer"}, "filler": "Запускаю"}
+{"text": "закрой блокнот", "route": "tool", "tool": "app.kill", "tool_args": {"name_or_pid": "notepad.exe"}, "filler": "Закрываю"}
+{"text": "какие процессы запущены", "route": "tool", "tool": "app.list", "tool_args": {}, "filler": "Смотрю процессы"}
+{"text": "какое окно сейчас активно", "route": "tool", "tool": "app.active_window", "tool_args": {}, "filler": ""}
+{"text": "что в буфере обмена", "route": "tool", "tool": "clipboard.get", "tool_args": {}, "filler": "Читаю буфер"}
+{"text": "прочитай буфер обмена", "route": "tool", "tool": "clipboard.get", "tool_args": {}, "filler": "Читаю буфер"}
+{"text": "скопируй в буфер обмена привет мир", "route": "tool", "tool": "clipboard.set", "tool_args": {"text": "привет мир"}, "filler": ""}
+{"text": "найди в памяти про немецкий", "route": "tool", "tool": "memory.search", "tool_args": {"query": "немецкий"}, "filler": "Ищу в памяти"}
+{"text": "поищи в памяти что я говорил про крипту", "route": "tool", "tool": "memory.search", "tool_args": {"query": "крипта"}, "filler": "Ищу в памяти"}
+{"text": "запомни что я учу немецкий", "route": "tool", "tool": "memory.add", "tool_args": {"fact": "пользователь учит немецкий язык", "category": "обучение"}, "filler": ""}
+{"text": "сохрани в памяти что я живу в Москве", "route": "tool", "tool": "memory.add", "tool_args": {"fact": "пользователь живёт в Москве", "category": "локация"}, "filler": ""}
+{"text": "покажи последние факты в памяти", "route": "tool", "tool": "memory.list", "tool_args": {"n": 20}, "filler": "Смотрю память"}
+{"text": "найди новости про искусственный интеллект и запиши в файл", "route": "plan", "tool": null, "tool_args": {}, "filler": "Составляю план"}
+{"text": "прочитай файл readme и кратко перескажи суть", "route": "plan", "tool": null, "tool_args": {}, "filler": "Читаю и анализирую"}
+{"text": "найди цену биткоина и открой график в браузере", "route": "plan", "tool": null, "tool_args": {}, "filler": "Сейчас сделаю"}
+{"text": "скачай страницу и сохрани текст в файл", "route": "plan", "tool": null, "tool_args": {}, "filler": "Сейчас сделаю"}
+{"text": "посмотри погоду и курс доллара сразу", "route": "plan", "tool": null, "tool_args": {}, "filler": "Сейчас узнаю"}
+{"text": "сделай несколько действий подряд", "route": "plan", "tool": null, "tool_args": {}, "filler": "Составляю план"}
+{"text": "прочитай файл и сохрани его копию рядом", "route": "plan", "tool": null, "tool_args": {}, "filler": "Делаю"}
+{"text": "запиши в буфер обмена текущее время", "route": "plan", "tool": null, "tool_args": {}, "filler": "Делаю"}
+{"text": "добавь инструмент для скриншота экрана", "route": "extend", "tool": null, "tool_args": {}, "filler": "Создаю инструмент"}
+{"text": "напиши tool для записи звука с микрофона", "route": "extend", "tool": null, "tool_args": {}, "filler": "Создаю инструмент"}
+{"text": "научись делать скриншоты окна", "route": "extend", "tool": null, "tool_args": {}, "filler": "Создаю инструмент"}
+{"text": "создай инструмент чтобы получать заряд батареи", "route": "extend", "tool": null, "tool_args": {}, "filler": "Создаю инструмент"}
+{"text": "добавь функцию измерять громкость микрофона", "route": "extend", "tool": null, "tool_args": {}, "filler": "Создаю инструмент"}
+{"text": "напиши себе новый tool для проверки пинга", "route": "extend", "tool": null, "tool_args": {}, "filler": "Создаю инструмент"}
+{"text": "сделай мне приложение для учёта подходов в зале", "route": "project", "tool": null, "tool_args": {}, "filler": "Беру в работу проект"}
+{"text": "разработай телеграм бота который шлёт мне курс биткоина", "route": "project", "tool": null, "tool_args": {}, "filler": "Беру в работу проект"}
+{"text": "напиши скрипт который мониторит папку загрузок и сортирует файлы", "route": "project", "tool": null, "tool_args": {}, "filler": "Беру в работу проект"}
+{"text": "сделай мне сайт визитку на html", "route": "project", "tool": null, "tool_args": {}, "filler": "Беру в работу проект"}
+{"text": "разработай парсер озона который сохраняет цены в csv", "route": "project", "tool": null, "tool_args": {}, "filler": "Беру в работу проект"}
+{"text": "реализуй проект todo приложения с сохранением в json", "route": "project", "tool": null, "tool_args": {}, "filler": "Беру в работу проект"}
+{"text": "построй мне трейдинг бота для арбитража", "route": "project", "tool": null, "tool_args": {}, "filler": "Беру в работу проект"}

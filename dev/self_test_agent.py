@@ -92,6 +92,39 @@ TEST_CASES: list[dict] = [
     {"text": "ты ошибся",  "expected_route": "feedback", "expected_tool": "feedback.wrong"},
     {"text": "всё верно",  "expected_route": "feedback", "expected_tool": "feedback.correct"},
     {"text": "молодец",    "expected_route": "feedback", "expected_tool": "feedback.correct"},
+    {"text": "неправильно", "expected_route": "feedback", "expected_tool": "feedback.wrong"},
+    # --- file (Level 2) ---
+    {"text": "прочитай файл readme",            "expected_route": "tool", "expected_tool": "file.read"},
+    {"text": "что в папке documents",            "expected_route": "tool", "expected_tool": "file.list"},
+    {"text": "найди все py файлы в проекте",     "expected_route": "tool", "expected_tool": "file.search"},
+    # --- app (Level 2) ---
+    {"text": "запусти блокнот",                  "expected_route": "tool", "expected_tool": "app.launch"},
+    {"text": "открой калькулятор",                "expected_route": "tool", "expected_tool": "app.launch"},
+    {"text": "какие процессы запущены",          "expected_route": "tool", "expected_tool": "app.list"},
+    {"text": "какое окно сейчас активно",        "expected_route": "tool", "expected_tool": "app.active_window"},
+    # --- browser (Level 2) ---
+    {"text": "открой гугл",                       "expected_route": "tool", "expected_tool": "browser.open"},
+    {"text": "открой сайт youtube",               "expected_route": "tool", "expected_tool": "browser.open"},
+    {"text": "поищи в браузере python",          "expected_route": "tool", "expected_tool": "browser.search"},
+    # --- clipboard (Level 2) ---
+    {"text": "что в буфере обмена",               "expected_route": "tool", "expected_tool": "clipboard.get"},
+    {"text": "скопируй в буфер привет",           "expected_route": "tool", "expected_tool": "clipboard.set"},
+    # --- memory tools (Level 2) ---
+    {"text": "найди в памяти про немецкий",       "expected_route": "tool", "expected_tool": "memory.search"},
+    {"text": "запомни что я учу немецкий",        "expected_route": "tool", "expected_tool": "memory.add"},
+    {"text": "покажи последние факты в памяти",   "expected_route": "tool", "expected_tool": "memory.list"},
+    # --- plan (multi-step, Level 2) ---
+    {"text": "прочитай файл readme и кратко перескажи суть", "expected_route": "plan", "expected_tool": None},
+    {"text": "найди новости про ии и запиши в файл",         "expected_route": "plan", "expected_tool": None},
+    {"text": "посмотри погоду и курс доллара сразу",         "expected_route": "plan", "expected_tool": None},
+    # --- extend (Level 3) ---
+    {"text": "добавь инструмент для скриншота экрана",       "expected_route": "extend", "expected_tool": None},
+    {"text": "напиши tool для записи звука с микрофона",     "expected_route": "extend", "expected_tool": None},
+    {"text": "научись делать скриншоты окна",                "expected_route": "extend", "expected_tool": None},
+    # --- project (Level 4) ---
+    {"text": "сделай мне приложение для учёта подходов в зале",      "expected_route": "project", "expected_tool": None},
+    {"text": "разработай телеграм бота который шлёт курс биткоина",  "expected_route": "project", "expected_tool": None},
+    {"text": "напиши скрипт который мониторит папку загрузок",       "expected_route": "project", "expected_tool": None},
 ]
 
 
