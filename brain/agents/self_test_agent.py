@@ -48,6 +48,7 @@ REPO_MAP = """\
 ARCHITECTURE (real files only — do NOT invent paths):
   brain/ask.py                  — main router + executor (ALL routes live here, _route + _dispatch)
   brain/prompts.py              — all system prompts (ROUTER_SYSTEM, DEEP_SYSTEM, etc.)
+  brain/router_keywords.py      — Level-1 keyword router (fast_route, no LLM needed)
   brain/client.py               — Ollama chat wrapper (chat, MODEL_HEAVY, MODEL_FAST, MODEL_ROUTER)
   brain/agents/code_agent.py    — write→run→verify loop
   brain/agents/plan_agent.py    — multi-step decomposition
@@ -57,6 +58,10 @@ ARCHITECTURE (real files only — do NOT invent paths):
   brain/agents/web_agent.py     — web search
   brain/agents/tool_agent.py    — tool dispatcher
   brain/agents/chat.py          — chat agent
+  brain/agents/code_dev_agent.py — universal code developer (any codebase)
+  brain/agents/self_extend_agent.py — Jarvis extends himself
+  brain/agents/self_analysis_agent.py — deep self-analysis
+  brain/agents/github_reader.py — reads GitHub repos via API or git clone
   tools/memory.py               — get_memory_context, save_fact (NO recall_events!)
   tools/weather.py              — weather tool
   tools/crypto.py               — crypto tool
@@ -252,7 +257,6 @@ def _extract_json_array(raw: str) -> list[dict]:
 def _parse_auditor(raw: str) -> dict:
     """Robust auditor JSON parser with multiple fallback strategies."""
     raw = raw.strip()
-    # strip markdown fences
     if raw.startswith("```"):
         lines = raw.splitlines()
         inner, in_block = [], False
@@ -265,13 +269,11 @@ def _parse_auditor(raw: str) -> dict:
                 inner.append(line)
         raw = "\n".join(inner).strip()
 
-    # Strategy 1: direct parse
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
         pass
 
-    # Strategy 2: extract first JSON object via regex
     m = re.search(r'\{[^{}]*"verdict"[^{}]*\}', raw, re.DOTALL)
     if m:
         try:
@@ -279,7 +281,6 @@ def _parse_auditor(raw: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # Strategy 3: find outermost { } pair
     start, end = raw.find("{"), raw.rfind("}")
     if start != -1 and end != -1 and end > start:
         try:
@@ -287,20 +288,17 @@ def _parse_auditor(raw: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # Strategy 4: json_repair if available
     try:
-        import json_repair  # type: ignore
+        import json_repair
         return json_repair.loads(raw)
     except (ImportError, Exception):
         pass
 
-    # Fallback: default failing score
     logger.warning("[SelfTest] parse_auditor: all strategies failed, using default")
     return {"verdict": "fail", "score": 0.5, "issues": ["parse failed"], "suggestions": []}
 
 
 def _extract_json_object(raw: str) -> dict:
-    """Legacy wrapper — delegates to _parse_auditor for auditor results."""
     return _parse_auditor(raw)
 
 
@@ -427,7 +425,29 @@ def _run_single_test(case: dict, test_num: int, total: int) -> dict:
         f"{status} {test_num}/{total}  route={route_ok}  "
         f"score={audit_result['score']:.2f}  {elapsed_ms // 1000}s  «{query[:55]}»"
     )
+
+    # BUG-FIX: feed passing tests into classifier dataset
+    if audit_result["verdict"] == "pass" and record["route_match"]:
+        _update_classifier_dataset(record)
+
     return record
+
+
+def _update_classifier_dataset(record: dict) -> None:
+    """Append a passing test record to route_examples.jsonl for future classifier training."""
+    try:
+        data_dir = REPO_ROOT / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        dataset_path = data_dir / "route_examples.jsonl"
+        entry = {
+            "text": record["query"],
+            "route": record["actual_route"],
+            "score": record["score"],
+        }
+        with open(dataset_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning("[SelfTest] Failed to update classifier dataset: %s", e)
 
 
 def _run_batch(n: int) -> list[dict]:
@@ -450,7 +470,6 @@ def _run_batch(n: int) -> list[dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _filter_bugs_by_whitelist(bugs: list[dict], whitelist: set[str]) -> list[dict]:
-    """Remove bugs that reference non-existent files; flag them as needs_human_review."""
     clean: list[dict] = []
     for bug in bugs:
         real_files = [f for f in bug.get("affected_files", []) if f in whitelist]
@@ -517,7 +536,6 @@ def _analyse_failures(failures: list[dict]) -> list[dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _quick_retest(test_cases: list[dict]) -> float:
-    """Re-run specific test cases, return pass-rate. Used for fix verification."""
     if not test_cases:
         return 1.0
     passed = 0
@@ -529,7 +547,6 @@ def _quick_retest(test_cases: list[dict]) -> float:
 
 
 def _fix_bug(bug: dict, failures: list[dict]) -> dict[str, str]:
-    """Returns {rel_path: fixed_content}. Skips bugs with needs_human_review=True."""
     if bug.get("needs_human_review"):
         logger.info("[SelfTest] Skipping %s (needs_human_review)", bug["id"])
         return {}
@@ -571,24 +588,22 @@ def _fix_bug(bug: dict, failures: list[dict]) -> dict[str, str]:
             data  = _parse_auditor(raw)
             fixed = data.get("fixed_content", "")
             if fixed:
-                results[rel_path] = fixed
-                logger.info("[SelfTest] Fixed %s (%d chars)", rel_path, len(fixed))
+                # BUG-FIX: validate syntax before accepting the fix
+                try:
+                    ast.parse(fixed)
+                    results[rel_path] = fixed
+                    logger.info("[SelfTest] Fixed %s (%d chars)", rel_path, len(fixed))
+                except SyntaxError as se:
+                    logger.error("[SelfTest] Generated fix for %s has syntax error: %s — rejecting", rel_path, se)
         except Exception as e:
             logger.error("[SelfTest] Fixer parse error for %s: %s", rel_path, e)
     return results
 
 
 def _verify_fix(bug: dict, failures: list[dict], fixed_files: dict[str, str]) -> bool:
-    """
-    Write fixed files to disk, re-run the bug's test cases.
-    Return True if pass-rate > 0.3 (at least some tests pass now).
-    Revert files if fix is worse than threshold.
-    FIX: threshold changed from 0.0 to 0.3 to allow partial fixes through.
-    """
     if not fixed_files or not bug.get("test_ids"):
-        return True  # no verification possible, accept
+        return True
 
-    # Write fixed files
     original_contents: dict[str, str] = {}
     for rel_path, content in fixed_files.items():
         p = REPO_ROOT / rel_path
@@ -596,17 +611,15 @@ def _verify_fix(bug: dict, failures: list[dict], fixed_files: dict[str, str]) ->
             original_contents[rel_path] = p.read_text(encoding="utf-8")
         p.write_text(content, encoding="utf-8")
 
-    # Collect test cases for this bug
     test_cases = [
         {"query": failures[i]["query"], "expected_route": failures[i]["expected_route"]}
         for i in bug.get("test_ids", []) if i < len(failures)
-    ][:5]  # cap at 5 re-tests to stay fast
+    ][:5]
 
     report_progress(f"🧪 Re-testing {bug['id']} ({len(test_cases)} cases)...")
     pass_rate = _quick_retest(test_cases)
     logger.info("[SelfTest] Re-test %s: pass_rate=%.2f", bug["id"], pass_rate)
 
-    # FIX: revert only if truly zero improvement (< 0.3 threshold)
     if pass_rate < 0.3:
         logger.warning("[SelfTest] Fix for %s has low pass-rate %.2f — reverting", bug["id"], pass_rate)
         for rel_path, orig in original_contents.items():
@@ -622,7 +635,6 @@ def _verify_fix(bug: dict, failures: list[dict], fixed_files: dict[str, str]) ->
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _push_to_github(branch: str, files: dict[str, str], commit_msg: str) -> bool:
-    """Try PyGithub first, fall back to git CLI."""
     token = os.environ.get("GITHUB_TOKEN")
     if token:
         try:
@@ -633,7 +645,7 @@ def _push_to_github(branch: str, files: dict[str, str], commit_msg: str) -> bool
 
 
 def _push_pygithub(token: str, branch: str, files: dict[str, str], commit_msg: str) -> bool:
-    from github import Github  # type: ignore
+    from github import Github
     g          = Github(token)
     repo       = g.get_repo(GITHUB_REPO)
     base_sha   = repo.get_branch(BASE_BRANCH).commit.sha
@@ -779,7 +791,6 @@ def run(query: str, history: list[dict] | None = None) -> str:
         if not fixed:
             continue
 
-        # Re-test verification — revert if pass-rate < 0.3
         verified = _verify_fix(bug, failures, fixed)
         if verified and fixed:
             all_fixed.update(fixed)

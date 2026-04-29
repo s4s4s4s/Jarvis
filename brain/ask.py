@@ -30,8 +30,8 @@ _ROUTE_TIMEOUTS: dict[str, float] = {
     "code":      300.0,
     "deep":      300.0,
     "analyze":   600.0,
-    "develop":   600.0,   # CodeDevAgent: full analyse+fix+test cycle on any project
-    "extend":    300.0,   # SelfExtendAgent: scaffold new agent/tool
+    "develop":   600.0,
+    "extend":    300.0,
 }
 _DEFAULT_TIMEOUT = 120.0
 
@@ -106,6 +106,17 @@ class AskResult:
 
 
 def _route(text: str, history: list[dict]) -> dict[str, Any]:
+    # BUG-FIX: Level-1 keyword router — skips LLM for obvious cases (~70% of queries)
+    try:
+        from brain.router_keywords import fast_route
+        fast = fast_route(text)
+        if fast is not None:
+            logger.debug("[ask] fast_route matched: %s", fast.get("reason", ""))
+            return fast
+    except Exception as e:
+        logger.warning("[ask] fast_route error (non-fatal): %s", e)
+
+    # Level-2: LLM router for ambiguous cases
     recent = history[-_ROUTER_HISTORY_TURNS:] if history else []
     history_msgs = [
         {"role": m["role"], "content": m["content"][:800]}

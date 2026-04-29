@@ -167,28 +167,13 @@ def read_local_project(root: str | Path, extensions: list[str] | None = None) ->
 
 def read_github_project(repo: str, subdir: str = "", branch: str = "main") -> list[ProjectFile]:
     """
-    Read files from a GitHub repo using the GitHub MCP tools.
+    Read files from a GitHub repo.
     repo format: "owner/repo"
-    Falls back to git clone if MCP not available.
+    Uses github_reader (API or git clone fallback).
     """
-    try:
-        from brain.agents.github_reader import read_repo_files
-        return read_repo_files(repo, subdir=subdir, branch=branch)
-    except ImportError:
-        pass
-
-    # Fallback: clone to temp dir and read locally
-    import tempfile
-    with tempfile.TemporaryDirectory() as tmp:
-        url = f"https://github.com/{repo}.git"
-        result = subprocess.run(
-            ["git", "clone", "--depth=1", "--branch", branch, url, tmp],
-            capture_output=True, timeout=60,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"git clone failed: {result.stderr.decode()[:300]}")
-        root = Path(tmp) / subdir if subdir else Path(tmp)
-        return read_local_project(root)
+    # BUG-FIX: import is no longer conditional — github_reader always exists now
+    from brain.agents.github_reader import read_repo_files
+    return read_repo_files(repo, subdir=subdir, branch=branch)
 
 
 # ---------------------------------------------------------------------------
@@ -347,10 +332,11 @@ def apply_patch_to_file(
         return False
     # Validate syntax for Python files
     if file_path.suffix == ".py":
+        patched = current.replace(old_code, new_code, 1)
         try:
-            ast.parse(new_code)
+            ast.parse(patched)
         except SyntaxError as e:
-            logger.warning("[CodeDev] new_code syntax error in %s: %s", file_path, e)
+            logger.warning("[CodeDev] patched file syntax error in %s: %s", file_path, e)
             return False
     if not dry_run:
         patched = current.replace(old_code, new_code, 1)
@@ -379,7 +365,6 @@ def fix_issues(
         file_path = project_root / issue.file
         if apply_patch_to_file(file_path, old, new):
             applied.append(f"{issue.file}:{issue.line} — {explanation}")
-            # Update in-memory map so next patches see patched source
             file_map[issue.file] = file_map[issue.file].replace(old, new, 1)
 
     return applied
@@ -423,7 +408,6 @@ def add_feature(
     files: list[ProjectFile],
 ) -> list[str]:
     """Scaffold a new feature. Returns list of created/modified file descriptions."""
-    # Build project structure summary
     structure = "\n".join(
         f"{f.path} ({f.language}, {len(f.content)} chars)"
         for f in files[:30]
@@ -456,7 +440,6 @@ def add_feature(
 
     results: list[str] = []
 
-    # Create new files
     for nf in plan.get("new_files", []):
         try:
             fpath = project_root / nf["path"]
@@ -467,7 +450,6 @@ def add_feature(
         except Exception as e:
             results.append(f"❌ Ошибка при создании {nf.get('path', '?')}: {e}")
 
-    # Modify existing files
     for mf in plan.get("modified_files", []):
         fpath = project_root / mf["path"]
         old = mf.get("old_code", "")
@@ -486,7 +468,6 @@ def add_feature(
 
 def run_tests(project_root: Path, timeout: int = 60) -> str:
     """Run pytest (or other test runner) and return output."""
-    # Detect test runner
     runners = [
         ["python", "-m", "pytest", "-x", "--tb=short", "-q"],
         ["python", "-m", "unittest", "discover"],
@@ -500,7 +481,7 @@ def run_tests(project_root: Path, timeout: int = 60) -> str:
         "go.mod": runners[4],
     }
 
-    cmd = runners[0]  # default: pytest
+    cmd = runners[0]
     for indicator, r in runner_indicators.items():
         if (project_root / indicator).exists():
             cmd = r
@@ -550,12 +531,18 @@ _MODE_PATTERNS = {
     "analyse": re.compile(r"(анализируй|проверь|analyse|analyze|review)", re.I),
 }
 _PATH_PATTERN = re.compile(r"[A-Za-z]:[/\\][\w/\\. -]+|/[\w/. -]{3,}|\.[/\\][\w/\\. -]+")
+# BUG-FIX: also detect GitHub repo URLs like github.com/owner/repo or owner/repo pattern
+_GITHUB_REPO_RE = re.compile(
+    r"github\.com/([\w-]+/[\w.-]+)|\b([\w-]+/[\w.-]+)\b(?=.*github|\.git|\.py|\.js|\.ts)",
+    re.IGNORECASE,
+)
 
 
 def _parse_query(query: str) -> tuple[str, str, str]:
     """
     Returns (mode, project_path, extra_spec).
     mode: full_cycle | fix | feature | test | analyse
+    project_path: local path OR "owner/repo" for GitHub
     """
     mode = "full_cycle"
     for m, pattern in _MODE_PATTERNS.items():
@@ -563,13 +550,19 @@ def _parse_query(query: str) -> tuple[str, str, str]:
             mode = m
             break
 
-    # Extract path
+    # Check for GitHub repo first
+    gh_match = _GITHUB_REPO_RE.search(query)
+    if gh_match:
+        project_path = (gh_match.group(1) or gh_match.group(2)).strip()
+        spec = re.sub(_GITHUB_REPO_RE.pattern, "", query, flags=re.IGNORECASE).strip()
+        return mode, f"github:{project_path}", spec
+
+    # Local path
     path_match = _PATH_PATTERN.search(query)
     project_path = path_match.group(0).strip() if path_match else ""
 
-    # Extract feature spec (everything after keywords)
     spec = re.sub(
-        r"(добавь’?|feature|add|implement|scaffold|\u0434опиши|\u0440еализуй)\s+",
+        r"(добавь'?|feature|add|implement|scaffold|допиши|реализуй)\s+",
         "", query, flags=re.I,
     ).strip()
 
@@ -587,50 +580,70 @@ def run(query: str, history: list[dict] | None = None) -> str:
     """
     mode, project_path, spec = _parse_query(query)
 
-    # Resolve project root
-    if project_path:
+    # BUG-FIX: handle GitHub repos detected in query
+    if project_path.startswith("github:"):
+        repo_id = project_path[len("github:"):]
+        report_progress(f"📂 Читаю GitHub репо: {repo_id}...")
+        try:
+            files = read_github_project(repo_id)
+        except Exception as e:
+            return f"❌ Не удалось прочитать GitHub репо {repo_id}: {e}"
+        root = Path(f"github:{repo_id}")
+    elif project_path:
         root = Path(project_path).expanduser()
+        report_progress(f"📂 Читаю файлы: {root}...")
+        try:
+            files = read_local_project(root)
+        except FileNotFoundError as e:
+            return f"❌ {e}"
     else:
         # Default: Jarvis own repo root
         root = Path(__file__).resolve().parent.parent.parent
+        report_progress(f"📂 Читаю собственный код...")
+        try:
+            files = read_local_project(root)
+        except FileNotFoundError as e:
+            return f"❌ {e}"
 
     result = DevResult(project_root=str(root))
-
-    # Read files
-    report_progress(f"📂 Читаю файлы: {root}...")
-    try:
-        files = read_local_project(root)
-    except FileNotFoundError as e:
-        return f"❌ {e}"
-
     result.files_read = len(files)
     file_map = {f.path: f.content for f in files}
 
     if mode in ("analyse", "full_cycle", "fix"):
-        report_progress(f"🔍 Анализирюю {len(files)} файлов...")
+        report_progress(f"🔍 Анализирую {len(files)} файлов...")
         result.issues_found = analyse_project(files)
 
     if mode in ("fix", "full_cycle") and result.issues_found:
         report_progress(f"🛠 Фикшу {len(result.issues_found)} проблем...")
-        result.patches_applied = fix_issues(
-            result.issues_found, root, file_map, only_blocking=True,
-        )
+        if not project_path.startswith("github:"):
+            result.patches_applied = fix_issues(
+                result.issues_found, root, file_map, only_blocking=True,
+            )
+        else:
+            result.patches_applied = [f"[GitHub mode] фиксы не применяются автоматически (нет write access)"]
 
     if mode in ("feature", "full_cycle") and spec:
         report_progress(f"✨ Добавляю фичу: {spec[:60]}...")
-        result.features_added = add_feature(spec, root, files)
+        if not project_path.startswith("github:"):
+            result.features_added = add_feature(spec, root, files)
+        else:
+            result.features_added = ["[GitHub mode] scaffold не применяется без write access"]
 
     if mode in ("test", "full_cycle"):
-        report_progress("🧪 Запускаю тесты...")
-        result.test_output = run_tests(root)
+        if not project_path.startswith("github:"):
+            report_progress("🧪 Запускаю тесты...")
+            result.test_output = run_tests(root)
+        else:
+            result.test_output = "(тесты не запускаются для удалённых репо)"
 
-    # Auto-commit if anything changed
+    # Auto-commit if anything changed (local only)
     if result.patches_applied or result.features_added:
-        n_fixes = len(result.patches_applied)
-        n_feat = len(result.features_added)
-        msg = f"chore: CodeDevAgent — {n_fixes} fix(es), {n_feat} feature(s)"
-        report_progress("🚀 Комичу...")
-        git_result = git_commit(root, msg)
-        result.branch_url = git_result
+        if not project_path.startswith("github:"):
+            n_fixes = len(result.patches_applied)
+            n_feat = len(result.features_added)
+            msg = f"chore: CodeDevAgent — {n_fixes} fix(es), {n_feat} feature(s)"
+            report_progress("🚀 Коммичу...")
+            git_result = git_commit(root, msg)
+            result.branch_url = git_result
 
     return result.to_markdown()
