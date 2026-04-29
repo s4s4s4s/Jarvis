@@ -1,4 +1,3 @@
-# tools/registry.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,6 +16,9 @@ from tools.system.apps import launch_app, kill_app, list_processes, get_active_w
 from tools.system.browser import open_url, search_in_browser, get_page_text
 from tools.system.clipboard import get_clipboard, set_clipboard
 
+# Векторная память
+from tools.memory import add_fact, search_memory, get_all_facts
+
 
 @dataclass
 class ToolResult:
@@ -25,27 +27,27 @@ class ToolResult:
     error: str = ""
 
 
-# ── weather ────────────────────────────────────────────────────────────
+# ── weather ──────────────────────────────────────────────────────────────────
 default_location = "Moscow"
 
 def _call_weather(location: str = default_location, language: str = "ru") -> Any:
     return get_weather(location=location, language=language)
 
-# ── crypto ────────────────────────────────────────────────────────────
+# ── crypto ──────────────────────────────────────────────────────────────────
 def _call_crypto_search(query: str) -> Any:
     return search_coin(query=query)
 
 def _call_crypto_price(ids: list[str], vs_currency: str = "usd") -> Any:
     return get_crypto_price(ids=ids, vs_currency=vs_currency)
 
-# ── currency ──────────────────────────────────────────────────────────
+# ── currency ──────────────────────────────────────────────────────────────────
 def _call_currency_rates() -> Any:
     return get_rates()
 
 def _call_currency_convert(amount: float, from_code: str, to_code: str) -> Any:
     return convert_currency(amount=amount, from_code=from_code, to_code=to_code)
 
-# ── time / timer ──────────────────────────────────────────────────────
+# ── time / timer ─────────────────────────────────────────────────────────────────
 def _call_time() -> Any:
     return get_time()
 
@@ -59,7 +61,7 @@ def _call_timer_cancel(timer_id: str) -> Any:
     ok = cancel_timer(timer_id)
     return {"cancelled": ok, "id": timer_id}
 
-# ── auditor ────────────────────────────────────────────────────────────
+# ── auditor ────────────────────────────────────────────────────────────────────────
 _DEFAULT_AUDIT_FILES = [
     "brain/ask.py",
     "brain/agents/chat.py",
@@ -90,7 +92,7 @@ def _call_auditor(files: list[str] | None = None) -> str:
         ]
     return "\n".join(lines)
 
-# ── system: files ───────────────────────────────────────────────────────
+# ── system: files ────────────────────────────────────────────────────────────────────
 def _call_file_read(path: str) -> Any:
     return read_file(path)
 
@@ -106,7 +108,7 @@ def _call_file_search(root: str = "~", pattern: str = "*.py") -> Any:
 def _call_file_delete(path: str) -> Any:
     return delete_file(path)
 
-# ── system: apps ──────────────────────────────────────────────────────────
+# ── system: apps ────────────────────────────────────────────────────────────────────────
 def _call_app_launch(command: str, args: list[str] | None = None, wait: bool = False) -> Any:
     return launch_app(command, args, wait)
 
@@ -119,7 +121,7 @@ def _call_app_list(filter_name: str = "") -> Any:
 def _call_app_active_window() -> Any:
     return get_active_window()
 
-# ── system: browser ─────────────────────────────────────────────────────
+# ── system: browser ─────────────────────────────────────────────────────────────────────
 def _call_browser_open(url: str, browser: str = "default") -> Any:
     return open_url(url, browser)
 
@@ -129,15 +131,35 @@ def _call_browser_search(query: str, engine: str = "google") -> Any:
 def _call_browser_get_text(url: str) -> Any:
     return get_page_text(url)
 
-# ── system: clipboard ────────────────────────────────────────────────────
+# ── system: clipboard ────────────────────────────────────────────────────────────────────
 def _call_clipboard_get() -> Any:
     return get_clipboard()
 
 def _call_clipboard_set(text: str) -> Any:
     return set_clipboard(text)
 
+# ── memory ─────────────────────────────────────────────────────────────────────────────────
+def _call_memory_search(query: str, n_results: int = 5) -> Any:
+    results = search_memory(query=query, n_results=n_results)
+    if not results:
+        return "Факты не найдены."
+    lines = [f"[{r['score']:.2f}] {r['fact']}" for r in results]
+    return "\n".join(lines)
 
-# ── Главная таблица инструментов ─────────────────────────────────────────
+def _call_memory_add(fact: str, category: str = "общее", source: str = "") -> Any:
+    ok = add_fact(fact=fact, category=category, source=source)
+    return {"added": ok, "fact": fact}
+
+def _call_memory_list(n: int = 20) -> Any:
+    facts = get_all_facts()
+    if not facts:
+        return "Память пуста."
+    recent = facts[-n:]
+    lines  = [f"{i+1}. [{f['category']}] {f['fact']}" for i, f in enumerate(recent)]
+    return "\n".join(lines)
+
+
+# ── Главная таблица инструментов ───────────────────────────────────────────────────────────────
 _TOOL_MAP: dict[str, Any] = {
     # Существующие
     "weather":            _call_weather,
@@ -168,6 +190,10 @@ _TOOL_MAP: dict[str, Any] = {
     # Буфер обмена (Level 2)
     "clipboard.get":      _call_clipboard_get,
     "clipboard.set":      _call_clipboard_set,
+    # Векторная память (Level 2)
+    "memory.search":      _call_memory_search,
+    "memory.add":         _call_memory_add,
+    "memory.list":        _call_memory_list,
 }
 
 
