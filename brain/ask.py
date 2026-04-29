@@ -112,6 +112,10 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> tup
         from brain.agents.planner import run as planner_run
         return planner_run(text, history), True
 
+    if route == "extend":                          # ← Level 3
+        from brain.agents.self_extend import run as extend_run
+        return extend_run(text, history), True
+
     if route == "tool":
         from brain.agents.tool_agent import tool_agent
         result = tool_agent(route_data["tool"], route_data["tool_args"])
