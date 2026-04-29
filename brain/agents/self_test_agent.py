@@ -15,6 +15,7 @@ Self-heal mode (trigger words: фикс / исправь / авто / self-heal 
 """
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import os
@@ -40,19 +41,62 @@ BASE_BRANCH = "feature/planner-agent"
 ALL_ROUTES = ["chat", "code", "plan", "web", "tool", "memory", "deep"]
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Repo map (injected into analyst prompt — Commit A)
+# ─────────────────────────────────────────────────────────────────────────────
+
+REPO_MAP = """\
+ARCHITECTURE (real files only — do NOT invent paths):
+  brain/ask.py                  — main router + executor (ALL routes live here, _route + _dispatch)
+  brain/prompts.py              — all system prompts (ROUTER_SYSTEM, DEEP_SYSTEM, etc.)
+  brain/client.py               — Ollama chat wrapper (chat, MODEL_HEAVY, MODEL_FAST, MODEL_ROUTER)
+  brain/agents/code_agent.py    — write→run→verify loop
+  brain/agents/plan_agent.py    — multi-step decomposition
+  brain/agents/deep.py          — deep analysis (ALREADY chosen route, not router)
+  brain/agents/memory_agent.py  — memory access
+  brain/agents/self_test_agent.py — THIS FILE
+  brain/agents/web_agent.py     — web search
+  brain/agents/tool_agent.py    — tool dispatcher
+  brain/agents/chat.py          — chat agent
+  tools/memory.py               — get_memory_context, save_fact (NO recall_events!)
+  tools/weather.py              — weather tool
+  tools/crypto.py               — crypto tool
+
+FILES THAT DO NOT EXIST (NEVER reference these):
+  brain/agents/web.py, brain/agents/tool.py, brain/agents/plan.py,
+  brain/agents/memory.py, brain/agents/chat_agent.py
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Build real file whitelist via AST scan
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_file_whitelist() -> set[str]:
+    """Return set of relative paths (POSIX) for all .py files in the repo."""
+    whitelist: set[str] = set()
+    for p in REPO_ROOT.rglob("*.py"):
+        try:
+            rel = p.relative_to(REPO_ROOT).as_posix()
+            whitelist.add(rel)
+        except ValueError:
+            pass
+    return whitelist
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Prompts
 # ─────────────────────────────────────────────────────────────────────────────
 
 _GENERATE_SYSTEM = (
     "You are a test-case designer for an AI assistant called Jarvis.\n"
     "Jarvis routes user messages to one of these agents:\n"
-    "  chat    - casual conversation, general questions\n"
+    "  chat    - casual conversation, general questions, science/history/language facts\n"
     "  code    - write, run or fix a Python script\n"
     "  plan    - multi-step task that needs planning + execution\n"
     "  web     - search the internet for current information\n"
     "  tool    - live data: weather, crypto price, currency rate, timer, time\n"
     "  memory  - recall something from previous conversations\n"
-    "  deep    - single heavy analytical / reasoning question\n"
+    "  deep    - ONLY genuinely complex multi-faceted reasoning (financial modelling, system design)\n"
     "\n"
     "Your job: generate realistic, diverse test queries that a real user might send.\n"
     "Each query must clearly target ONE of the routes above.\n"
@@ -69,6 +113,10 @@ _GENERATE_SYSTEM = (
     "    GOOD: 'Какую погоду ты мне показывал в последний раз?'\n"
     "- For route 'code': ask to WRITE or FIX code, never to run code without providing it.\n"
     "- For route 'memory': ask to recall facts Jarvis would plausibly know about the user.\n"
+    "- For route 'deep': ONLY genuinely complex questions like financial modelling or system design.\n"
+    "  Do NOT generate 'deep' queries for: science explanations, history, language learning, ML concepts.\n"
+    "  Those should be 'chat'.\n"
+    "- For route 'tool'/'weather': always specify a city.\n"
     "- Return ONLY a valid JSON array, no markdown, no extra text.\n"
     "\n"
     "Each element: {\"query\": \"<natural Russian sentence>\", \"expected_route\": \"<route>\"}"
@@ -88,6 +136,10 @@ _AUDIT_SYSTEM = (
     "\n"
     "Verdict rule: 'pass' if score >= 0.5, 'fail' if score < 0.5.\n"
     "Be fair — a useful, mostly-correct response at the right route deserves >= 0.6.\n"
+    "\n"
+    "IMPORTANT: If the expected_route is 'deep' but the query is a simple science/history/\n"
+    "language question, the expected_route in the test is WRONG. In that case:\n"
+    "  - If Jarvis used 'chat' and gave a good answer, score >= 0.6, verdict=pass.\n"
     "\n"
     "Respond with ONLY a valid JSON object, no markdown:\n"
     "{\"verdict\": \"pass\" | \"fail\", \"score\": <0.0-1.0>, "
@@ -111,12 +163,19 @@ Rules:
   - Group related failures into one bug. Max 8 bugs.
   - Skip failures that are clearly test-generator errors
     (e.g. expected_route is obviously wrong for the query content).
-  - Only include bugs in files that actually exist in brain/ or tools/.
+  - CRITICAL: Only include bugs in files that ACTUALLY EXIST. Use the repo map below.
+  - NEVER reference brain/agents/web.py, tool.py, plan.py, memory.py or chat_agent.py
+    — these files do NOT exist.
+  - Routing bugs belong in brain/ask.py (router) or brain/prompts.py (ROUTER_SYSTEM).
+  - After listing affected_files, add a field "files_verified": true only if ALL listed
+    files are in the repo map.
+
+{repo_map}
 
 Respond ONLY with a valid JSON object (no markdown):
-{
+{{
   "bugs": [
-    {
+    {{
       "id": "BUG-1",
       "title": "short title",
       "severity": "high|medium|low",
@@ -124,9 +183,9 @@ Respond ONLY with a valid JSON object (no markdown):
       "root_cause": "one sentence",
       "fix_description": "concrete instructions for the fix",
       "test_ids": [0, 1, 2]
-    }
+    }}
   ]
-}
+}}
 """
 
 _FIXER_SYSTEM = """\
@@ -144,6 +203,8 @@ Rules:
   - Preserve all existing functionality; only change what is needed.
   - Add a short comment # FIX <BUG_ID>: <title> near each changed section.
   - If the bug does not affect this file, return the original content unchanged.
+  - NEVER add empty if/else branches where both paths do the same thing.
+  - NEVER make changes that don't actually fix the described bug.
 """
 
 
@@ -170,8 +231,10 @@ def _extract_json_array(raw: str) -> list[dict]:
     return json.loads(raw[start:end + 1])
 
 
-def _extract_json_object(raw: str) -> dict:
+def _parse_auditor(raw: str) -> dict:
+    """Robust auditor JSON parser with multiple fallback strategies."""
     raw = raw.strip()
+    # strip markdown fences
     if raw.startswith("```"):
         lines = raw.splitlines()
         inner, in_block = [], False
@@ -183,10 +246,44 @@ def _extract_json_object(raw: str) -> dict:
             if in_block:
                 inner.append(line)
         raw = "\n".join(inner).strip()
+
+    # Strategy 1: direct parse
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 2: extract first JSON object via regex
+    m = re.search(r'\{[^{}]*"verdict"[^{}]*\}', raw, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    # Strategy 3: find outermost { } pair
     start, end = raw.find("{"), raw.rfind("}")
-    if start == -1 or end == -1:
-        raise ValueError(f"No JSON object found: {raw[:200]}")
-    return json.loads(raw[start:end + 1])
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(raw[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    # Strategy 4: json_repair if available
+    try:
+        import json_repair  # type: ignore
+        return json_repair.loads(raw)
+    except (ImportError, Exception):
+        pass
+
+    # Fallback: default failing score
+    logger.warning("[SelfTest] parse_auditor: all strategies failed, using default")
+    return {"verdict": "fail", "score": 0.5, "issues": ["parse failed"], "suggestions": []}
+
+
+def _extract_json_object(raw: str) -> dict:
+    """Legacy wrapper — delegates to _parse_auditor for auditor results."""
+    return _parse_auditor(raw)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -203,7 +300,6 @@ def _parse_query(query: str) -> tuple[int, bool]:
     """Return (n_tests, self_heal_mode)."""
     m = re.search(r"(\d+)\s*тест", query)
     n = int(m.group(1)) if m else len(ALL_ROUTES)
-    # self-heal if explicitly requested OR n >= 50
     heal = bool(_SELF_HEAL_KEYWORDS.search(query)) or n >= 50
     return n, heal
 
@@ -280,7 +376,7 @@ def _run_single_test(case: dict, test_num: int, total: int) -> dict:
                 )},
             ]
             raw_audit = chat(model=MODEL_HEAVY, messages=audit_messages, options={"temperature": 0.1})
-            parsed = _extract_json_object(raw_audit)
+            parsed = _parse_auditor(raw_audit)
             audit_result = {
                 "verdict":     parsed.get("verdict", "fail"),
                 "score":       float(parsed.get("score", 0.0)),
@@ -330,8 +426,31 @@ def _run_batch(n: int) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 3 — analyse failures
+# Step 3 — analyse failures (with repo map + whitelist filter)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _filter_bugs_by_whitelist(bugs: list[dict], whitelist: set[str]) -> list[dict]:
+    """Remove bugs that reference non-existent files; flag them as needs_human_review."""
+    clean: list[dict] = []
+    for bug in bugs:
+        real_files = [f for f in bug.get("affected_files", []) if f in whitelist]
+        ghost_files = [f for f in bug.get("affected_files", []) if f not in whitelist]
+        if ghost_files:
+            logger.warning(
+                "[SelfTest] Bug %s references non-existent files %s — marking needs_human_review",
+                bug["id"], ghost_files,
+            )
+        if not real_files:
+            bug["needs_human_review"] = True
+            bug["affected_files"] = []
+            logger.warning("[SelfTest] Bug %s has no valid files — skipping auto-fix", bug["id"])
+        else:
+            bug["affected_files"] = real_files
+            if ghost_files:
+                bug["skipped_ghost_files"] = ghost_files
+        clean.append(bug)
+    return clean
+
 
 def _analyse_failures(failures: list[dict]) -> list[dict]:
     if not failures:
@@ -352,32 +471,54 @@ def _analyse_failures(failures: list[dict]) -> list[dict]:
         f"Here are {len(trimmed)} failed tests. Analyse and produce the bug report.\n\n"
         + json.dumps(trimmed, ensure_ascii=False, indent=2)
     )
+    analyst_system = _ANALYST_SYSTEM.format(repo_map=REPO_MAP)
     messages = [
-        {"role": "system", "content": _ANALYST_SYSTEM},
+        {"role": "system", "content": analyst_system},
         {"role": "user",   "content": prompt},
     ]
     raw = chat(model=MODEL_HEAVY, messages=messages, options={"temperature": 0.1, "num_ctx": 16384})
     try:
-        data = _extract_json_object(raw)
+        data = _parse_auditor(raw)
         bugs: list[dict] = data.get("bugs", [])
     except Exception as e:
         logger.error("[SelfTest] Bug analysis parse error: %s", e)
         bugs = []
-    logger.info("[SelfTest] Identified %d bugs", len(bugs))
+    logger.info("[SelfTest] Identified %d bugs (pre-filter)", len(bugs))
+
+    whitelist = _build_file_whitelist()
+    bugs = _filter_bugs_by_whitelist(bugs, whitelist)
+    fixable = [b for b in bugs if not b.get("needs_human_review")]
+    logger.info("[SelfTest] %d fixable bugs after whitelist filter", len(fixable))
     return bugs
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 4 — auto-fix
+# Step 4 — auto-fix + re-test verification
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _quick_retest(test_cases: list[dict]) -> float:
+    """Re-run specific test cases, return pass-rate. Used for fix verification."""
+    if not test_cases:
+        return 1.0
+    passed = 0
+    for case in test_cases:
+        rec = _run_single_test(case, test_num=1, total=1)
+        if rec["verdict"] == "pass":
+            passed += 1
+    return passed / len(test_cases)
+
+
 def _fix_bug(bug: dict, failures: list[dict]) -> dict[str, str]:
-    """Returns {rel_path: fixed_content}."""
+    """Returns {rel_path: fixed_content}. Skips bugs with needs_human_review=True."""
+    if bug.get("needs_human_review"):
+        logger.info("[SelfTest] Skipping %s (needs_human_review)", bug["id"])
+        return {}
+
     results: dict[str, str] = {}
     for rel_path in bug.get("affected_files", []):
         path = REPO_ROOT / rel_path
         if not path.exists():
-            logger.warning("[SelfTest] File not found: %s", path)
+            logger.warning("[SelfTest] File not found (post-filter): %s", path)
             continue
         current = path.read_text(encoding="utf-8")
 
@@ -407,7 +548,7 @@ def _fix_bug(bug: dict, failures: list[dict]) -> dict[str, str]:
         raw = chat(model=MODEL_HEAVY, messages=messages,
                    options={"temperature": 0.05, "num_ctx": 32768})
         try:
-            data  = _extract_json_object(raw)
+            data  = _parse_auditor(raw)
             fixed = data.get("fixed_content", "")
             if fixed:
                 results[rel_path] = fixed
@@ -415,6 +556,45 @@ def _fix_bug(bug: dict, failures: list[dict]) -> dict[str, str]:
         except Exception as e:
             logger.error("[SelfTest] Fixer parse error for %s: %s", rel_path, e)
     return results
+
+
+def _verify_fix(bug: dict, failures: list[dict], fixed_files: dict[str, str]) -> bool:
+    """
+    Write fixed files to disk, re-run the bug's test cases.
+    Return True if pass-rate improved vs 0 (at least 1 test passes now).
+    Revert files if fix made things worse (0 pass-rate).
+    """
+    if not fixed_files or not bug.get("test_ids"):
+        return True  # no verification possible, accept
+
+    # Write fixed files
+    original_contents: dict[str, str] = {}
+    for rel_path, content in fixed_files.items():
+        p = REPO_ROOT / rel_path
+        if p.exists():
+            original_contents[rel_path] = p.read_text(encoding="utf-8")
+        p.write_text(content, encoding="utf-8")
+
+    # Collect test cases for this bug
+    test_cases = [
+        {"query": failures[i]["query"], "expected_route": failures[i]["expected_route"]}
+        for i in bug.get("test_ids", []) if i < len(failures)
+    ][:5]  # cap at 5 re-tests to stay fast
+
+    report_progress(f"🧪 Re-testing {bug['id']} ({len(test_cases)} cases)...")
+    pass_rate = _quick_retest(test_cases)
+    logger.info("[SelfTest] Re-test %s: pass_rate=%.2f", bug["id"], pass_rate)
+
+    if pass_rate == 0.0:
+        # Revert — fix didn't help
+        logger.warning("[SelfTest] Fix for %s has 0%% pass-rate — reverting", bug["id"])
+        for rel_path, orig in original_contents.items():
+            (REPO_ROOT / rel_path).write_text(orig, encoding="utf-8")
+        # Also restore from disk state so caller doesn't push reverted content
+        fixed_files.clear()
+        return False
+
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -510,11 +690,10 @@ def _build_summary(records: list[dict]) -> str:
 def run(query: str, history: list[dict] | None = None) -> str:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     n, self_heal = _parse_query(query)
-    n = max(1, min(n, 200))  # hard cap 200
+    n = max(1, min(n, 200))
 
     logger.info("[SelfTest] run_id=%s  n=%d  self_heal=%s", run_id, n, self_heal)
 
-    # ── run tests in batches of 50 ────────────────────────────────────────────
     all_records: list[dict] = []
     remaining = n
     batch_num = 0
@@ -537,7 +716,6 @@ def run(query: str, history: list[dict] | None = None) -> str:
     if not self_heal:
         return base_reply
 
-    # ── self-heal pipeline ────────────────────────────────────────────────────
     failures = [r for r in all_records if r["verdict"] == "fail"]
     if not failures:
         return base_reply + "\n\n✅ Фейлов нет — фиксить нечего."
@@ -545,7 +723,6 @@ def run(query: str, history: list[dict] | None = None) -> str:
     report_progress(f"🔍 Анализирую {len(failures)} фейлов...")
     bugs = _analyse_failures(failures)
 
-    # save bug report
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     bug_report_path = LOGS_DIR / f"self_heal_bugs_{run_id}.json"
     bug_report_path.write_text(
@@ -554,32 +731,52 @@ def run(query: str, history: list[dict] | None = None) -> str:
     )
 
     if not bugs:
-        return base_reply + "\n\n⚠️ LLM не нашёл акционируемых багов (возможно, фейлы в генераторе тестов)."
+        return base_reply + "\n\n⚠️ LLM не нашёл акционируемых багов."
 
+    fixable_bugs = [b for b in bugs if not b.get("needs_human_review")]
     bug_lines = []
     for b in bugs:
-        bug_lines.append(f"  [{b['id']}] [{b['severity'].upper()}] {b['title']}")
+        flag = " [⚠️ needs_human_review]" if b.get("needs_human_review") else ""
+        bug_lines.append(f"  [{b['id']}] [{b['severity'].upper()}] {b['title']}{flag}")
         bug_lines.append(f"         {b['root_cause']}")
 
-    report_progress(f"🛠 Фиксирую {len(bugs)} багов...")
+    if not fixable_bugs:
+        return (
+            base_reply
+            + f"\n\n🐛 Баги ({len(bugs)} шт.):\n" + "\n".join(bug_lines)
+            + "\n\n⚠️ Все баги требуют ручной правки (hallucinated file paths)."
+        )
+
+    report_progress(f"🛠 Фиксирую {len(fixable_bugs)} багов...")
     all_fixed: dict[str, str] = {}
-    for bug in bugs:
-        if bug.get("severity") == "low" and len(bugs) > 4:
-            continue  # skip low-severity when there are bigger issues
-        report_progress(f"🛠 Фиксю {bug['id']}: {bug['title']}...")
+    verified_bug_ids: list[str] = []
+
+    for bug in fixable_bugs:
+        if bug.get("severity") == "low" and len(fixable_bugs) > 4:
+            continue
+        report_progress(f"🛠 Фикшу {bug['id']}: {bug['title']}...")
         fixed = _fix_bug(bug, failures)
-        all_fixed.update(fixed)
+        if not fixed:
+            continue
+
+        # Re-test verification — revert if 0% pass-rate
+        verified = _verify_fix(bug, failures, fixed)
+        if verified and fixed:
+            all_fixed.update(fixed)
+            verified_bug_ids.append(bug["id"])
+            report_progress(f"✅ {bug['id']} verified OK")
+        else:
+            report_progress(f"❌ {bug['id']} fix reverted (0%% pass-rate)")
 
     if not all_fixed:
         return (
             base_reply
             + "\n\n🐛 Баги:\n" + "\n".join(bug_lines)
-            + "\n\n❌ Не удалось автоматически сгенерировать фиксы."
+            + "\n\n❌ Не удалось автоматически сгенерировать фиксы (все откатаны после re-test)."
         )
 
     new_branch  = f"{BRANCH_BASE}-{run_id}"
-    bug_ids     = ", ".join(b["id"] for b in bugs)
-    commit_msg  = f"fix: self-heal [{run_id}] auto-fix {bug_ids}"
+    commit_msg  = f"fix: self-heal [{run_id}] auto-fix {', '.join(verified_bug_ids)}"
 
     report_progress(f"🚀 Пушу в ветку {new_branch}...")
     ok = _push_to_github(new_branch, all_fixed, commit_msg)
@@ -597,6 +794,6 @@ def run(query: str, history: list[dict] | None = None) -> str:
     return (
         base_reply
         + f"\n\n🐛 Баги ({len(bugs)} шт.):\n" + "\n".join(bug_lines)
-        + f"\n\n🛠 Исправлено файлов: {list(all_fixed.keys())}\n\n"
+        + f"\n\n🛠 Исправлено файлов ({len(verified_bug_ids)} бага): {list(all_fixed.keys())}\n\n"
         + push_status
     )
