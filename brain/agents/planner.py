@@ -1,19 +1,20 @@
-# brain/agents/planner.py
 """
 PlannerAgent — агент многошаговых задач Jarvis.
 
-Описание:
-  Получает сложный запрос → LLM декомпозирует на шаги (JSON)
-  → каждый шаг → существующий агент/инструмент
-  → LLM синтезирует все результаты → ответ
-
-Маршрут: route="plan"
-Триггеры: "сделай X и потом Y", "найди X, запиши в файл Y", многошаговые задачи
+Hardening v2:
+  - Валидация JSON-схемы плана (jsonschema)
+  - Retry x2 с упрощённым prompt если plan не парсится
+  - Защита от кривых подстановок {stepN_result}
+  - Timeout на каждый шаг (STEP_TIMEOUT)
+  - Никогда не падает молча — всегда возвращает строку
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
+import signal
+import threading
 from typing import Any
 
 from brain.client import chat, MODEL_FAST, MODEL_HEAVY
@@ -21,27 +22,57 @@ from tools.registry import call_tool, list_tools
 
 logger = logging.getLogger(__name__)
 
-MAX_STEPS    = 8
-STEP_TIMEOUT = 30.0
+MAX_STEPS     = 8
+STEP_TIMEOUT  = 30.0   # секунд на один шаг
+PLAN_RETRIES  = 2       # попыток получить валидный план
 
+# ── JSON-схема плана ─────────────────────────────────────────────────────────
+_PLAN_SCHEMA = {
+    "type": "object",
+    "required": ["plan"],
+    "properties": {
+        "plan": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": ["step", "type"],
+                "properties": {
+                    "step":        {"type": "integer", "minimum": 1},
+                    "type":        {"type": "string", "enum": ["tool", "answer"]},
+                    "tool":        {"type": "string"},
+                    "args":        {"type": "object"},
+                    "description": {"type": "string"},
+                },
+            },
+        }
+    },
+}
+
+# ── промпты ──────────────────────────────────────────────────────────────────
 _PLAN_SYSTEM = """Ты — Jarvis, планировщик. Дана задача пользователя.
 Доступные инструменты: {tools}
 
 Разбей задачу на минимальное количество шагов (max {max_steps}).
-Ответь ТОЛЬКО JSON (без пояснений), схема:
-{{
-  "plan": [
-    {{"step": 1, "type": "tool",  "tool": "file.read",  "args": {{"path": "~/doc.txt"}}, "description": "что делаем"}},
-    {{"step": 2, "type": "tool",  "tool": "file.write", "args": {{"path": "~/out.txt", "content": "{{step1_result}}"}}, "description": "запись"}},
-    {{"step": 3, "type": "answer", "description": "синтез"}}
-  ]
-}}
+Ответь ТОЛЬКО JSON (без пояснений, без markdown-блоков), схема:
+{{"plan": [
+  {{"step": 1, "type": "tool",   "tool": "file.read",  "args": {{"path": "~/doc.txt"}}, "description": "читаем файл"}},
+  {{"step": 2, "type": "tool",   "tool": "file.write", "args": {{"path": "~/out.txt", "content": "{{step1_result}}"}}, "description": "пишем"}},
+  {{"step": 3, "type": "answer", "description": "синтез"}}
+]}}
 
 Правила:
-- type="tool" — вызов инструмента из списка
-- type="answer" — финальный шаг, всегда последний
-- {{stepN_result}} — подстановка результата шага N
-- Не выдумывай инструменты — только из списка
+- type="tool"   — вызов инструмента из списка выше
+- type="answer" — финальный шаг, всегда последний, без "tool"
+- {{stepN_result}} — вставляет результат шага N (только строка, в значении "args")
+- НЕ выдумывай инструменты — только из списка
+- Максимум {max_steps} шагов включая финальный
+"""
+
+_PLAN_RETRY_SYSTEM = """Ты — JSON-генератор. Верни ТОЛЬКО валидный JSON без пояснений.
+Схема: {{"plan": [{{"step":1,"type":"tool","tool":"имя","args":{{}},"description":"..."}}, ..., {{"step":N,"type":"answer","description":"синтез"}}]}}
+Доступные инструменты: {tools}
+Задача: {query}
 """
 
 _SYNTH_SYSTEM = """Ты — Jarvis. Пользователь дал задачу.
@@ -49,52 +80,180 @@ _SYNTH_SYSTEM = """Ты — Jarvis. Пользователь дал задачу
 Дай краткий естественный ответ на русском, как если рассказываешь что сделал."""
 
 
-def _make_plan(query: str) -> list[dict] | None:
-    tools_str = ", ".join(list_tools())
-    system = _PLAN_SYSTEM.format(tools=tools_str, max_steps=MAX_STEPS)
-    msgs = [
-        {"role": "system",  "content": system},
-        {"role": "user",    "content": query},
-    ]
-    raw = chat(MODEL_HEAVY, msgs, options={"temperature": 0.1, "num_ctx": 8192})
+# ── утилиты ──────────────────────────────────────────────────────────────────
+
+def _strip_markdown(raw: str) -> str:
+    """Убирает ```json ... ``` обёртки."""
     raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1]
-    if raw.endswith("```"):
-        raw = raw.rsplit("```", 1)[0]
-    try:
-        data = json.loads(raw)
-        return data.get("plan", [])
-    except Exception as e:
-        logger.error(f"[planner] plan parse error: {e} | raw={raw[:200]}")
-        return None
+    raw = re.sub(r'^```[a-zA-Z]*\n?', '', raw)
+    raw = re.sub(r'\n?```$', '', raw)
+    return raw.strip()
 
 
-def _substitute_results(args: dict, step_results: dict[int, Any]) -> dict:
-    """Заменяет подстановки {stepN_result} в args значениями из предыдущих шагов."""
-    result = {}
+def _validate_plan(plan: list[dict]) -> tuple[bool, str]:
+    """Проверяет структуру плана без jsonschema-зависимости."""
+    if not isinstance(plan, list) or len(plan) == 0:
+        return False, "plan пуст или не список"
+    if len(plan) > MAX_STEPS:
+        return False, f"слишком много шагов: {len(plan)} > {MAX_STEPS}"
+
+    seen_steps: set[int] = set()
+    for i, step in enumerate(plan):
+        if not isinstance(step, dict):
+            return False, f"шаг {i} не является объектом"
+        step_num = step.get("step")
+        if not isinstance(step_num, int) or step_num < 1:
+            return False, f"шаг {i}: поле 'step' должно быть int >= 1"
+        if step_num in seen_steps:
+            return False, f"дублирующийся номер шага: {step_num}"
+        seen_steps.add(step_num)
+        step_type = step.get("type")
+        if step_type not in ("tool", "answer"):
+            return False, f"шаг {step_num}: неизвестный type='{step_type}'"
+        if step_type == "tool":
+            tool_name = step.get("tool", "")
+            if not tool_name:
+                return False, f"шаг {step_num}: tool не указан"
+            known = list_tools()
+            if tool_name not in known:
+                return False, f"шаг {step_num}: инструмент '{tool_name}' не существует. Доступные: {known}"
+            if not isinstance(step.get("args", {}), dict):
+                return False, f"шаг {step_num}: args должен быть объектом"
+
+    # последний шаг должен быть answer
+    if plan[-1].get("type") != "answer":
+        return False, "последний шаг должен быть type='answer'"
+
+    return True, ""
+
+
+def _safe_substitute(args: dict, step_results: dict[int, Any]) -> dict:
+    """
+    Безопасная подстановка {stepN_result}.
+    - Только в строковых значениях
+    - Обрезает результат до 2000 символов
+    - Если шаг ещё не выполнен — оставляет placeholder как есть (не падает)
+    """
+    PLACEHOLDER_RE = re.compile(r'\{step(\d+)_result\}')
+    result: dict = {}
     for k, v in args.items():
-        if isinstance(v, str):
-            for step_num, step_res in step_results.items():
-                placeholder = f"{{step{step_num}_result}}"
-                if placeholder in v:
-                    v = v.replace(placeholder, str(step_res)[:2000])
-        result[k] = v
+        if not isinstance(v, str):
+            result[k] = v
+            continue
+        def _repl(m: re.Match) -> str:
+            sn = int(m.group(1))
+            if sn in step_results:
+                val = step_results[sn]
+                if not isinstance(val, str):
+                    val = json.dumps(val, ensure_ascii=False)
+                return val[:2000]
+            # шаг не выполнен — оставляем как есть, но логируем
+            logger.warning(f"[planner] substitute: шаг {sn} ещё не выполнен")
+            return m.group(0)  # возвращаем placeholder без изменений
+        result[k] = PLACEHOLDER_RE.sub(_repl, v)
     return result
 
+
+class _StepTimeoutError(Exception):
+    pass
+
+
+def _call_tool_with_timeout(tool_name: str, args: dict, timeout: float) -> Any:
+    """
+    Запускает call_tool в отдельном потоке с таймаутом.
+    Возвращает ToolResult или бросает _StepTimeoutError.
+    """
+    result_holder: list = [None]
+    exc_holder:    list = [None]
+
+    def _worker():
+        try:
+            result_holder[0] = call_tool(tool_name, args)
+        except Exception as e:
+            exc_holder[0] = e
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if t.is_alive():
+        raise _StepTimeoutError(f"инструмент '{tool_name}' не ответил за {timeout:.0f}с")
+    if exc_holder[0]:
+        raise exc_holder[0]
+    return result_holder[0]
+
+
+# ── построение плана (с retry) ────────────────────────────────────────────────
+
+def _make_plan(query: str) -> tuple[list[dict] | None, str]:
+    """
+    Возвращает (план, "") при успехе или (None, причина_ошибки).
+    Делает до PLAN_RETRIES попыток.
+    """
+    tools_str = ", ".join(list_tools())
+    last_error = "неизвестная ошибка"
+
+    for attempt in range(1, PLAN_RETRIES + 1):
+        if attempt == 1:
+            system = _PLAN_SYSTEM.format(tools=tools_str, max_steps=MAX_STEPS)
+            msgs = [
+                {"role": "system", "content": system},
+                {"role": "user",   "content": query},
+            ]
+        else:
+            # упрощённый промпт на retry
+            system = _PLAN_RETRY_SYSTEM.format(tools=tools_str, query=query)
+            msgs = [
+                {"role": "system", "content": system},
+                {"role": "user",   "content": f"Предыдущая попытка провалилась: {last_error}. Попробуй снова."},
+            ]
+
+        try:
+            raw = chat(MODEL_HEAVY, msgs, options={"temperature": 0.1, "num_ctx": 8192})
+            raw = _strip_markdown(raw)
+            data = json.loads(raw)
+            plan = data.get("plan", [])
+        except json.JSONDecodeError as e:
+            last_error = f"JSON parse error: {e} | raw={raw[:300]}"
+            logger.warning(f"[planner] attempt {attempt}: {last_error}")
+            continue
+        except Exception as e:
+            last_error = f"LLM error: {e}"
+            logger.error(f"[planner] attempt {attempt}: {last_error}")
+            continue
+
+        valid, reason = _validate_plan(plan)
+        if not valid:
+            last_error = f"schema error: {reason}"
+            logger.warning(f"[planner] attempt {attempt}: {last_error}")
+            continue
+
+        logger.info(f"[planner] план принят с попытки {attempt}: {len(plan)} шагов")
+        return plan, ""
+
+    return None, last_error
+
+
+# ── основной run ──────────────────────────────────────────────────────────────
 
 def run(query: str, history: list[dict]) -> str:
     """
     Вход: запрос пользователя.
     Выход: строка — ответ для голосового ассистента.
+    Никогда не бросает исключение.
     """
     logger.info(f"[planner] Новая задача: {query[:80]}")
 
-    plan = _make_plan(query)
-    if not plan:
-        return "Сэр, не удалось составить план выполнения."
+    try:
+        plan, err = _make_plan(query)
+    except Exception as e:
+        logger.exception("[planner] _make_plan crashed")
+        return f"Сэр, планировщик упал: {e}"
 
-    logger.info(f"[planner] План составлен: {len(plan)} шагов")
+    if plan is None:
+        logger.error(f"[planner] план не составлен: {err}")
+        return f"Сэр, не удалось составить план: {err}"
+
+    logger.info(f"[planner] выполняю {len(plan)} шагов")
     step_results: dict[int, Any] = {}
     errors: list[str] = []
 
@@ -104,46 +263,70 @@ def run(query: str, history: list[dict]) -> str:
         desc      = step.get("description", "")
 
         if step_type == "answer":
-            # Финальный синтез
-            break
+            break  # финальный синтез ниже
 
         if step_type == "tool":
             tool_name = step.get("tool", "")
-            raw_args  = step.get("args", {})
-            args      = _substitute_results(raw_args, step_results)
+            raw_args  = step.get("args") or {}
 
-            logger.info(f"[planner] Шаг {step_num}: {tool_name}({args}) — {desc}")
-            result = call_tool(tool_name, args)
+            if not isinstance(raw_args, dict):
+                err_msg = f"Шаг {step_num}: args не dict, получили {type(raw_args).__name__}"
+                logger.warning(f"[planner] {err_msg}")
+                errors.append(err_msg)
+                step_results[step_num] = f"ERROR: {err_msg}"
+                continue
+
+            args = _safe_substitute(raw_args, step_results)
+            logger.info(f"[planner] Шаг {step_num}: {tool_name}({list(args.keys())}) — {desc}")
+
+            try:
+                result = _call_tool_with_timeout(tool_name, args, timeout=STEP_TIMEOUT)
+            except _StepTimeoutError as e:
+                err_msg = f"Шаг {step_num} ({tool_name}): таймаут — {e}"
+                logger.warning(f"[planner] {err_msg}")
+                errors.append(err_msg)
+                step_results[step_num] = f"ERROR: timeout"
+                continue
+            except Exception as e:
+                err_msg = f"Шаг {step_num} ({tool_name}): неожиданная ошибка — {e}"
+                logger.exception(f"[planner] {err_msg}")
+                errors.append(err_msg)
+                step_results[step_num] = f"ERROR: {e}"
+                continue
 
             if result.ok:
                 step_results[step_num] = result.data
             else:
-                err = f"Шаг {step_num} ({tool_name}): {result.error}"
-                logger.warning(f"[planner] {err}")
-                errors.append(err)
+                err_msg = f"Шаг {step_num} ({tool_name}): {result.error}"
+                logger.warning(f"[planner] {err_msg}")
+                errors.append(err_msg)
                 step_results[step_num] = f"ERROR: {result.error}"
         else:
-            logger.warning(f"[planner] Неизвестный тип шага: {step_type}")
+            logger.warning(f"[planner] неизвестный тип шага: {step_type}")
 
-    # Синтез
+    # ── синтез ──
     context_parts = [f"Задача: {query}\n"]
     for step in plan:
         sn = step.get("step", 0)
         if step.get("type") == "tool" and sn in step_results:
             res = step_results[sn]
-            res_str = json.dumps(res, ensure_ascii=False)[:1500] if not isinstance(res, str) else res[:1500]
-            context_parts.append(f"Шаг {sn} [{step.get('tool')}]: {res_str}")
+            if not isinstance(res, str):
+                res = json.dumps(res, ensure_ascii=False)[:1500]
+            else:
+                res = res[:1500]
+            context_parts.append(f"Шаг {sn} [{step.get('tool')}]: {res}")
     if errors:
-        context_parts.append(f"\nОшибки: {'; '.join(errors)}")
+        context_parts.append(f"\nОшибки при выполнении: {'; '.join(errors)}")
 
     msgs = [
-        {"role": "system",  "content": _SYNTH_SYSTEM},
-        {"role": "user",    "content": "\n".join(context_parts)},
+        {"role": "system", "content": _SYNTH_SYSTEM},
+        {"role": "user",   "content": "\n".join(context_parts)},
     ]
     try:
         answer = chat(MODEL_FAST, msgs, options={"temperature": 0.3, "num_ctx": 8192})
     except Exception as e:
+        logger.exception("[planner] синтез упал")
         answer = f"Сэр, план выполнен, но синтез не удался: {e}"
 
-    logger.info(f"[planner] Готово.")
+    logger.info("[planner] Готово.")
     return answer
