@@ -13,14 +13,18 @@ REFERENCE_WAV         = str(ASSETS_DIR / "reference.wav")
 ACTIVATE_SOUND_PATH   = str(ASSETS_DIR / "activate.wav")
 DEACTIVATE_SOUND_PATH = str(ASSETS_DIR / "deactivate.wav")
 
-# ─── Self-learning ──────────────────────────────────────────────────────────────────────────────
+# Self-learning
 ROUTE_EXAMPLES   = ROOT / "data" / "route_examples.jsonl"
 FEEDBACK_LOG     = LOGS_DIR / "feedback.jsonl"
 LEARNING_REPORT  = LOGS_DIR / "learning_report.jsonl"
 FEEDBACK_ARCHIVE = LOGS_DIR / "feedback_archive.jsonl"
 
-# ─── Векторная память ─────────────────────────────────────────────────────────────────────────────
+# Векторная память (ChromaDB)
 CHROMA_DIR = ROOT / "data" / "chroma_memory"
+
+# Level 4: проекты ProjectAgent
+PROJECTS_DIR = ROOT / "data" / "projects"
+PROJECT_LOG  = LOGS_DIR / "projects.jsonl"
 
 
 def ensure_dirs() -> None:
@@ -30,3 +34,4 @@ def ensure_dirs() -> None:
     TTS_CHUNKS.mkdir(parents=True, exist_ok=True)
     ASSETS_DIR.mkdir(parents=True, exist_ok=True)
     CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)

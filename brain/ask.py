@@ -116,6 +116,10 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> tup
         from brain.agents.self_extend import run as extend_run
         return extend_run(text, history), True
 
+    if route == "project":                         # ← Level 4
+        from brain.agents.project import run as project_run
+        return project_run(text, history), True
+
     if route == "tool":
         from brain.agents.tool_agent import tool_agent
         result = tool_agent(route_data["tool"], route_data["tool_args"])
