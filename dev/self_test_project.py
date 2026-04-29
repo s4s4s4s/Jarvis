@@ -733,5 +733,170 @@ class TestBuildLoopWithStatics(_IsolatedJarvisRoot):
         self.assertEqual(res["static"]["tools"], [])
 
 
+# ─── P3: adaptive budget ─────────────────────────────────────────────────────
+class TestAdaptiveBudget(_IsolatedJarvisRoot):
+    """P3: estimate_complexity и budget_for_tier — размерные метрики, без ключевых слов."""
+
+    def test_complexity_xs_when_one_file_in_plan(self):
+        plan = {"files": [{"path": "main.py"}]}
+        self.assertEqual(self.project_mod.estimate_complexity("x", plan=plan), "XS")
+
+    def test_complexity_s_when_two_files(self):
+        plan = {"files": [{"path": "a.py"}, {"path": "b.py"}]}
+        self.assertEqual(self.project_mod.estimate_complexity("x", plan=plan), "S")
+
+    def test_complexity_m_when_3_or_4_files(self):
+        for n in (3, 4):
+            plan = {"files": [{"path": f"f{i}.py"} for i in range(n)]}
+            self.assertEqual(self.project_mod.estimate_complexity("x", plan=plan), "M")
+
+    def test_complexity_l_when_5plus_files(self):
+        plan = {"files": [{"path": f"f{i}.py"} for i in range(5)]}
+        self.assertEqual(self.project_mod.estimate_complexity("x", plan=plan), "L")
+
+    def test_complexity_xs_short_query_no_plan(self):
+        """Короткий запрос, мало requirements → XS."""
+        spec = {"requirements": ["один"]}
+        self.assertEqual(self.project_mod.estimate_complexity("скачай файл", spec=spec), "XS")
+
+    def test_complexity_l_long_query_or_many_reqs(self):
+        spec = {"requirements": ["r"] * 6}
+        self.assertEqual(self.project_mod.estimate_complexity("x", spec=spec), "L")
+        long_q = " ".join(["слово"] * 90)
+        self.assertEqual(self.project_mod.estimate_complexity(long_q), "L")
+
+    def test_complexity_m_medium_query(self):
+        spec = {"requirements": ["r1", "r2", "r3"]}
+        self.assertEqual(self.project_mod.estimate_complexity("x", spec=spec), "M")
+
+    def test_complexity_default_s(self):
+        # 20 слов, без spec/plan — не XS, не M, не L → S
+        q = " ".join(["w"] * 20)
+        self.assertEqual(self.project_mod.estimate_complexity(q), "S")
+
+    def test_budget_for_tier_known_values(self):
+        for tier, expected_llm in [("XS", 15), ("S", 30), ("M", 60), ("L", 120)]:
+            params = self.project_mod.budget_for_tier(tier)
+            self.assertEqual(params["llm"], expected_llm)
+            self.assertGreater(params["wall_s"], 0)
+
+    def test_budget_for_tier_unknown_defaults_to_m(self):
+        self.assertEqual(
+            self.project_mod.budget_for_tier("WEIRD"),
+            self.project_mod.budget_for_tier("M"),
+        )
+
+
+# ─── P2: deterministic healers ───────────────────────────────────────────────
+class TestDeterministicHealers(_IsolatedJarvisRoot):
+    """P2: SyntaxError / ConnectionError / JSONDecodeError — без LLM-диагностики."""
+
+    def _make_project_with_file(self, slug, fname, content):
+        m = self.proj_mod.create_project({"title": "P2", "slug": slug})
+        self.proj_mod.write_project_file(m.slug, fname, content)
+        return m
+
+    def test_heal_syntax_error_finds_broken_file(self):
+        """Битый синтаксис в файле → детерминистический хилер указывает на него."""
+        self._make_project_with_file("p2syn", "main.py", "def f(:\n    pass\n")
+        plan = {"files": [{"path": "main.py"}]}
+        failed = {"stderr": "  File \"main.py\", line 1\nSyntaxError: invalid syntax\n"}
+        diag = self.project_mod._heal_syntax_error("p2syn", failed, plan)
+        self.assertIsNotNone(diag)
+        self.assertEqual(diag["target_file"], "main.py")
+        self.assertEqual(diag["category"], "syntax")
+        self.assertTrue(diag["fix_instruction"])
+
+    def test_heal_syntax_error_returns_none_when_stderr_clean(self):
+        """Без SyntaxError в stderr — None."""
+        self._make_project_with_file("p2syn2", "main.py", "print('ok')\n")
+        plan = {"files": [{"path": "main.py"}]}
+        failed = {"stderr": "AssertionError: not equal"}
+        diag = self.project_mod._heal_syntax_error("p2syn2", failed, plan)
+        self.assertIsNone(diag)
+
+    def test_heal_syntax_error_no_python_files(self):
+        """Если в плане нет .py — None."""
+        plan = {"files": [{"path": "data.csv"}]}
+        failed = {"stderr": "SyntaxError: invalid syntax"}
+        diag = self.project_mod._heal_syntax_error("p2nonpy", failed, plan)
+        self.assertIsNone(diag)
+
+    def test_heal_network_retry_pauses_and_returns_meta(self):
+        """ConnectionError → ставит паузу, возвращает meta."""
+        plan = {"files": [{"path": "main.py"}]}
+        failed = {"stderr": "requests.exceptions.ConnectionError: connection refused"}
+        # Патчим time.sleep чтобы тест не ждал реально.
+        with patch.object(self.project_mod.time, "sleep") as msleep:
+            res = self.project_mod._heal_network_retry("p2net", failed, plan, attempt=1)
+        self.assertIsNotNone(res)
+        self.assertEqual(res["category"], "network")
+        self.assertEqual(res["attempt"], 1)
+        msleep.assert_called_once()
+
+    def test_heal_network_retry_caps_delay(self):
+        """Большой attempt → пауза не превышает 4.5с."""
+        failed = {"stderr": "socket.timeout"}
+        with patch.object(self.project_mod.time, "sleep") as msleep:
+            res = self.project_mod._heal_network_retry("p2net2", failed, {"files": []}, attempt=10)
+        self.assertIsNotNone(res)
+        self.assertLessEqual(res["retried_after_s"], 4.5)
+
+    def test_heal_network_retry_returns_none_for_other_errors(self):
+        failed = {"stderr": "AssertionError: 1 != 2"}
+        res = self.project_mod._heal_network_retry("p2net3", failed, {"files": []})
+        self.assertIsNone(res)
+
+    def test_heal_json_decode_finds_file_with_json_loads(self):
+        """json.JSONDecodeError + код с json.loads → дет. хилер выдаёт хинт."""
+        self._make_project_with_file(
+            "p2json", "main.py",
+            "import json\nimport requests\nr = requests.get('x')\nd = json.loads(r.text)\n",
+        )
+        plan = {"files": [{"path": "main.py"}]}
+        failed = {"stderr": "json.decoder.JSONDecodeError: Expecting value: line 1"}
+        diag = self.project_mod._heal_json_decode("p2json", failed, plan)
+        self.assertIsNotNone(diag)
+        self.assertEqual(diag["target_file"], "main.py")
+        self.assertEqual(diag["category"], "json")
+        self.assertIn("json", diag["fix_instruction"].lower())
+
+    def test_heal_json_decode_returns_none_when_no_json_in_code(self):
+        self._make_project_with_file("p2json2", "main.py", "print('hi')\n")
+        plan = {"files": [{"path": "main.py"}]}
+        failed = {"stderr": "json.JSONDecodeError: bad"}
+        diag = self.project_mod._heal_json_decode("p2json2", failed, plan)
+        self.assertIsNone(diag)
+
+    def test_heal_json_decode_returns_none_for_other_errors(self):
+        failed = {"stderr": "KeyError: 'foo'"}
+        diag = self.project_mod._heal_json_decode("p2json3", failed, {"files": []})
+        self.assertIsNone(diag)
+
+
+# ─── P4: role-split models ───────────────────────────────────────────────────
+class TestRoleSplitModels(unittest.TestCase):
+    """P4: проверяем что ролевые алиасы существуют и приходят из config."""
+
+    def test_role_aliases_exist_in_client(self):
+        from brain import client as c
+        for attr in ("MODEL_CODER", "MODEL_REVIEWER", "MODEL_ARCHITECT",
+                     "MODEL_HEALER", "MODEL_INTAKE", "MODEL_README", "MODEL_REPORT"):
+            self.assertTrue(hasattr(c, attr), f"client missing {attr}")
+            self.assertIsInstance(getattr(c, attr), str)
+            self.assertTrue(getattr(c, attr))
+
+    def test_role_models_come_from_config(self):
+        from brain import client as c
+        from core import config as cfg
+        self.assertEqual(c.MODEL_CODER, cfg.PROJECT_CODER_MODEL)
+        self.assertEqual(c.MODEL_REVIEWER, cfg.PROJECT_REVIEWER_MODEL)
+        self.assertEqual(c.MODEL_ARCHITECT, cfg.PROJECT_ARCHITECT_MODEL)
+        self.assertEqual(c.MODEL_HEALER, cfg.PROJECT_HEALER_MODEL)
+        self.assertEqual(c.MODEL_INTAKE, cfg.PROJECT_INTAKE_MODEL)
+        self.assertEqual(c.MODEL_README, cfg.PROJECT_README_MODEL)
+        self.assertEqual(c.MODEL_REPORT, cfg.PROJECT_REPORT_MODEL)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

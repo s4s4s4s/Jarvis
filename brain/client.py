@@ -11,11 +11,27 @@ from core.config import (
     OLLAMA_HEAVY_TIMEOUT,
     OLLAMA_RETRIES,
     OLLAMA_RETRY_DELAY,
+    PROJECT_CODER_MODEL,
+    PROJECT_REVIEWER_MODEL,
+    PROJECT_ARCHITECT_MODEL,
+    PROJECT_HEALER_MODEL,
+    PROJECT_INTAKE_MODEL,
+    PROJECT_README_MODEL,
+    PROJECT_REPORT_MODEL,
 )
 
 MODEL_ROUTER = OLLAMA_ROUTER_MODEL
 MODEL_FAST   = OLLAMA_FAST_MODEL
 MODEL_HEAVY  = OLLAMA_HEAVY_MODEL
+
+# P4: ролевые алиасы — из config.py, с понятными именами для оркестратора.
+MODEL_CODER     = PROJECT_CODER_MODEL
+MODEL_REVIEWER  = PROJECT_REVIEWER_MODEL
+MODEL_ARCHITECT = PROJECT_ARCHITECT_MODEL
+MODEL_HEALER    = PROJECT_HEALER_MODEL
+MODEL_INTAKE    = PROJECT_INTAKE_MODEL
+MODEL_README    = PROJECT_README_MODEL
+MODEL_REPORT    = PROJECT_REPORT_MODEL
 
 _OLLAMA_BASE_URL = "http://localhost:11434"
 
@@ -34,7 +50,10 @@ def is_ollama_available() -> bool:
 
 def chat(model: str, messages: list[dict], options: dict | None = None) -> str:
     opts = options or {"temperature": 0.2, "num_ctx": 8192}
-    client = _client_heavy if model == MODEL_HEAVY else _client
+    # Тяжёлые модели (всё что равно MODEL_HEAVY или ролевые 32b/14b coder)
+    # получают большой timeout. Остальные — fast.
+    heavy_models = {MODEL_HEAVY, MODEL_CODER, MODEL_REVIEWER, MODEL_ARCHITECT, MODEL_HEALER}
+    client = _client_heavy if model in heavy_models else _client
     last_err = None
     for attempt in range(OLLAMA_RETRIES + 1):
         try:

@@ -12,6 +12,19 @@ OLLAMA_HEAVY_TIMEOUT = 180
 OLLAMA_RETRIES       = 2
 OLLAMA_RETRY_DELAY   = 1.5
 
+# P4: ролевые модели для ProjectAgent. Дефолты — безопасные (уже имеются в Ollama).
+# Рекомендуемые (если стянешь):
+#   ollama pull qwen2.5-coder:32b-instruct-q4_K_M
+#   ollama pull qwen2.5-coder:14b-instruct-q4_K_M
+# После этого переопредели значения здесь.
+PROJECT_CODER_MODEL    = OLLAMA_HEAVY_MODEL  # потом → "qwen2.5-coder:32b-instruct-q4_K_M"
+PROJECT_REVIEWER_MODEL = OLLAMA_HEAVY_MODEL  # потом → "qwen2.5-coder:14b-instruct-q4_K_M"
+PROJECT_ARCHITECT_MODEL= OLLAMA_HEAVY_MODEL  # остаётся qwen2.5:32b (рассуждение, не код)
+PROJECT_HEALER_MODEL   = OLLAMA_HEAVY_MODEL  # потом → "qwen2.5-coder:14b-instruct-q4_K_M"
+PROJECT_INTAKE_MODEL   = OLLAMA_FAST_MODEL   # парсинг запроса — львиная работа на fast-модели
+PROJECT_README_MODEL   = OLLAMA_FAST_MODEL
+PROJECT_REPORT_MODEL   = OLLAMA_FAST_MODEL
+
 # ─── Аудио ────────────────────────────────────────────────────────────────────────────────
 SAMPLE_RATE_MIC = 16000
 CHUNK_SIZE      = 512

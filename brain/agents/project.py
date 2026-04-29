@@ -42,7 +42,16 @@ import time
 from dataclasses import asdict
 from typing import Any
 
-from brain.client import chat, MODEL_FAST, MODEL_HEAVY
+from brain.client import (
+    chat,
+    MODEL_FAST,
+    MODEL_HEAVY,
+    MODEL_INTAKE,
+    MODEL_ARCHITECT,
+    MODEL_HEALER,
+    MODEL_README,
+    MODEL_REPORT,
+)
 from brain.prompts import (
     PROJECT_INTAKE_SYSTEM,
     PROJECT_ARCHITECT_SYSTEM,
@@ -85,6 +94,57 @@ MAX_FILES        = 10
 PHASE_TEST_TIMEOUT = 30
 PROJECT_WALL_BUDGET_S = 600       # 10 минут на проект целиком
 PROJECT_LLM_BUDGET    = 40        # суммарно на все фазы
+
+# P3: адаптивный бюджет по размеру проекта. Не выбирает решения, только сколько раз попробовать.
+BUDGET_TIERS = {
+    "XS": {"wall_s": 180,  "llm": 15},   # 1 файл, однострочный запрос
+    "S":  {"wall_s": 360,  "llm": 30},   # 1-2 файла, парсер/скрипт
+    "M":  {"wall_s": 600,  "llm": 60},   # 3-4 файла, интеграция
+    "L":  {"wall_s": 1200, "llm": 120},  # 5+ файлов, сложный проект
+}
+
+
+def estimate_complexity(query: str, spec: dict | None = None, plan: dict | None = None) -> str:
+    """P3: возвращает тир бюджета (XS/S/M/L) по размерным метрикам.
+
+    Правила:
+      - Число файлов в плане (если есть) — главный сигнал: 1→XS, 2→S, 3-4→M, 5+→L.
+      - Без плана: по длине запроса и числу requirements.
+      - Никакого выбора «по ключевым словам» — только размерные метрики.
+    """
+    files_n = 0
+    if isinstance(plan, dict):
+        files = plan.get("files") or []
+        if isinstance(files, list):
+            files_n = sum(1 for f in files if isinstance(f, dict) and f.get("path"))
+    if files_n >= 5:
+        return "L"
+    if files_n in (3, 4):
+        return "M"
+    if files_n == 2:
+        return "S"
+    if files_n == 1:
+        return "XS"
+
+    text = (query or "").strip()
+    word_count = len(text.split())
+    req_count = 0
+    if isinstance(spec, dict):
+        reqs = spec.get("requirements") or []
+        if isinstance(reqs, list):
+            req_count = len(reqs)
+    if word_count <= 7 and req_count <= 1:
+        return "XS"
+    if word_count >= 80 or req_count >= 5:
+        return "L"
+    if word_count >= 40 or req_count >= 3:
+        return "M"
+    return "S"
+
+
+def budget_for_tier(tier: str) -> dict:
+    """Параметры бюджета для тира. Дефолт — M."""
+    return BUDGET_TIERS.get(tier, BUDGET_TIERS["M"])
 
 
 # ─── budget tracking ────────────────────────────────────────────────────────
@@ -173,7 +233,7 @@ def _save_metrics(slug: str, **fields) -> None:
 
 # ─── PHASE 1: intake ────────────────────────────────────────────────────────
 def _intake(query: str, budget: Budget) -> dict:
-    raw = _llm(budget, MODEL_FAST, PROJECT_INTAKE_SYSTEM, query,
+    raw = _llm(budget, MODEL_INTAKE, PROJECT_INTAKE_SYSTEM, query,
                temperature=0.1, num_ctx=4096, where="intake")
     spec = _safe_parse(raw)
     if not isinstance(spec, dict) or not spec.get("title"):
@@ -196,7 +256,7 @@ def _intake(query: str, budget: Budget) -> dict:
 # ─── PHASE 2: architect ─────────────────────────────────────────────────────
 def _architect(spec: dict, budget: Budget) -> dict:
     user = "Спецификация проекта:\n" + json.dumps(spec, ensure_ascii=False, indent=2)
-    raw = _llm(budget, MODEL_HEAVY, PROJECT_ARCHITECT_SYSTEM, user,
+    raw = _llm(budget, MODEL_ARCHITECT, PROJECT_ARCHITECT_SYSTEM, user,
                temperature=0.1, num_ctx=8192, where="architect")
     plan = _safe_parse(raw)
     files = plan.get("files") or []
@@ -556,7 +616,7 @@ def _diagnose(spec: dict, file_paths: list[str], failed_test: dict, budget: Budg
         f"  expects: {failed_test.get('expects','')}\n\n"
         f"Спецификация:\n{json.dumps(spec, ensure_ascii=False)[:1200]}\n"
     )
-    raw = _llm(budget, MODEL_HEAVY, PROJECT_HEAL_SYSTEM, user,
+    raw = _llm(budget, MODEL_HEALER, PROJECT_HEAL_SYSTEM, user,
                temperature=0.0, num_ctx=4096, where="heal.diagnose")
     diag = _safe_parse(raw)
     if not isinstance(diag, dict):
@@ -565,6 +625,16 @@ def _diagnose(spec: dict, file_paths: list[str], failed_test: dict, budget: Budg
 
 
 _MODNOTFOUND_RE = re.compile(r"ModuleNotFoundError: No module named ['\"]([A-Za-z0-9_.\-]+)['\"]")
+# P2: detection patterns for additional deterministic healers.
+_SYNTAX_ERR_RE   = re.compile(r"(SyntaxError|IndentationError|TabError):\s*(.+)")
+_SYNTAX_FILE_RE  = re.compile(r'File "([^"]+\.py)", line (\d+)')
+_NETWORK_ERR_RE  = re.compile(
+    r"(ConnectionError|ConnectionResetError|ConnectionRefusedError|"
+    r"ReadTimeout|ConnectTimeout|TimeoutError|ssl\.SSLError|"
+    r"urllib3\.exceptions|requests\.exceptions\.\w+|http\.client\.RemoteDisconnected|"
+    r"socket\.gaierror|socket\.timeout|TimeoutExpired)"
+)
+_JSONDEC_RE      = re.compile(r"json\.decoder\.JSONDecodeError|json\.JSONDecodeError")
 
 
 # Сопоставление import-имени → PyPI-имя для очевидных расхождений
@@ -577,6 +647,93 @@ _IMPORT_TO_PIP = {
     "dateutil": "python-dateutil",
     "dotenv": "python-dotenv",
 }
+
+
+def _heal_syntax_error(slug: str, failed: dict, plan: dict) -> dict | None:
+    """P2: детерминистический хилер для SyntaxError/IndentationError на фазе test.
+
+    Стратегия: перебираем все .py-файлы проекта, проверяем ast.parse.
+    Первый найденный файл с ошибкой — это цель. Возвращаем dict с target_path и
+    fix_instruction, которые _heal_loop скормит Coder'у без LLM-диагностики.
+    """
+    stderr = failed.get("stderr", "") or ""
+    if not _SYNTAX_ERR_RE.search(stderr):
+        return None
+    file_paths = [f["path"] for f in plan.get("files", []) if isinstance(f, dict) and "path" in f]
+    py_files = [p for p in file_paths if p.lower().endswith(".py")]
+    if not py_files:
+        return None
+    # Ищем первый .py с битым синтаксисом.
+    for path in py_files:
+        try:
+            content = read_project_file(slug, path)
+        except Exception:
+            continue
+        sc = static_check(path, content)
+        if not sc.get("ok") and sc.get("applicable"):
+            return {
+                "target_file": path,
+                "fix_instruction": static_errors_to_feedback(sc.get("errors") or []),
+                "category": "syntax",
+            }
+    # stderr жалуется на синтаксис, но ast.parse все файлы прошли — пробуем выдернуть имя/номер из traceback.
+    fm = _SYNTAX_FILE_RE.search(stderr)
+    sm = _SYNTAX_ERR_RE.search(stderr)
+    if fm and sm:
+        guess = fm.group(1).replace("\\", "/").split("/")[-1]
+        if guess in py_files:
+            return {
+                "target_file": guess,
+                "fix_instruction": (
+                    f"Исправь {sm.group(1)} в {guess} на строке {fm.group(2)}: {sm.group(2)}"
+                ),
+                "category": "syntax",
+            }
+    return None
+
+
+def _heal_network_retry(slug: str, failed: dict, plan: dict, attempt: int = 1) -> dict | None:
+    """P2: при сетевых ошибках просто перезапускаем тест (без LLM, без правки кода).
+
+    Стратегия: пауза (1.5с × attempt), ретест. Применяется вызывающим кодом, 
+    который сам вызывает _test() после результата. Мы решаем только «stoit ли ретраить?» и паузим.
+    """
+    stderr = failed.get("stderr", "") or ""
+    if not _NETWORK_ERR_RE.search(stderr):
+        return None
+    delay = min(1.5 * attempt, 4.5)
+    time.sleep(delay)
+    return {"category": "network", "retried_after_s": delay, "attempt": attempt}
+
+
+def _heal_json_decode(slug: str, failed: dict, plan: dict) -> dict | None:
+    """P2: при JSONDecodeError — хинт Coder'у: добавь try/except и проверку Content-Type.
+
+    Это не исправляет баг автоматически, но даёт однозначную fix_instruction без _diagnose-LLM.
+    """
+    stderr = failed.get("stderr", "") or ""
+    if not _JSONDEC_RE.search(stderr):
+        return None
+    file_paths = [f["path"] for f in plan.get("files", []) if isinstance(f, dict) and "path" in f]
+    # Ищем первый .py файл, где вызывается json.loads или .json().
+    for path in file_paths:
+        if not path.lower().endswith(".py"):
+            continue
+        try:
+            content = read_project_file(slug, path)
+        except Exception:
+            continue
+        if ("json.loads" in content) or (".json(" in content) or ("json.load(" in content):
+            return {
+                "target_file": path,
+                "fix_instruction": (
+                    "Оборачивай вызовы json.loads/.json() в try/except json.JSONDecodeError. "
+                    "Если ресурс отвечает не-JSON, не падай, а выведи первые байты ответа для диагностики. "
+                    "Для requests используй response.headers.get('Content-Type') перед разбором."
+                ),
+                "category": "json",
+            }
+    return None
 
 
 def _heal_missing_module(slug: str, failed: dict) -> dict | None:
@@ -637,11 +794,37 @@ def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budg
                 add_phase(slug, f"heal:iter{heal_iter}", "failed",
                           f"deterministic pip install failed for {miss.get('missing')}: {miss.get('stderr','')[:200]}")
                 # Не выходим — пусть LLM-ветка попробует другой фикс
-        try:
-            diag = _diagnose(spec, file_paths, failed, budget)
-        except BudgetExceeded as e:
-            add_phase(slug, f"heal:iter{heal_iter}", "failed", f"budget: {e}")
-            break
+
+        # P2: сетевая ошибка → просто пауза+ретест (без LLM, без правки кода)
+        net = _heal_network_retry(slug, failed, plan, attempt=heal_iter)
+        if net is not None:
+            add_phase(slug, f"heal:iter{heal_iter}", "ok",
+                      f"network retry after {net.get('retried_after_s')}s (attempt {net.get('attempt')})")
+            test_results = _test(slug, plan)
+            if all(r.get("ok") for r in test_results):
+                break
+            continue
+
+        # P2: SyntaxError/IndentationError → детерминистическая диагностика без LLM
+        diag: dict | None = _heal_syntax_error(slug, failed, plan)
+        det_category = "syntax" if diag else None
+
+        # P2: JSONDecodeError → фиксированный хинт Coder'у
+        if diag is None:
+            diag = _heal_json_decode(slug, failed, plan)
+            det_category = "json" if diag else None
+
+        if diag is not None:
+            add_phase(slug, f"heal:iter{heal_iter}", "ok",
+                      f"deterministic diagnosis ({det_category}) target={diag.get('target_file')}")
+        else:
+            try:
+                diag = _diagnose(spec, file_paths, failed, budget)
+            except BudgetExceeded as e:
+                add_phase(slug, f"heal:iter{heal_iter}", "failed", f"budget: {e}")
+                break
+        # diag либо из детерминистического хилера, либо из _diagnose — в обоих случаях
+        # дальше идёт общий patch_file -> ретест.
 
         target_path = diag.get("target_file")
         if target_path not in file_paths:
@@ -705,7 +888,7 @@ def _generate_readme(slug: str, spec: dict, plan: dict, test_results: list[dict]
     }
     user = "Данные проекта в JSON:\n" + json.dumps(summary_payload, ensure_ascii=False, indent=2)
     try:
-        raw = _llm(budget, MODEL_FAST, PROJECT_README_SYSTEM, user,
+        raw = _llm(budget, MODEL_README, PROJECT_README_SYSTEM, user,
                    temperature=0.2, num_ctx=4096, where="readme")
     except BudgetExceeded:
         raw = ""
@@ -746,7 +929,7 @@ def _report(slug: str, spec: dict, build_results: list[dict], test_results: list
     user = ("Итоги проекта в JSON:\n" + json.dumps(summary, ensure_ascii=False, indent=2)
             + f"\n\nПапка проекта: data/projects/{slug}/")
     try:
-        return _llm(budget, MODEL_FAST, PROJECT_REPORT_SYSTEM, user,
+        return _llm(budget, MODEL_REPORT, PROJECT_REPORT_SYSTEM, user,
                     temperature=0.3, num_ctx=2048, where="report").strip()
     except (BudgetExceeded, Exception) as e:
         logger.warning(f"[project.report] LLM unavailable: {e} — using deterministic")
@@ -769,6 +952,7 @@ def run(query: str, history: list[dict] | None = None,
     if not isinstance(query, str) or not query.strip():
         return "Сэр, я не понял какой проект нужно сделать."
 
+    # P3: на intake бюджет фиксированный (минимум как XS), потом переоцениваем по spec.
     budget = Budget(wall_s=wall_budget_s, llm=llm_budget)
 
     # PHASE 1
@@ -779,6 +963,16 @@ def run(query: str, history: list[dict] | None = None,
     except Exception as e:
         logger.error(f"[project.intake] {e}")
         return f"Не удалось разобрать задачу: {e}"
+
+    # P3: адаптивный бюджет — только если вызвавший не указал явно свои значения.
+    if wall_budget_s == PROJECT_WALL_BUDGET_S and llm_budget == PROJECT_LLM_BUDGET:
+        tier = estimate_complexity(query, spec=spec, plan=None)
+        params = budget_for_tier(tier)
+        # Не урезаем уже потраченное: сохраняем llm_used, обновляем лимиты.
+        spent = budget.llm_used
+        budget = Budget(wall_s=params["wall_s"], llm=params["llm"])
+        budget.llm_used = spent
+        logger.info(f"[project] adaptive budget: tier={tier} llm={params['llm']} wall_s={params['wall_s']}")
 
     try:
         manifest = create_project(spec)
