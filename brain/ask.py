@@ -25,11 +25,13 @@ _FALLBACK_TIMEOUT_MSG = "Сэр, не удалось получить ответ
 _FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
 
 _ROUTE_TIMEOUTS: dict[str, float] = {
-    "test":    1800.0,
-    "plan":     600.0,
-    "code":     300.0,
-    "deep":     300.0,
-    "analyze":  600.0,   # self-analysis may take a while scanning all files
+    "test":     1800.0,
+    "plan":      600.0,
+    "code":      300.0,
+    "deep":      300.0,
+    "analyze":   600.0,
+    "develop":   600.0,   # CodeDevAgent: full analyse+fix+test cycle on any project
+    "extend":    300.0,   # SelfExtendAgent: scaffold new agent/tool
 }
 _DEFAULT_TIMEOUT = 120.0
 
@@ -44,7 +46,9 @@ _VOICE_TRUNCATE_TOOLS = {
     "code.run_file",
     "code.test",
     "self_test",
-    "self_analysis",  # added: self-analysis produces long markdown output
+    "self_analysis",
+    "develop",
+    "extend",
 }
 
 _VOICE_MAX_CHARS = 220
@@ -226,6 +230,14 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
     if route == "analyze":
         from brain.agents.self_analysis_agent import run as analyze_run
         return analyze_run(text, history)
+
+    if route == "develop":
+        from brain.agents.code_dev_agent import run as develop_run
+        return develop_run(text, history)
+
+    if route == "extend":
+        from brain.agents.self_extend_agent import run as extend_run
+        return extend_run(text, history)
 
     from brain.agents.chat import run as chat_run
     return chat_run(text, history)
