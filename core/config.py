@@ -84,3 +84,8 @@ EDGE_RATE  = "+30%"
 # ─── Долгосрочная память ─────────────────────────────────────────────────────────────────
 MEMORY_MAX_FACTS     = 500
 MEMORY_CONTEXT_FACTS = 20
+
+# ─── Embedding-роутер (self-learning) ────────────────────────────────────────────────────
+EMBED_MODEL_NAME  = "paraphrase-multilingual-MiniLM-L12-v2"
+EMBED_THRESHOLD   = 0.82   # выше → маршрутизация без LLM
+EMBED_AMBIGUITY   = 0.06   # если gap между top1 и top2 < этого → LLM fallback

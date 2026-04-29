@@ -17,6 +17,12 @@ REFERENCE_WAV         = str(ASSETS_DIR / "reference.wav")
 ACTIVATE_SOUND_PATH   = str(ASSETS_DIR / "activate.wav")
 DEACTIVATE_SOUND_PATH = str(ASSETS_DIR / "deactivate.wav")
 
+# ─── Self-learning ────────────────────────────────────────────────────────────
+ROUTE_EXAMPLES   = ROOT / "data" / "route_examples.jsonl"
+FEEDBACK_LOG     = LOGS_DIR / "feedback.jsonl"
+LEARNING_REPORT  = LOGS_DIR / "learning_report.jsonl"
+FEEDBACK_ARCHIVE = LOGS_DIR / "feedback_archive.jsonl"
+
 
 def ensure_dirs() -> None:
     """Create required directories. Called once at startup (app.py)."""
