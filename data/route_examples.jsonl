@@ -1,0 +1,122 @@
+{"text": "какая погода сейчас", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "какая погода в Москве", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "погода на завтра", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Узнаю прогноз"}
+{"text": "нужно ли брать зонт сегодня", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "сколько градусов на улице", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю температуру"}
+{"text": "тепло ли сейчас на улице", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "погода в Санкт-Петербурге", "route": "tool", "tool": "weather", "tool_args": {"location": "Санкт-Петербург", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "идёт ли дождь", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "какая погода в Лондоне", "route": "tool", "tool": "weather", "tool_args": {"location": "Лондон", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "снег идёт или нет", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "погода в Новосибирске сегодня", "route": "tool", "tool": "weather", "tool_args": {"location": "Новосибирск", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "ветрено ли сейчас", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "прогноз погоды на неделю", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Узнаю прогноз"}
+{"text": "стоит ли выходить на улицу", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "погода в Дубае", "route": "tool", "tool": "weather", "tool_args": {"location": "Дубай", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "сколько стоит биткоин", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "bitcoin"}, "filler": "Смотрю котировки"}
+{"text": "курс биткоина сейчас", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "bitcoin"}, "filler": "Смотрю котировки"}
+{"text": "цена эфира", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "ethereum"}, "filler": "Смотрю котировки"}
+{"text": "сколько стоит ethereum", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "ethereum"}, "filler": "Смотрю котировки"}
+{"text": "покажи цену солана", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "solana"}, "filler": "Смотрю котировки"}
+{"text": "как себя чувствует крипторынок", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "bitcoin"}, "filler": "Смотрю рынок"}
+{"text": "BTC цена", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "bitcoin"}, "filler": "Смотрю котировки"}
+{"text": "ETH сейчас сколько", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "ethereum"}, "filler": "Смотрю котировки"}
+{"text": "какой курс dogecoin", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "dogecoin"}, "filler": "Смотрю котировки"}
+{"text": "биткоин растёт или падает", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "bitcoin"}, "filler": "Смотрю рынок"}
+{"text": "цена TON", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "toncoin"}, "filler": "Смотрю котировки"}
+{"text": "курс доллара", "route": "tool", "tool": "currency.rates", "tool_args": {}, "filler": "Получаю курсы"}
+{"text": "сколько стоит доллар", "route": "tool", "tool": "currency.rates", "tool_args": {}, "filler": "Получаю курсы"}
+{"text": "курс евро к рублю", "route": "tool", "tool": "currency.rates", "tool_args": {}, "filler": "Получаю курсы"}
+{"text": "покажи курсы валют", "route": "tool", "tool": "currency.rates", "tool_args": {}, "filler": "Получаю курсы"}
+{"text": "переведи 100 долларов в рубли", "route": "tool", "tool": "currency.convert", "tool_args": {"amount": 100, "from_code": "USD", "to_code": "RUB"}, "filler": "Считаю"}
+{"text": "конвертируй 50 евро в рубли", "route": "tool", "tool": "currency.convert", "tool_args": {"amount": 50, "from_code": "EUR", "to_code": "RUB"}, "filler": "Считаю"}
+{"text": "сколько рублей в 200 долларах", "route": "tool", "tool": "currency.convert", "tool_args": {"amount": 200, "from_code": "USD", "to_code": "RUB"}, "filler": "Считаю"}
+{"text": "юань к рублю сейчас", "route": "tool", "tool": "currency.rates", "tool_args": {}, "filler": "Получаю курсы"}
+{"text": "курс фунта стерлингов", "route": "tool", "tool": "currency.rates", "tool_args": {}, "filler": "Получаю курсы"}
+{"text": "установи таймер на 10 минут", "route": "tool", "tool": "timer.set", "tool_args": {"seconds": 600}, "filler": "Ставлю таймер"}
+{"text": "поставь таймер на 5 минут", "route": "tool", "tool": "timer.set", "tool_args": {"seconds": 300}, "filler": "Ставлю таймер"}
+{"text": "напомни мне через полчаса", "route": "tool", "tool": "timer.set", "tool_args": {"seconds": 1800}, "filler": "Ставлю таймер"}
+{"text": "таймер на 1 час", "route": "tool", "tool": "timer.set", "tool_args": {"seconds": 3600}, "filler": "Ставлю таймер"}
+{"text": "поставь будильник через 15 минут", "route": "tool", "tool": "timer.set", "tool_args": {"seconds": 900}, "filler": "Ставлю таймер"}
+{"text": "какие таймеры сейчас активны", "route": "tool", "tool": "timer.list", "tool_args": {}, "filler": "Смотрю таймеры"}
+{"text": "покажи все таймеры", "route": "tool", "tool": "timer.list", "tool_args": {}, "filler": "Смотрю таймеры"}
+{"text": "отмени таймер", "route": "tool", "tool": "timer.cancel", "tool_args": {}, "filler": "Отменяю"}
+{"text": "сколько сейчас времени", "route": "tool", "tool": "time", "tool_args": {}, "filler": ""}
+{"text": "который час", "route": "tool", "tool": "time", "tool_args": {}, "filler": ""}
+{"text": "какое сегодня число", "route": "tool", "tool": "time", "tool_args": {}, "filler": ""}
+{"text": "какой сегодня день недели", "route": "tool", "tool": "time", "tool_args": {}, "filler": ""}
+{"text": "дата сегодня", "route": "tool", "tool": "time", "tool_args": {}, "filler": ""}
+{"text": "проверь код на баги", "route": "tool", "tool": "auditor.run", "tool_args": {}, "filler": "Анализирую код, займёт немного времени"}
+{"text": "проаудируй проект", "route": "tool", "tool": "auditor.run", "tool_args": {}, "filler": "Запускаю аудит"}
+{"text": "найди проблемы в коде", "route": "tool", "tool": "auditor.run", "tool_args": {}, "filler": "Анализирую код"}
+{"text": "запусти аудитор", "route": "tool", "tool": "auditor.run", "tool_args": {}, "filler": "Запускаю аудит"}
+{"text": "привет", "route": "chat", "tool": null, "tool_args": {}, "filler": ""}
+{"text": "как дела", "route": "chat", "tool": null, "tool_args": {}, "filler": ""}
+{"text": "расскажи анекдот", "route": "chat", "tool": null, "tool_args": {}, "filler": ""}
+{"text": "что такое нейронная сеть", "route": "chat", "tool": null, "tool_args": {}, "filler": ""}
+{"text": "объясни что такое градиентный спуск", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "как работает трансформер в LLM", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "что такое attention механизм", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "какую температуру модели использовать", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "что означает параметр temperature у LLM", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "что такое top-p в языковых моделях", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "объясни архитектуру Qwen", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "чем отличается llama от qwen", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "что такое контекстное окно модели", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "как настроить параметры Ollama", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "расскажи про квантизацию модели", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "что лучше Q4 или Q8 квантизация", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "как работает LoRA fine-tuning", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "найди последние новости про OpenAI", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети"}
+{"text": "что нового в мире технологий", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети"}
+{"text": "последние новости про Илона Маска", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети"}
+{"text": "что произошло сегодня в России", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу новости"}
+{"text": "найди информацию про новый iPhone", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети"}
+{"text": "последние события в экономике", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети"}
+{"text": "что случилось вчера на бирже", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети"}
+{"text": "новости про ChatGPT", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети"}
+{"text": "что новенького у Anthropic", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети"}
+{"text": "найди свежие новости про крипту", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети"}
+{"text": "последние события про Украину", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу новости"}
+{"text": "проанализируй плюсы и минусы архитектуры трансформеров", "route": "deep", "tool": null, "tool_args": {}, "filler": "Анализирую"}
+{"text": "сделай подробный разбор технологии RAG", "route": "deep", "tool": null, "tool_args": {}, "filler": "Анализирую"}
+{"text": "объясни детально как устроен RLHF", "route": "deep", "tool": null, "tool_args": {}, "filler": "Анализирую"}
+{"text": "напиши подробный план по изучению машинного обучения", "route": "deep", "tool": null, "tool_args": {}, "filler": "Думаю"}
+{"text": "сравни архитектуры GPT и BERT подробно", "route": "deep", "tool": null, "tool_args": {}, "filler": "Анализирую"}
+{"text": "сделай детальный анализ рынка криптовалют", "route": "deep", "tool": null, "tool_args": {}, "filler": "Анализирую"}
+{"text": "объясни глубоко принципы квантовых вычислений", "route": "deep", "tool": null, "tool_args": {}, "filler": "Анализирую"}
+{"text": "дай развёрнутый ответ про историю искусственного интеллекта", "route": "deep", "tool": null, "tool_args": {}, "filler": "Подготавливаю ответ"}
+{"text": "подробно расскажи как работает embedding", "route": "deep", "tool": null, "tool_args": {}, "filler": "Анализирую"}
+{"text": "сделай сравнительный анализ Jarvis и других голосовых ассистентов", "route": "deep", "tool": null, "tool_args": {}, "filler": "Анализирую"}
+{"text": "что ты обо мне знаешь", "route": "memory", "tool": null, "tool_args": {}, "filler": "Поднимаю память"}
+{"text": "что ты помнишь про меня", "route": "memory", "tool": null, "tool_args": {}, "filler": "Поднимаю память"}
+{"text": "какие мои предпочтения ты знаешь", "route": "memory", "tool": null, "tool_args": {}, "filler": "Смотрю память"}
+{"text": "расскажи что знаешь о моих привычках", "route": "memory", "tool": null, "tool_args": {}, "filler": "Поднимаю память"}
+{"text": "что я говорил тебе раньше", "route": "memory", "tool": null, "tool_args": {}, "filler": "Поднимаю память"}
+{"text": "напомни что я тебе рассказывал", "route": "memory", "tool": null, "tool_args": {}, "filler": "Смотрю память"}
+{"text": "помнишь что я сказал про проект", "route": "memory", "tool": null, "tool_args": {}, "filler": "Поднимаю память"}
+{"text": "что я тебе говорил про работу", "route": "memory", "tool": null, "tool_args": {}, "filler": "Поднимаю память"}
+{"text": "ты знаешь как меня зовут", "route": "memory", "tool": null, "tool_args": {}, "filler": "Смотрю память"}
+{"text": "что я думаю о видеокартах", "route": "memory", "tool": null, "tool_args": {}, "filler": "Поднимаю память"}
+{"text": "это было неверно", "route": "feedback", "tool": "feedback.wrong", "tool_args": {}, "filler": ""}
+{"text": "ты ошибся", "route": "feedback", "tool": "feedback.wrong", "tool_args": {}, "filler": ""}
+{"text": "неправильно", "route": "feedback", "tool": "feedback.wrong", "tool_args": {}, "filler": ""}
+{"text": "не то", "route": "feedback", "tool": "feedback.wrong", "tool_args": {}, "filler": ""}
+{"text": "всё верно", "route": "feedback", "tool": "feedback.correct", "tool_args": {}, "filler": ""}
+{"text": "правильно", "route": "feedback", "tool": "feedback.correct", "tool_args": {}, "filler": ""}
+{"text": "отлично", "route": "feedback", "tool": "feedback.correct", "tool_args": {}, "filler": ""}
+{"text": "молодец", "route": "feedback", "tool": "feedback.correct", "tool_args": {}, "filler": ""}
+{"text": "какой сейчас курс рубля", "route": "tool", "tool": "currency.rates", "tool_args": {}, "filler": "Получаю курсы"}
+{"text": "курс валют на сегодня", "route": "tool", "tool": "currency.rates", "tool_args": {}, "filler": "Получаю курсы"}
+{"text": "сколько сейчас времени в Москве", "route": "tool", "tool": "time", "tool_args": {}, "filler": ""}
+{"text": "скоро ли полночь", "route": "tool", "tool": "time", "tool_args": {}, "filler": ""}
+{"text": "когда закат сегодня", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "как скорость ветра сегодня", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "скорость передачи данных в нейросети", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "курс обучения по машинному обучению", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "время обучения модели", "route": "chat", "tool": null, "tool_args": {}, "filler": "Объясняю"}
+{"text": "какую температуру ставить в духовку", "route": "chat", "tool": null, "tool_args": {}, "filler": "Отвечаю"}
+{"text": "при какой температуре тела нужно вызывать врача", "route": "chat", "tool": null, "tool_args": {}, "filler": "Отвечаю"}
+{"text": "температура кипения воды", "route": "chat", "tool": null, "tool_args": {}, "filler": "Отвечаю"}
+{"text": "скорость света в вакууме", "route": "chat", "tool": null, "tool_args": {}, "filler": "Отвечаю"}
+{"text": "курс истории России", "route": "chat", "tool": null, "tool_args": {}, "filler": "Отвечаю"}
