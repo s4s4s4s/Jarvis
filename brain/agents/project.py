@@ -212,25 +212,76 @@ def _architect(spec: dict, budget: Budget) -> dict:
 _PKG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]+([<>=!~]=?[A-Za-z0-9._-]+)?$")
 
 
-def _extract_packages(plan: dict) -> list[str]:
-    """Вытаскивает пакеты из build_steps[*].target где kind == 'install_dep'."""
+# Стоп-слова — это НЕ пакеты, а флаги/опции/команды
+_PKG_STOPWORDS = {
+    "pip", "install", "-r", "--requirement", "-U", "--upgrade", "--user",
+    "--no-input", "--no-deps", "--prefer-binary", "requirements.txt",
+    "-e", "--editable", ".", "./", "venv", "python", "-m",
+}
+
+
+def _parse_requirements_txt(content: str) -> list[str]:
+    """Разобрать requirements.txt — по одному пакету на строку, игнорируя # комментарии."""
     pkgs: list[str] = []
+    for raw in (content or "").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        # Пропускаем строки вида -r other.txt, -e ., и прочую флаговую муть
+        if line.startswith("-") or line in _PKG_STOPWORDS:
+            continue
+        if _PKG_PATTERN.match(line):
+            pkgs.append(line)
+    return pkgs
+
+
+def _extract_packages(slug: str, plan: dict) -> list[str]:
+    """Собирает пакеты из трёх источников (по убыванию надёжности):
+      1. plan['pip_requirements'] — явно объявленные архитектором.
+      2. Содержимое requirements.txt в проекте (если файл уже сгенерирован).
+      3. build_steps[install_dep].target — легаси формат, фильтруем стоп-слова.
+    """
+    pkgs: list[str] = []
+
+    # Источник 1: явный pip_requirements
+    for p in (plan.get("pip_requirements") or []):
+        if isinstance(p, str):
+            tok = p.strip().strip("\"'")
+            if tok and _PKG_PATTERN.match(tok) and tok.lower() not in _PKG_STOPWORDS:
+                pkgs.append(tok)
+
+    # Источник 2: requirements.txt в файлах проекта
+    try:
+        existing = get_project_files(slug)
+        if isinstance(existing, dict) and "requirements.txt" in existing:
+            pkgs.extend(_parse_requirements_txt(existing["requirements.txt"]))
+    except Exception as e:
+        logger.debug(f"[project] requirements.txt parse skipped: {e}")
+
+    # Источник 3: build_steps[install_dep] — legacy fallback
     for step in (plan.get("build_steps") or []):
         if step.get("kind") != "install_dep":
             continue
         target = step.get("target") or ""
-        # 'pip install requests' / 'requests' / 'requests==2.0' / 'requests, click'
-        cleaned = target.replace("pip install", "").strip()
-        for token in re.split(r"[,\s]+", cleaned):
+        for token in re.split(r"[,\s]+", target):
             token = token.strip().strip("\"'")
-            if token and _PKG_PATTERN.match(token):
+            if not token:
+                continue
+            if token.lower() in _PKG_STOPWORDS:
+                continue
+            # Пропускаем явные пути к файлам (содержат / или \ или заканчиваются на .txt)
+            if "/" in token or "\\" in token or token.endswith(".txt"):
+                continue
+            if _PKG_PATTERN.match(token):
                 pkgs.append(token)
-    # дедуп с сохранением порядка
+
+    # Дедуп с сохранением порядка (case-insensitive)
     seen: set[str] = set()
-    out = []
+    out: list[str] = []
     for p in pkgs:
-        if p not in seen:
-            seen.add(p)
+        key = p.lower()
+        if key not in seen:
+            seen.add(key)
             out.append(p)
     return out
 
@@ -239,7 +290,7 @@ def _phase_env(slug: str, plan: dict) -> dict:
     venv_res = ensure_venv(slug)
     if not venv_res["ok"]:
         return {"ok": False, "error": f"venv: {venv_res.get('error')}"}
-    pkgs = _extract_packages(plan)
+    pkgs = _extract_packages(slug, plan)
     if not pkgs:
         return {"ok": True, "venv": True, "installed": [], "skipped_install": True}
     install_res = pip_install(slug, pkgs)
@@ -247,6 +298,7 @@ def _phase_env(slug: str, plan: dict) -> dict:
         "ok": install_res.get("ok", False),
         "venv": True,
         "installed": install_res.get("installed", []),
+        "requested": pkgs,
         "stderr": install_res.get("stderr", ""),
     }
 
@@ -369,6 +421,43 @@ def _diagnose(spec: dict, file_paths: list[str], failed_test: dict, budget: Budg
     return diag
 
 
+_MODNOTFOUND_RE = re.compile(r"ModuleNotFoundError: No module named ['\"]([A-Za-z0-9_.\-]+)['\"]")
+
+
+# Сопоставление import-имени → PyPI-имя для очевидных расхождений
+_IMPORT_TO_PIP = {
+    "cv2": "opencv-python",
+    "PIL": "Pillow",
+    "yaml": "PyYAML",
+    "sklearn": "scikit-learn",
+    "bs4": "beautifulsoup4",
+    "dateutil": "python-dateutil",
+    "dotenv": "python-dotenv",
+}
+
+
+def _heal_missing_module(slug: str, failed: dict) -> dict | None:
+    """Детерминистический healer для ModuleNotFoundError — без LLM.
+    Выдергивает имя модуля из stderr и ставит его в venv.
+    Возвращает dict с результатом или None если это не ModuleNotFoundError.
+    """
+    stderr = failed.get("stderr", "") or ""
+    m = _MODNOTFOUND_RE.search(stderr)
+    if not m:
+        return None
+    import_name = m.group(1).split(".")[0]  # берём корневой пакет
+    pip_name = _IMPORT_TO_PIP.get(import_name, import_name)
+    if not _PKG_PATTERN.match(pip_name):
+        return {"ok": False, "missing": import_name, "reason": "unsafe pkg name"}
+    res = pip_install(slug, [pip_name])
+    return {
+        "ok": bool(res.get("ok")),
+        "missing": import_name,
+        "installed_as": pip_name,
+        "stderr": res.get("stderr", "")[-400:],
+    }
+
+
 def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budget: Budget) -> list[dict]:
     if all(r.get("ok") for r in test_results):
         return test_results
@@ -378,6 +467,33 @@ def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budg
         failed = next((r for r in test_results if not r.get("ok")), None)
         if not failed:
             break
+
+        # Быстрый путь: ModuleNotFoundError → детерминистический pip install (без LLM)
+        miss = _heal_missing_module(slug, failed)
+        if miss is not None:
+            if miss.get("ok"):
+                add_phase(slug, f"heal:iter{heal_iter}", "ok",
+                          f"deterministic pip install {miss.get('installed_as')} (import {miss.get('missing')})")
+                # Синхронизируем requirements.txt если он есть и пакета там нет
+                try:
+                    existing_files = get_project_files(slug)
+                    if isinstance(existing_files, dict) and "requirements.txt" in existing_files:
+                        cur = existing_files["requirements.txt"]
+                        already = {ln.strip().lower() for ln in cur.splitlines() if ln.strip()}
+                        if miss["installed_as"].lower() not in already:
+                            new_req = (cur.rstrip() + "\n" + miss["installed_as"] + "\n").lstrip("\n")
+                            write_project_file(slug, "requirements.txt", new_req)
+                except Exception as e:
+                    logger.debug(f"[heal] requirements.txt sync skipped: {e}")
+                # Ретест без расхода LLM-бюджета
+                test_results = _test(slug, plan)
+                if all(r.get("ok") for r in test_results):
+                    break
+                continue
+            else:
+                add_phase(slug, f"heal:iter{heal_iter}", "failed",
+                          f"deterministic pip install failed for {miss.get('missing')}: {miss.get('stderr','')[:200]}")
+                # Не выходим — пусть LLM-ветка попробует другой фикс
         try:
             diag = _diagnose(spec, file_paths, failed, budget)
         except BudgetExceeded as e:

@@ -400,5 +400,97 @@ class TestProjectStoreSafety(_IsolatedJarvisRoot):
         self.assertIn("print(1)", files["a.py"])
 
 
+# ─── Новые тесты: env-парсер и детерминистический healer ──────────────
+class TestEnvParserAndAutoHeal(_IsolatedJarvisRoot):
+    """Проверяем свежие фиксы: парсер install_dep и ModuleNotFoundError→pip auto-install."""
+
+    def test_extract_packages_ignores_pip_install_r_command(self):
+        """Не должны пытаться ставить 'requirements.txt' как пакет (баг с untitled-project)."""
+        plan = {
+            "files": [{"path": "main.py"}, {"path": "requirements.txt"}],
+            "build_steps": [
+                {"step": 1, "kind": "create_file", "target": "main.py"},
+                {"step": 2, "kind": "install_dep", "target": "pip install -r requirements.txt"},
+            ],
+        }
+        m = self.proj_mod.create_project({"title": "E", "slug": "e"})
+        self.proj_mod.write_project_file(m.slug, "requirements.txt", "feedparser\n")
+        pkgs = self.project_mod._extract_packages(m.slug, plan)
+        self.assertNotIn("requirements.txt", pkgs)
+        self.assertNotIn("-r", pkgs)
+        self.assertNotIn("pip", pkgs)
+        self.assertIn("feedparser", pkgs)
+
+    def test_extract_packages_uses_pip_requirements_field(self):
+        """Новое поле plan['pip_requirements'] — источник #1."""
+        plan = {
+            "files": [{"path": "main.py"}],
+            "pip_requirements": ["requests", "click==8.1", "feedparser"],
+            "build_steps": [],
+        }
+        m = self.proj_mod.create_project({"title": "E2", "slug": "e2"})
+        pkgs = self.project_mod._extract_packages(m.slug, plan)
+        self.assertEqual(pkgs[:3], ["requests", "click==8.1", "feedparser"])
+
+    def test_extract_packages_dedup_across_sources(self):
+        """feedparser в pip_requirements + в requirements.txt → в результате один раз."""
+        m = self.proj_mod.create_project({"title": "E3", "slug": "e3"})
+        self.proj_mod.write_project_file(m.slug, "requirements.txt", "feedparser\nrequests\n")
+        plan = {"files": [{"path": "main.py"}], "pip_requirements": ["feedparser"]}
+        pkgs = self.project_mod._extract_packages(m.slug, plan)
+        # Один feedparser, плюс requests из requirements.txt
+        self.assertEqual([p.lower() for p in pkgs].count("feedparser"), 1)
+        self.assertIn("requests", pkgs)
+
+    def test_heal_detects_module_not_found_and_calls_pip_install(self):
+        """_heal_missing_module должен выдернуть имя модуля и вызвать pip_install."""
+        m = self.proj_mod.create_project({"title": "H", "slug": "h"})
+        failed = {
+            "name": "smoke",
+            "command": "python main.py",
+            "rc": 1,
+            "ok": False,
+            "stderr": "Traceback (most recent call last):\n  File \"main.py\", line 2, in <module>\n    import feedparser\nModuleNotFoundError: No module named 'feedparser'\n",
+        }
+        calls = []
+
+        def fake_pip_install(slug, packages, timeout=180):
+            calls.append((slug, list(packages)))
+            return {"ok": True, "installed": packages}
+
+        with patch("brain.agents.project.pip_install", side_effect=fake_pip_install):
+            res = self.project_mod._heal_missing_module(m.slug, failed)
+
+        self.assertIsNotNone(res, "healer должен распознать ModuleNotFoundError")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["missing"], "feedparser")
+        self.assertEqual(res["installed_as"], "feedparser")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], ["feedparser"])
+
+    def test_heal_module_not_found_returns_none_for_other_errors(self):
+        """Если это не ModuleNotFoundError — детерминистический healer должен вернуть None."""
+        m = self.proj_mod.create_project({"title": "H2", "slug": "h2"})
+        failed = {"name": "smoke", "command": "python main.py", "rc": 1, "ok": False,
+                  "stderr": "SyntaxError: invalid syntax"}
+        res = self.project_mod._heal_missing_module(m.slug, failed)
+        self.assertIsNone(res)
+
+    def test_heal_module_not_found_uses_import_to_pip_mapping(self):
+        """import cv2 → pip install opencv-python."""
+        m = self.proj_mod.create_project({"title": "H3", "slug": "h3"})
+        failed = {"name": "smoke", "command": "python main.py", "rc": 1, "ok": False,
+                  "stderr": "ModuleNotFoundError: No module named 'cv2'\n"}
+        captured = []
+        def fake_pip_install(slug, packages, timeout=180):
+            captured.append(list(packages))
+            return {"ok": True, "installed": packages}
+        with patch("brain.agents.project.pip_install", side_effect=fake_pip_install):
+            res = self.project_mod._heal_missing_module(m.slug, failed)
+        self.assertIsNotNone(res)
+        self.assertEqual(captured, [["opencv-python"]])
+        self.assertEqual(res["installed_as"], "opencv-python")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

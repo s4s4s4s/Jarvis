@@ -197,9 +197,10 @@ PROJECT_ARCHITECT_SYSTEM = """
   "files": [
     {"path": "<относительный путь>", "purpose": "<зачем этот файл>", "depends_on": ["<другой файл или 'stdlib'>"]}
   ],
+  "pip_requirements": ["<имя_пакета>", "<имя_пакета==1.2>", "..."],
   "build_steps": [
     {"step": 1, "kind": "create_file" | "install_dep" | "run_test" | "smoke_run",
-     "target": "<путь или команда>", "description": "<что делаем>"}
+     "target": "<путь или имя_пакета>", "description": "<что делаем>"}
   ],
   "tests": [
     {"name": "<имя теста>", "command": "<команда запуска>", "expects": "<ожидаемый признак успеха>"}
@@ -210,8 +211,12 @@ PROJECT_ARCHITECT_SYSTEM = """
 - files: 1–10 файлов. Минимум один — entry point.
 - Не используй внешние сервисы и облачные API — всё локально.
 - Зависимости — только из стандартной библиотеки если возможно.
-- Если требуется внешняя зависимость — добавь шаг install_dep с pip.
+- Если в коде используется ЛЮБОЙ внешний пакет (feedparser, requests, click и т.п.) — ОБЯЗАТЕЛЬНО перечисли его в pip_requirements (без префикса pip install, только имя пакета и опциональная версия).
+- pip_requirements может быть пустым массивом [] если используется только stdlib.
+- В build_steps[install_dep].target пиши ТОЛЬКО имя пакета (например "feedparser"), НЕ команду "pip install -r requirements.txt" и НЕ путь к файлу.
+- Если в files есть requirements.txt — он должен содержать ровно те же пакеты что и pip_requirements (по одному на строку).
 - tests: минимум 1 smoke-тест который запускает entry point и проверяет вывод.
+- Команды тестов запускаются через python venv-проекта автоматически — пиши "python main.py", venv подставится сам.
 """.strip() + "\n"
 
 PROJECT_CODER_SYSTEM = """
