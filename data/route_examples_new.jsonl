@@ -1,0 +1,23 @@
+{"text": "открой гуглевоз
+", "route": "tool", "tool": "browser.open", "tool_args": {"url": "https://google.com"}, "filler": "Открываю…"}
+{"text": "открой сайт youtube", "route": "tool", "tool": "browser.open", "tool_args": {"url": "https://youtube.com"}, "filler": ""}
+{"text": "поищи в браузере openai", "route": "tool", "tool": "browser.search", "tool_args": {"query": "openai"}, "filler": "Ищу…"}
+{"text": "найди в браузере python tutorial", "route": "tool", "tool": "browser.search", "tool_args": {"query": "python tutorial"}, "filler": ""}
+{"text": "почитай файл requirements.txt", "route": "tool", "tool": "file.read", "tool_args": {"path": "requirements.txt"}, "filler": "Читаю…"}
+{"text": "открой файл readme", "route": "tool", "tool": "file.read", "tool_args": {"path": "README.md"}, "filler": ""}
+{"text": "что в папке desktop", "route": "tool", "tool": "file.list", "tool_args": {"path": "~/Desktop"}, "filler": "Проверяю…"}
+{"text": "покажи содержимое папки документы", "route": "tool", "tool": "file.list", "tool_args": {"path": "~/Documents"}, "filler": ""}
+{"text": "найди все py файлы в проекте", "route": "tool", "tool": "file.search", "tool_args": {"root": "C:\\jarvis", "pattern": "*.py"}, "filler": "Ищу…"}
+{"text": "запусти блокнот
+", "route": "tool", "tool": "app.launch", "tool_args": {"command": "notepad"}, "filler": "Запускаю…"}
+{"text": "открой калькулятор", "route": "tool", "tool": "app.launch", "tool_args": {"command": "calc"}, "filler": ""}
+{"text": "какие процессы запущены", "route": "tool", "tool": "app.list", "tool_args": {}, "filler": "Проверяю…"}
+{"text": "какое окно активно", "route": "tool", "tool": "app.active_window", "tool_args": {}, "filler": ""}
+{"text": "что в буфере обмена", "route": "tool", "tool": "clipboard.get", "tool_args": {}, "filler": "Читаю…"}
+{"text": "скопируй в буфер обмена привет мир", "route": "tool", "tool": "clipboard.set", "tool_args": {"text": "привет мир"}, "filler": ""}
+{"text": "найди новости про искусственный интеллект и запиши в файл", "route": "plan", "tool": null, "tool_args": {}, "filler": "Составляю план…"}
+{"text": "прочитай файл readme и кратко перескажи суть", "route": "plan", "tool": null, "tool_args": {}, "filler": "Читаю…"}
+{"text": "найди цену биткоина и открой график в браузере", "route": "plan", "tool": null, "tool_args": {}, "filler": "Сейчас сделаю…"}
+{"text": "скачай страницу и сохрани текст в файл", "route": "plan", "tool": null, "tool_args": {}, "filler": "Сейчас сделаю…"}
+{"text": "посмотри погоду и курс доллара сразу", "route": "plan", "tool": null, "tool_args": {}, "filler": "Сейчас узнаю…"}
+{"text": "сделай несколько действий подряд", "route": "plan", "tool": null, "tool_args": {}, "filler": "Составляю план…"}
