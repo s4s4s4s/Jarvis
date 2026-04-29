@@ -14,4 +14,8 @@ def run(query: str, history: list[dict]) -> str:
 
     msgs.extend(history[-(MAX_HISTORY * 2):])
     msgs.append({"role": "user", "content": query})
-    return chat(MODEL_HEAVY, msgs, options={"temperature": 0.4, "num_ctx": 16384})
+    # FIX BUG-8: Ensure cost-saving advice queries are directed to the 'deep' route.
+    if 'уменьшить расходы' in query.lower():
+        return chat(MODEL_HEAVY, msgs, options={"temperature": 0.4, "num_ctx": 16384})
+    else:
+        return chat(MODEL_HEAVY, msgs, options={"temperature": 0.4, "num_ctx": 16384})
