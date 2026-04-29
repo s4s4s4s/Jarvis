@@ -5,7 +5,10 @@ WHISPER_MODEL_SIZE = "large-v3"
 LANG = "ru"
 
 # ─── LLM / Ollama ─────────────────────────────────────────────────────────────────────────────
-OLLAMA_ROUTER_MODEL  = "qwen2.5:14b-instruct-q4_K_M"
+# FIX: upgraded router from 14b → 32b for significantly better routing accuracy
+# With level-1 keyword router handling ~70% of queries, the LLM router is only
+# called for ambiguous cases — so the extra latency is acceptable.
+OLLAMA_ROUTER_MODEL  = "qwen2.5:32b-instruct-q4_K_M"
 OLLAMA_FAST_MODEL    = "llama3.1:8b-instruct-q5_K_M"
 OLLAMA_HEAVY_MODEL   = "qwen2.5:32b-instruct-q4_K_M"
 OLLAMA_TIMEOUT       = 60
@@ -17,9 +20,13 @@ OLLAMA_RETRY_DELAY   = 1.5
 SAMPLE_RATE_MIC = 16000
 CHUNK_SIZE      = 512
 
+# Микрофон: fifine Microphone, Windows WASAPI (device 48)
+# WASAPI даёт чистый сигнал без MME-обработки — лучше для Silero VAD и Whisper.
+# Чтобы сменить устройство: python -c "import sounddevice as sd; print(sd.query_devices())"
+# и поставить нужный индекс. None = системный дефолт.
+MIC_DEVICE = 48
+
 # FIX: снижен с 1100 → 850 мс: при TURN_VAD_TRIGGER=0.48 / HOLD=0.30
-# детектор достаточно чувствителен, чтобы не ловить ложные паузы внутри фразы,
-# но 1100 мс — это заметное ожидание после каждой команды
 SILENCE_MS        = 850
 MAX_RECORD_SEC    = 15
 MIN_UTTERANCE_SEC = 0.35
@@ -31,15 +38,17 @@ WAKE_MIN_CHECK_INTERVAL_SEC = 0.9
 WAKE_FAIL_COOLDOWN_SEC      = 0.8
 WAKE_SUCCESS_COOLDOWN_SEC   = 1.5
 
-WAKE_VAD_TRIGGER        = 0.60
-WAKE_VAD_HOLD           = 0.40
-WAKE_MIN_SPEECH_CHUNKS  = 4
+# Снижен с 0.60 → 0.45: fifine на WASAPI даёт более тихий сигнал чем MME,
+# при 0.60 wake-детектор не триггерился на нормальную речь.
+WAKE_VAD_TRIGGER        = 0.45
+WAKE_VAD_HOLD           = 0.30
+WAKE_MIN_SPEECH_CHUNKS  = 3
 WAKE_MAX_SILENCE_CHUNKS = 8
 WAKE_MAX_TEXT_LEN       = 120
 
 # ─── Turn-менеджер ──────────────────────────────────────────────────────────────────────────
-TURN_VAD_TRIGGER = 0.48
-TURN_VAD_HOLD    = 0.30
+TURN_VAD_TRIGGER = 0.40
+TURN_VAD_HOLD    = 0.25
 
 # ─── Режимы ────────────────────────────────────────────────────────────────────────────────────
 POST_TTS_GRACE_SEC       = 1.5

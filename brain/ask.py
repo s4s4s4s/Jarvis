@@ -3,13 +3,16 @@ from __future__ import annotations
 import atexit
 import json
 import logging
+import re
+import threading
 import time
 from dataclasses import dataclass, field
-from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from typing import Any, Callable
 
 from brain.client import chat, MODEL_ROUTER, MODEL_FAST
-from brain.prompts import ROUTER_SYSTEM, TOOL_FORMAT_SYSTEM
+from brain.prompts import ROUTER_SYSTEM
+from brain.prompts import TOOL_FORMAT_SYSTEM
 from brain import history as hist
 from brain.logger import log_route
 
@@ -18,32 +21,114 @@ atexit.register(lambda: _executor.shutdown(wait=False, cancel_futures=True))
 
 logger = logging.getLogger(__name__)
 
-# Константы для фоллбэк-сообщений (используются только если Ollama недоступна)
-_CTX_TIMEOUT    = "получение ответа"
-_TOOL_TIMEOUT   = "get_answer"
+_FALLBACK_TIMEOUT_MSG = "Сэр, не удалось получить ответ вовремя."
 _FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
+
+_ROUTE_TIMEOUTS: dict[str, float] = {
+    "test":     1800.0,
+    "plan":      600.0,
+    "code":      300.0,
+    "deep":      300.0,
+    "analyze":   600.0,
+    "develop":   600.0,
+    "extend":    300.0,
+}
+_DEFAULT_TIMEOUT = 120.0
+
+_VOICE_TRUNCATE_TOOLS = {
+    "auditor.self",
+    "auditor.run",
+    "file.read",
+    "file.list",
+    "git.diff",
+    "git.status",
+    "code.run",
+    "code.run_file",
+    "code.test",
+    "self_test",
+    "self_analysis",
+    "develop",
+    "extend",
+}
+
+_VOICE_MAX_CHARS = 220
+_ROUTER_HISTORY_TURNS = 6
+
+# FIX: routes where memory extraction is skipped (tool results have no personal data)
+_NO_MEMORY_ROUTES = frozenset({"tool", "git"})
+
+_tl = threading.local()
+
+
+def report_progress(msg: str) -> None:
+    """Call from any agent running inside ask_llm thread to push a live update."""
+    cb = getattr(_tl, "progress_cb", None)
+    if cb is not None:
+        try:
+            cb(msg)
+        except Exception:
+            pass
 
 
 @dataclass
 class AskResult:
     filler: str = ""
-    _future: Future | None = field(default=None, repr=False)
-    _answer: str = field(default="", repr=False)
+    _text:        str   = field(default="", repr=False)
+    _future:      Future | None = field(default=None, repr=False)
+    _answer:      str   = field(default="", repr=False)
+    _voice_reply: str   = field(default="", repr=False)
+    _timeout:     float = field(default=_DEFAULT_TIMEOUT, repr=False)
+    on_progress:  Callable[[str], None] | None = field(default=None, repr=False)
 
-    def get_answer(self, timeout: float = 120.0) -> str:
+    def get_answer(self, timeout: float | None = None) -> str:
+        effective = timeout if timeout is not None else self._timeout
         if self._future is not None:
             try:
-                self._answer = self._future.result(timeout=timeout)
+                self._answer, self._voice_reply = self._future.result(timeout=effective)
+            except FutureTimeoutError:
+                logger.error(
+                    "[ask] Future timed out after %.0fs for: %.80s",
+                    effective, self._text,
+                )
+                self._answer = _FALLBACK_TIMEOUT_MSG
+                self._voice_reply = _FALLBACK_TIMEOUT_MSG
             except Exception as e:
-                self._answer = _format_tool_error(_CTX_TIMEOUT, _TOOL_TIMEOUT, str(e))
+                logger.error(
+                    "[ask] Future error (%s): %r  query=%.80s",
+                    type(e).__name__, e, self._text,
+                )
+                self._answer = _FALLBACK_TIMEOUT_MSG
+                self._voice_reply = _FALLBACK_TIMEOUT_MSG
             self._future = None
         return self._answer
 
+    def get_voice_reply(self, timeout: float | None = None) -> str:
+        if self._future is not None:
+            self.get_answer(timeout=timeout)
+        return self._voice_reply or self._answer
 
-def _route(text: str) -> dict[str, Any]:
+
+def _route(text: str, history: list[dict]) -> dict[str, Any]:
+    # Level-1: instant keyword router — no LLM needed for ~70% of queries
+    try:
+        from brain.router_keywords import fast_route
+        fast = fast_route(text)
+        if fast is not None:
+            logger.debug("[ask] fast_route matched: %s", fast.get("reason", ""))
+            return fast
+    except Exception as e:
+        logger.warning("[ask] fast_route error (non-fatal): %s", e)
+
+    # Level-2: LLM router for ambiguous cases
+    recent = history[-_ROUTER_HISTORY_TURNS:] if history else []
+    history_msgs = [
+        {"role": m["role"], "content": m["content"][:800]}
+        for m in recent
+    ]
     msgs = [
         {"role": "system", "content": ROUTER_SYSTEM},
-        {"role": "user", "content": text},
+        *history_msgs,
+        {"role": "user",   "content": text},
     ]
     raw = chat(MODEL_ROUTER, msgs, options={"temperature": 0.0, "num_ctx": 4096})
     raw = raw.strip()
@@ -56,20 +141,48 @@ def _route(text: str) -> dict[str, Any]:
     except (json.JSONDecodeError, ValueError):
         data = {}
     return {
-        "route": data.get("route", "chat"),
-        "tool": data.get("tool"),
-        "tool_args": data.get("tool_args") or {},
+        "route":      data.get("route", "chat"),
+        "tool":       data.get("tool"),
+        "tool_args":  data.get("tool_args") or {},
         "confidence": data.get("confidence", 0.0),
-        "filler": data.get("filler") or "",
-        "reason": data.get("reason") or "",
+        "filler":     data.get("filler") or "",
+        "reason":     data.get("reason") or "",
     }
 
 
-def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
-    """LLM генерирует естественный ответ об ошибке инструмента.
+def _trim_for_voice(answer: str, tool_name: str | None) -> str:
+    text = answer
+    text = re.sub(r"```[\s\S]*?```", "", text)
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.M)
+    text = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", text)
+    text = re.sub(r"^[-*+]\s+", "", text, flags=re.M)
+    text = re.sub(r"\|[^\n]+", "", text)
+    text = re.sub(r"\n{2,}", " ", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
 
-    Fallback на константу _FALLBACK_ERROR только если Ollama недоступна.
-    """
+    if not text:
+        text = re.sub(r"[`*#|\n]", " ", answer).strip()
+        return text[:120].strip()
+
+    if tool_name in _VOICE_TRUNCATE_TOOLS or len(text) > _VOICE_MAX_CHARS:
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        result = ""
+        for i, sent in enumerate(sentences):
+            candidate = (result + " " + sent).strip() if result else sent
+            if i >= 2 or len(candidate) > _VOICE_MAX_CHARS:
+                if not result:
+                    result = candidate[:_VOICE_MAX_CHARS].rstrip() + "..."
+                break
+            result = candidate
+        text = result or text[:_VOICE_MAX_CHARS].rstrip() + "..."
+
+    if len(text) > _VOICE_MAX_CHARS:
+        text = text[:_VOICE_MAX_CHARS].rstrip() + "..."
+
+    return text
+
+
+def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
     msgs = [
         {"role": "system", "content": TOOL_FORMAT_SYSTEM},
         {"role": "user", "content": (
@@ -82,7 +195,7 @@ def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
     try:
         return chat(MODEL_FAST, msgs, options={"temperature": 0.3, "num_ctx": 4096})
     except Exception as e:
-        logger.error(f"LLM error in _format_tool_error for tool '{tool_name}': {e}")
+        logger.error("LLM error in _format_tool_error for tool '%s': %s", tool_name, e)
         return _FALLBACK_ERROR.format(error=error)
 
 
@@ -116,49 +229,92 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> str
         from brain.agents.memory_agent import run as memory_run
         return memory_run(text, history)
 
+    if route == "code":
+        from brain.agents.code_agent import run as code_run
+        return code_run(text, history)
+
+    if route == "plan":
+        from brain.agents.plan_agent import run as plan_run
+        return plan_run(text, history)
+
+    if route == "test":
+        from brain.agents.self_test_agent import run as self_test_run
+        return self_test_run(text, history)
+
+    if route == "analyze":
+        from brain.agents.self_analysis_agent import run as analyze_run
+        return analyze_run(text, history)
+
+    if route == "develop":
+        from brain.agents.code_dev_agent import run as develop_run
+        return develop_run(text, history)
+
+    if route == "extend":
+        from brain.agents.self_extend_agent import run as extend_run
+        return extend_run(text, history)
+
     from brain.agents.chat import run as chat_run
     return chat_run(text, history)
 
 
-def ask_llm(text: str) -> AskResult:
+def ask_llm(
+    text: str,
+    on_progress: Callable[[str], None] | None = None,
+) -> AskResult:
     history = hist.snapshot()
     hist.append("user", text)
 
     t_route0 = time.monotonic()
     try:
-        route_data = _route(text)
+        route_data = _route(text, history)
     except Exception as e:
         route_data = {
-            "route": "chat",
-            "tool": None,
-            "tool_args": {},
+            "route":      "chat",
+            "tool":       None,
+            "tool_args":  {},
             "confidence": 0.0,
-            "filler": "",
-            "reason": f"router error: {e}",
+            "filler":     "",
+            "reason":     f"router error: {e}",
         }
     route_ms = int((time.monotonic() - t_route0) * 1000)
 
-    result = AskResult(filler=route_data.get("filler", ""))
+    route = route_data["route"]
+    timeout = _ROUTE_TIMEOUTS.get(route, _DEFAULT_TIMEOUT)
+    result = AskResult(
+        filler=route_data.get("filler", ""),
+        _text=text,
+        _timeout=timeout,
+        on_progress=on_progress,
+    )
+    tool_name = route_data.get("tool")
 
-    def _run() -> str:
-        t0 = time.monotonic()
-        answer = _dispatch(route_data, text, history)
-        elapsed_ms = int((time.monotonic() - t0) * 1000)
-        hist.append("assistant", answer)
-        log_route(
-            text=text,
-            route=route_data["route"],
-            tool=route_data.get("tool"),
-            confidence=route_data.get("confidence", 0.0),
-            reason=route_data.get("reason", ""),
-            answer_ms=elapsed_ms + route_ms,
-        )
+    def _run() -> tuple[str, str]:
+        _tl.progress_cb = on_progress
         try:
-            from tools.memory import extract_and_save_async
-            extract_and_save_async(text, answer)
-        except Exception as e:
-            logger.error(f"Memory extraction failed: {e}")
-        return answer
+            t0 = time.monotonic()
+            answer = _dispatch(route_data, text, history)
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            hist.append("assistant", answer)
+            log_route(
+                text=text,
+                route=route,
+                tool=tool_name,
+                confidence=route_data.get("confidence", 0.0),
+                reason=route_data.get("reason", ""),
+                answer_ms=elapsed_ms + route_ms,
+            )
+            # FIX: pass route to extract_and_save_async so tool/git routes are skipped
+            try:
+                from tools.memory import extract_and_save_async
+                extract_and_save_async(text, answer, route=route)
+            except Exception as e:
+                logger.error("Memory extraction failed: %s", e)
+
+            voice_reply = _trim_for_voice(answer, tool_name)
+            logger.debug("[ask] voice_reply (%d chars): %s", len(voice_reply), voice_reply[:80])
+            return answer, voice_reply
+        finally:
+            _tl.progress_cb = None
 
     result._future = _executor.submit(_run)
     return result

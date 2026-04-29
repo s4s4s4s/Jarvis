@@ -15,7 +15,7 @@
 | GUI | PySide6 |
 | Аудио | sounddevice + numpy, tap-система через AudioCore |
 | Поиск | DuckDuckGo (`duckduckgo-search`) |
-| Память | JSON-файл `C:/jarvis/data/memory.json`, async извлечение фактов через LLM |
+| Память | JSON-файл `C:\Jarvis\data\memory.json`, async извлечение фактов через LLM |
 
 ### Модели Ollama
 
@@ -39,13 +39,17 @@ app.py
         └── voice/tts.py          # Edge TTS streaming + interrupt-listener
 
 brain/ask.py                      # ask_llm(text) → AskResult(filler, Future[answer])
-  ├── brain/client.py             # ollama.Client, retry-логика, MODEL_* алиасы
+  ├── brain/client.py             # dual-backend: Ollama (serial) / llama-server (parallel)
   ├── brain/router.py             # parse_router_response() — legacy, не используется активно
   ├── brain/prompts.py            # ROUTER_SYSTEM, CHAT_SYSTEM, DEEP_SYSTEM,
   │                               # MEMORY_SYSTEM, TOOL_FORMAT_SYSTEM, WEB_SYSTEM
   ├── brain/history.py            # история диалога: snapshot / append / clear
   ├── brain/logger.py             # router.jsonl лог каждого роута
+  ├── brain/llama_server.py       # LlamaServerManager — старт/стоп llama-server.exe
   └── brain/agents/
+        ├── executor.py           # async Executor: параллельные + серийные задачи
+        ├── planner.py            # PlannerAgent — создаёт план задач из запроса
+        ├── types.py              # датаклассы Task
         ├── chat.py               # chat-агент + get_memory_context() в каждый turn
         ├── deep.py               # deep-агент (развёрнутые ответы)
         ├── memory_agent.py       # отвечает на вопросы о пользователе
@@ -130,6 +134,43 @@ data/                             # memory.json  (в .gitignore)
 
 ## Установка и запуск
 
+### Быстрый старт
+
+```powershell
+# 1. Клонировать репозиторий
+git clone https://github.com/s4s4s4s/Jarvis.git C:\Jarvis
+cd C:\Jarvis
+
+# 2. Переключиться на рабочую ветку
+git checkout feature/planner-agent
+
+# 3. Создать venv и поставить зависимости
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+# 4. Убедиться что Ollama запущена
+ollama list
+
+# 5. Запустить Jarvis
+python app.py
+```
+
+### Запуск агентного пайплайна (PlannerAgent + Executor)
+
+```powershell
+cd C:\Jarvis
+.venv\Scripts\activate
+
+# Параллельный режим (запускает llama-server, нужен C:\llama-server\llama-server.exe)
+python -m brain.agents.executor "напиши функцию сортировки пузырьком и функцию бинарного поиска"
+
+# Без параллелизма — только Ollama
+python -m brain.agents.executor --no-parallel "твой запрос"
+```
+
+### deploy.ps1 (альтернатива)
+
 ```powershell
 # Первый запуск — создаёт venv, ставит зависимости, пушит и запускает
 .\deploy.ps1 -msg "init"
@@ -149,16 +190,52 @@ data/                             # memory.json  (в .gitignore)
 
 ---
 
-## Пути и данные
+## Параллельное выполнение задач (llama-server)
 
-Все рабочие файлы хранятся в `C:\jarvis\`:
+Для параллельного выполнения независимых задач пайплайна используется `llama-server.exe` из llama.cpp.
+
+### Установка llama-server
+
+1. Скачать архивы:
+   - `llama-b8946-bin-win-cuda-12.4-x64.zip`
+   - `cudart-llama-bin-win-cuda-12.4-x64.zip`
+2. Распаковать **оба** в `C:\llama-server\`
+3. Убедиться что `C:\llama-server\llama-server.exe` существует
+
+### Переменные окружения (опционально)
+
+Если пути отличаются от дефолтных — задать перед запуском:
+
+```powershell
+$env:LLAMA_SERVER_EXE   = "C:\llama-server\llama-server.exe"
+$env:LLAMA_SERVER_MODEL = "C:\Users\Genn_\.ollama\models\blobs\sha256-eabc98a9bcbfce7fd70f3e07de599f8fda98120fefed5881934161ede8bd1a41"
+```
+
+### Как работает
 
 ```
-C:\jarvis\
+Executor.run(tasks)
+  ├── independent tasks (depends_on=[])  →  asyncio.gather  →  llama-server :8080  (параллельно)
+  └── dependent tasks   (depends_on=[…]) →  serial          →  Ollama        :11434
+```
+
+Сервер запускается автоматически перед параллельной волной и убивается сразу после — VRAM освобождается.
+
+---
+
+## Пути и данные
+
+Репозиторий клонируется в `C:\Jarvis\`. Все рабочие файлы:
+
+```
+C:\Jarvis\
   data\memory.json       # долгосрочная память (в .gitignore)
   logs\router.jsonl      # лог всех роутов (в .gitignore)
   _tts_chunks\           # временные mp3-чанки TTS (создаётся автоматически)
   assets\                # звуки и референсный wav
+
+C:\llama-server\         # llama-server.exe + CUDA DLL
+C:\Users\Genn_\.ollama\models\blobs\  # GGUF-блобы моделей
 ```
 
 ---
@@ -171,3 +248,4 @@ C:\jarvis\
 - **Таймеры:** `tools/timer.py` использует `threading.Timer`; при срабатывании вызывает `say()` напрямую; `cancel_all()` вызывается при shutdown в `assistant.py`
 - **TTS прерывание:** если пользователь заговорил во время ответа — `interrupt-listener` в `tts.py` глушит TTS, дособирает фразу и возвращает audio в `assistant.py` как `pending_audio`
 - **brain/router.py:** legacy-файл с `parse_router_response()`, реальный роутинг делает `brain/ask.py → _route()`
+- **llama-server backend:** `brain/client.py` содержит `set_backend("llama" | "ollama")` — Executor переключается автоматически; модель фиксирована при запуске сервера, параметр `model` игнорируется

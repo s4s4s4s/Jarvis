@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from duckduckgo_search import DDGS
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS  # fallback for old installs
 
 _SEARCH_TIMEOUT = 10  # секунд — защита от зависания DDG
 

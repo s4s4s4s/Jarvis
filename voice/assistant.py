@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Callable, Optional
 
 from core.config import CHUNK_SIZE, POST_TTS_GRACE_SEC, IDLE_TIMEOUT_SEC
@@ -15,8 +16,43 @@ _running_lock = threading.Lock()
 _is_running = False
 
 
+def _speak_turn(
+    ask_result,
+    stop_event,
+    audio_core,
+    on_assistant_text: Optional[Callable[[str], None]] = None,
+    log_fn: Optional[Callable[[str], None]] = None,
+    set_state: Optional[Callable] = None,
+) -> Optional[object]:
+    def _log(msg): log_fn and log_fn(msg)
+    def _state(s): set_state and set_state(s)
+
+    answer = ask_result.get_answer()  # uses ask_result._timeout
+    if not answer:
+        _log("[assistant] LLM вернул пустой ответ.")
+        return None
+
+    voice_reply = ask_result.get_voice_reply()
+
+    _log(f"[assistant] Chat: {answer[:120]}{'...' if len(answer) > 120 else ''}")
+    if on_assistant_text:
+        try:
+            on_assistant_text(answer)
+        except Exception:
+            pass
+
+    _log(f"[assistant] TTS: {voice_reply}")
+    _state(AssistantState.SPEAKING)
+    return tts.speak_and_handle(
+        voice_reply,
+        stop_event=stop_event,
+        audio_core=audio_core,
+    )
+
+
 def main(
     stop_event: Optional[threading.Event] = None,
+    mute_event: Optional[threading.Event] = None,
     on_state: Optional[Callable] = None,
     on_user_text: Optional[Callable[[str], None]] = None,
     on_assistant_text: Optional[Callable[[str], None]] = None,
@@ -31,6 +67,8 @@ def main(
 
     if stop_event is None:
         stop_event = threading.Event()
+    if mute_event is None:
+        mute_event = threading.Event()  # never set = always listening
 
     def _log(msg: str) -> None:
         print(msg)
@@ -53,19 +91,14 @@ def main(
             return
 
         _log("[assistant] Ollama доступна.")
-
-        # ── Инициализация: загружаем всё ДО старта любых циклов ─────────
         _log("[assistant] Инициализация моделей...")
         import numpy as np
         from voice.stt import vad_prob
-        vad_prob(np.zeros(512, dtype="float32"))  # триггерит _ensure_models()
+        vad_prob(np.zeros(512, dtype="float32"))
         if stop_event.is_set():
             return
         _log("[assistant] Модели готовы.")
 
-        # FIX: подключаем TTS-callback для таймеров
-        # Используем замыкание на stop_event чтобы таймер не говорил
-        # когда ассистент уже остановлен
         from tools.timer import set_fire_callback
         set_fire_callback(lambda msg: tts.say(msg, stop_event=stop_event))
         _log("[assistant] Timer TTS callback установлен.")
@@ -86,18 +119,36 @@ def main(
                 except Empty:
                     continue
 
+        _was_muted = False
+
         while not stop_event.is_set():
+            # ---- Mute check ----
+            if mute_event.is_set():
+                if not _was_muted:
+                    _log("[assistant] Микрофон отключён. Ожидаю разблокировку...")
+                    _state(AssistantState.IDLE)
+                    _was_muted = True
+                mute_event.wait(timeout=0.3)
+                continue
+            if _was_muted:
+                _log("[assistant] Микрофон включён. Снова слушаю...")
+                _was_muted = False
+
+            # ---- Wake-word ----
             _state(AssistantState.IDLE)
             wake_tap = audio_core.create_tap(pre_roll=False)
             _log("[assistant] Жду wake-word...")
             woke = False
             for chunk in _chunk_iter(wake_tap):
+                # Break out of wake loop immediately if muted
+                if mute_event.is_set():
+                    break
                 if wake_detector.process_chunk(chunk):
                     woke = True
                     break
             audio_core.remove_tap(wake_tap)
-            if not woke or stop_event.is_set():
-                break
+            if not woke or stop_event.is_set() or mute_event.is_set():
+                continue
 
             _log("[assistant] Wake! Слушаю команду...")
             _state(AssistantState.LISTENING)
@@ -127,11 +178,9 @@ def main(
                     pass
 
             _state(AssistantState.THINKING)
-            ask_result = ask_llm(text)
+            ask_result = ask_llm(text, on_progress=on_assistant_text)
 
             if ask_result.filler:
-                # FIX (audit 5): филлер озвучивался, но не попадал ни в логи,
-                # ни в UI-диалог. Теперь дублируем в _log + on_assistant_text.
                 _log(f"[assistant] Filler: {ask_result.filler}")
                 if on_assistant_text:
                     try:
@@ -142,23 +191,14 @@ def main(
                 tts.say(ask_result.filler, stop_event=stop_event)
 
             _state(AssistantState.THINKING)
-            answer = ask_result.get_answer(timeout=120.0)
-            if not answer:
-                _log("[assistant] LLM вернул пустой ответ.")
-                continue
 
-            _log(f"[assistant] LLM: {answer[:120]}")
-            if on_assistant_text:
-                try:
-                    on_assistant_text(answer)
-                except Exception:
-                    pass
-
-            _state(AssistantState.SPEAKING)
-            interrupted_audio = tts.speak_and_handle(
-                answer,
+            interrupted_audio = _speak_turn(
+                ask_result,
                 stop_event=stop_event,
                 audio_core=audio_core,
+                on_assistant_text=on_assistant_text,
+                log_fn=_log,
+                set_state=_state,
             )
 
             if stop_event.is_set():
@@ -177,9 +217,8 @@ def main(
                         except Exception:
                             pass
                     _state(AssistantState.THINKING)
-                    int_result = ask_llm(int_text)
+                    int_result = ask_llm(int_text, on_progress=on_assistant_text)
                     if int_result.filler:
-                        # FIX (audit 5): филлер также должен попадать в лог/UI
                         _log(f"[assistant] Filler: {int_result.filler}")
                         if on_assistant_text:
                             try:
@@ -189,29 +228,21 @@ def main(
                         _state(AssistantState.SPEAKING)
                         tts.say(int_result.filler, stop_event=stop_event)
                     _state(AssistantState.THINKING)
-                    int_answer = int_result.get_answer(timeout=120.0)
-                    if int_answer:
-                        if on_assistant_text:
-                            try:
-                                on_assistant_text(int_answer)
-                            except Exception:
-                                pass
-                        _state(AssistantState.SPEAKING)
-                        tts.speak_and_handle(
-                            int_answer,
-                            stop_event=stop_event,
-                            audio_core=audio_core,
-                        )
+                    _speak_turn(
+                        int_result,
+                        stop_event=stop_event,
+                        audio_core=audio_core,
+                        on_assistant_text=on_assistant_text,
+                        log_fn=_log,
+                        set_state=_state,
+                    )
             else:
-                import time
                 time.sleep(POST_TTS_GRACE_SEC)
 
     finally:
         with _running_lock:
             _is_running = False
         audio_core.stop()
-        # FIX: отменяем все активные таймеры при завершении ассистента,
-        # чтобы daemon-потоки не пытались вызвать tts.say() после остановки
         try:
             from tools.timer import cancel_all
             cancelled = cancel_all()

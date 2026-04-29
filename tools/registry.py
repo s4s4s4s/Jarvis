@@ -8,6 +8,10 @@ from tools.currency import convert_currency, get_rates
 from tools.time_tool import get_time
 from tools.weather import get_weather
 from tools.timer import set_timer, list_timers, cancel_timer
+from tools.file_ops import read_file, write_file, list_dir
+from tools.executor import run_python, run_file, run_pytest
+from tools.git_ops import git_status, git_diff, git_commit, git_push, git_stash
+from tools.self_audit import self_audit
 from dev.auditor import AuditorAgent
 
 
@@ -64,7 +68,6 @@ _DEFAULT_AUDIT_FILES = [
 
 
 def _call_auditor(files: list[str] | None = None) -> str:
-    """Run AuditorAgent on project files and return a plain-text summary for LLM."""
     targets = files or _DEFAULT_AUDIT_FILES
     agent = AuditorAgent()
     findings = agent.audit(targets)
@@ -72,9 +75,9 @@ def _call_auditor(files: list[str] | None = None) -> str:
     if not findings:
         return "Находок не обнаружено."
 
-    confirmed   = [f for f in findings if f.status == "confirmed"]
+    confirmed    = [f for f in findings if f.status == "confirmed"]
     needs_review = [f for f in findings if f.status == "needs_review"]
-    rejected    = [f for f in findings if f.status == "rejected"]
+    rejected     = [f for f in findings if f.status == "rejected"]
 
     lines = [
         f"Аудит {len(targets)} файл(ов): {len(findings)} находок, "
@@ -100,6 +103,7 @@ def _call_auditor(files: list[str] | None = None) -> str:
 
 
 _TOOL_MAP: dict[str, Any] = {
+    # --- existing ---
     "weather":          _call_weather,
     "crypto.search":    _call_crypto_search,
     "crypto.price":     _call_crypto_price,
@@ -110,6 +114,24 @@ _TOOL_MAP: dict[str, Any] = {
     "timer.list":       _call_timer_list,
     "timer.cancel":     _call_timer_cancel,
     "auditor.run":      _call_auditor,
+    # --- self-audit: Jarvis проверяет себя ---
+    "auditor.self":     lambda dirs=None, confidence_threshold=0.5: self_audit(
+                            dirs=dirs, confidence_threshold=confidence_threshold
+                        ),
+    # --- phase 1: file ops ---
+    "file.read":        lambda path: read_file(path),
+    "file.write":       lambda path, content: write_file(path, content),
+    "file.list":        lambda path=".": list_dir(path),
+    # --- phase 1: code execution ---
+    "code.run":         lambda code, cwd=None: run_python(code, cwd),
+    "code.run_file":    lambda path, args=None: run_file(path, args),
+    "code.test":        lambda path=".": run_pytest(path),
+    # --- phase 1: git ---
+    "git.status":       git_status,
+    "git.diff":         lambda path=None: git_diff(path),
+    "git.commit":       lambda message, add_all=True: git_commit(message, add_all),
+    "git.push":         git_push,
+    "git.stash":        lambda message="": git_stash(message),
 }
 
 

@@ -17,6 +17,9 @@ voxcpm
 # LLM
 ollama
 
+# HTTP (llama-server client + async inference)
+httpx
+
 # Tools
 requests
 duckduckgo-search

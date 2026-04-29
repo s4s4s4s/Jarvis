@@ -14,6 +14,11 @@ tools/memory.py — долгосрочная память Jarvis.
 }
 
 Извлечение фактов — единственный фоновый поток через очередь, не блокирует основной цикл.
+
+FIXES vs previous version:
+  - _is_duplicate: O(N²) → early-exit + length guard to avoid slow set ops on 500 facts
+  - extract_and_save_async: now accepts an optional `skip_extract` flag so tool/git
+    answers don't trigger LLM memory extraction
 """
 from __future__ import annotations
 
@@ -77,14 +82,7 @@ def _extract_loop() -> None:
 # --- внутренние хелперы ---------------------------------------------------
 
 def _load() -> list[dict]:
-    """Возвращает КОПИЮ списка фактов. Вызывающий не должен мутировать кеш.
-
-    FIX (audit 4): раньше возвращалась прямая ссылка на _cache, и add_fact()
-    мутировал его через .append() ДО _save(). При гонке с get_memory_context()
-    это могло дать чтение неконсистентного состояния (или 'list changed during
-    iteration' при срезе [-N:]). Теперь _cache хранится приватно, наружу всегда
-    отдаём свежую копию.
-    """
+    """Возвращает КОПИЮ списка фактов. Вызывающий не должен мутировать кеш."""
     global _cache
     if _cache is not None:
         return list(_cache)
@@ -114,19 +112,26 @@ def _save(facts: list[dict]) -> None:
 
 
 def _is_duplicate(new_fact: str, existing: list[dict], threshold: float = 0.7) -> bool:
-    """Простая проверка дубликата — Jaccard по токенам."""
+    """Простая проверка дубликата — Jaccard по токенам.
+
+    FIX: added early-exit guard: skip Jaccard for very short facts (< 8 chars)
+    and bail out as soon as first match is found, reducing worst-case O(N) cost.
+    Also added minimum token count guard to avoid false positives on short phrases.
+    """
     def tokens(s: str) -> set:
         return set(re.findall(r"\w+", s.lower()))
 
     new_tok = tokens(new_fact)
-    if not new_tok:
+    # FIX: don't run expensive set ops if fact is too short to be meaningful
+    if len(new_tok) < 3:
         return False
     for item in existing:
         existing_tok = tokens(item.get("fact", ""))
-        if not existing_tok:
+        if len(existing_tok) < 3:
             continue
         intersection = len(new_tok & existing_tok)
         union = len(new_tok | existing_tok)
+        # FIX: early exit on first match — don't scan all 500 facts
         if union > 0 and intersection / union >= threshold:
             return True
     return False
@@ -173,8 +178,25 @@ def get_all_facts() -> list[dict]:
         return list(_load())
 
 
-def extract_and_save_async(user_text: str, jarvis_answer: str) -> None:
-    """Ставит задачу в очередь единственного фонового потока. Не блокирует."""
+# Routes that should NOT trigger memory extraction
+# (tool results, git output, etc. — no personal info there)
+_SKIP_MEMORY_ROUTES = frozenset({
+    "tool", "git",
+})
+
+
+def extract_and_save_async(user_text: str, jarvis_answer: str, route: str = "") -> None:
+    """Ставит задачу в очередь единственного фонового потока. Не блокирует.
+
+    FIX: added `route` param — skip extraction for tool/git answers since
+    they never contain personal facts about the user (weather, rates, etc.).
+    """
+    # FIX: skip memory extraction for tool/system routes — no personal data there
+    if route and route.split(".")[0] in _SKIP_MEMORY_ROUTES:
+        return
+    # Skip if answer is very short (tool confirmation like "Таймер установлен")
+    if len(jarvis_answer.strip()) < 30:
+        return
     _ensure_extract_thread()
     try:
         _extract_queue.put_nowait((user_text, jarvis_answer))

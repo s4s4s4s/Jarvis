@@ -1,0 +1,70 @@
+[
+  {
+    "id": "tg-builder",
+    "priority": 1,
+    "status": "pending",
+    "title": "Генератор Telegram-ботов на aiogram 3",
+    "description": "Написать tools/telegram_bot_builder.py с функцией build_bot(spec: dict) -> dict.\n\nspec содержит:\n  type: faq | booking | shop | support\n  niche: строка (например 'ресторан', 'клиника')\n  bot_name: строка\n  features: список строк\n\nВозвращает {ok, files: {путь: содержимое}} — готовый aiogram 3 проект:\n  bot.py, handlers/<feature>.py, config.py, requirements.txt, README.md",
+    "acceptance_criteria": [
+      "Функция build_bot(spec) возвращает {ok: true, files: {...}}",
+      "Для spec с type=faq создаёт минимум 3 хендлера",
+      "Все строки ответов — через константы, не хардкод",
+      "Токен берётся из BOT_TOKEN env-переменной",
+      "Проходит tests/test_bot_builder.py (3 тест-кейса)"
+    ],
+    "tools_needed": ["file.write", "code.run", "code.test"]
+  },
+  {
+    "id": "deployer-railway",
+    "priority": 2,
+    "status": "pending",
+    "title": "Деплой проекта на Railway через CLI",
+    "description": "Написать tools/deployer.py с функцией deploy_to_railway(project_path, project_name) -> dict.\nИспользует railway CLI. Токен из RAILWAY_TOKEN env-переменной. Возвращает {ok, url, output}.",
+    "acceptance_criteria": [
+      "deploy_to_railway возвращает {ok, url, output}",
+      "Если railway CLI не найден — возвращает понятную ошибку",
+      "Токен берётся из RAILWAY_TOKEN, не хардкодится"
+    ],
+    "tools_needed": ["file.write", "code.run"]
+  },
+  {
+    "id": "project-scaffold",
+    "priority": 3,
+    "status": "pending",
+    "title": "Скаффолдинг файловой структуры проекта по шаблону",
+    "description": "Написать tools/scaffolder.py. Функция scaffold(template: str, target_dir: str, context: dict) -> dict.\nШаблоны: 'aiogram-bot', 'fastapi-service', 'cli-tool'. Генерирует дерево файлов с подстановкой context-переменных.",
+    "acceptance_criteria": [
+      "scaffold('aiogram-bot', ...) создаёт не менее 5 файлов",
+      "context-переменные подставляются через {var_name}",
+      "Возвращает список созданных файлов"
+    ],
+    "tools_needed": ["file.write", "code.test"]
+  },
+  {
+    "id": "test-generator",
+    "priority": 4,
+    "status": "pending",
+    "title": "Авто-генерация pytest-тестов для нового кода",
+    "description": "Написать tools/test_generator.py. Функция generate_tests(source_path: str) -> dict.\nЧитает Python-файл, определяет публичные функции, генерирует базовые pytest-тесты через LLM.",
+    "acceptance_criteria": [
+      "generate_tests возвращает {ok, test_path, test_content}",
+      "Для файла с 3+ функциями генерирует 3+ тест-кейса",
+      "Сгенерированный файл синтаксически валиден (py_compile)"
+    ],
+    "tools_needed": ["file.read", "file.write", "code.run"]
+  },
+  {
+    "id": "self-updater",
+    "priority": 5,
+    "status": "pending",
+    "title": "Агент саморазвития: читает backlog → выполняет → коммитит",
+    "description": "Написать brain/agents/self_updater.py. Функция run_next_task() -> dict.\nЧитает tasks/backlog.json, берёт задачу с наивысшим приоритетом и статусом pending,\nзапускает code_agent, по завершении помечает done и делает git.commit.",
+    "acceptance_criteria": [
+      "run_next_task() находит первую pending-задачу",
+      "После выполнения status меняется на done",
+      "Делает git commit с сообщением 'feat: [id] [title]'",
+      "Возвращает {ok, task_id, summary}"
+    ],
+    "tools_needed": ["file.read", "file.write", "git.commit"]
+  }
+]
