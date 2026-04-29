@@ -1,3 +1,4 @@
+# tools/registry.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,6 +11,12 @@ from tools.weather import get_weather
 from tools.timer import set_timer, list_timers, cancel_timer
 from dev.auditor import AuditorAgent
 
+# Системные инструменты (Level 2)
+from tools.system.files import read_file, write_file, list_dir, search_files, delete_file
+from tools.system.apps import launch_app, kill_app, list_processes, get_active_window
+from tools.system.browser import open_url, search_in_browser, get_page_text
+from tools.system.clipboard import get_clipboard, set_clipboard
+
 
 @dataclass
 class ToolResult:
@@ -18,43 +25,41 @@ class ToolResult:
     error: str = ""
 
 
-def _call_weather(location: str, language: str = "ru") -> Any:
+# ── weather ────────────────────────────────────────────────────────────
+default_location = "Moscow"
+
+def _call_weather(location: str = default_location, language: str = "ru") -> Any:
     return get_weather(location=location, language=language)
 
-
+# ── crypto ────────────────────────────────────────────────────────────
 def _call_crypto_search(query: str) -> Any:
     return search_coin(query=query)
-
 
 def _call_crypto_price(ids: list[str], vs_currency: str = "usd") -> Any:
     return get_crypto_price(ids=ids, vs_currency=vs_currency)
 
-
+# ── currency ──────────────────────────────────────────────────────────
 def _call_currency_rates() -> Any:
     return get_rates()
-
 
 def _call_currency_convert(amount: float, from_code: str, to_code: str) -> Any:
     return convert_currency(amount=amount, from_code=from_code, to_code=to_code)
 
-
+# ── time / timer ──────────────────────────────────────────────────────
 def _call_time() -> Any:
     return get_time()
-
 
 def _call_timer_set(seconds: int, label: str = "таймер") -> Any:
     return set_timer(seconds=seconds, label=label)
 
-
 def _call_timer_list() -> Any:
     return list_timers()
-
 
 def _call_timer_cancel(timer_id: str) -> Any:
     ok = cancel_timer(timer_id)
     return {"cancelled": ok, "id": timer_id}
 
-
+# ── auditor ────────────────────────────────────────────────────────────
 _DEFAULT_AUDIT_FILES = [
     "brain/ask.py",
     "brain/agents/chat.py",
@@ -62,54 +67,107 @@ _DEFAULT_AUDIT_FILES = [
     "tools/registry.py",
 ]
 
-
 def _call_auditor(files: list[str] | None = None) -> str:
-    """Run AuditorAgent on project files and return a plain-text summary for LLM."""
     targets = files or _DEFAULT_AUDIT_FILES
     agent = AuditorAgent()
     findings = agent.audit(targets)
-
     if not findings:
         return "Находок не обнаружено."
-
-    confirmed   = [f for f in findings if f.status == "confirmed"]
+    confirmed    = [f for f in findings if f.status == "confirmed"]
     needs_review = [f for f in findings if f.status == "needs_review"]
-    rejected    = [f for f in findings if f.status == "rejected"]
-
     lines = [
         f"Аудит {len(targets)} файл(ов): {len(findings)} находок, "
-        f"{len(confirmed)} подтверждено, "
-        f"{len(needs_review)} на проверке, "
-        f"{len(rejected)} отклонено.",
-        "",
+        f"{len(confirmed)} подтверждено.", "",
     ]
-
     for f in confirmed:
-        lines.append(f"[ПОДТВЕРЖДЕНО] {f.file}:{f.line} ({f.type}, conf={f.confidence:.2f})")
-        lines.append(f"  Проблема: {f.description}")
-        lines.append(f"  Решение: {f.suggestion}")
-        lines.append("")
-
+        lines += [
+            f"[ПОДТВЕРЖДЕНО] {f.file}:{f.line} ({f.type})",
+            f"  {f.description}", f"  Решение: {f.suggestion}", "",
+        ]
     for f in needs_review:
-        lines.append(f"[ПРОВЕРКА] {f.file}:{f.line} ({f.type}, conf={f.confidence:.2f})")
-        lines.append(f"  Проблема: {f.description}")
-        lines.append(f"  Причина: {f.reject_reason}")
-        lines.append("")
-
+        lines += [
+            f"[ПРОВЕРКА] {f.file}:{f.line} — {f.description}", "",
+        ]
     return "\n".join(lines)
 
+# ── system: files ───────────────────────────────────────────────────────
+def _call_file_read(path: str) -> Any:
+    return read_file(path)
 
+def _call_file_write(path: str, content: str, overwrite: bool = True) -> Any:
+    return write_file(path, content, overwrite=overwrite)
+
+def _call_file_list(path: str = "~", pattern: str = "*") -> Any:
+    return list_dir(path, pattern)
+
+def _call_file_search(root: str = "~", pattern: str = "*.py") -> Any:
+    return search_files(root, pattern)
+
+def _call_file_delete(path: str) -> Any:
+    return delete_file(path)
+
+# ── system: apps ──────────────────────────────────────────────────────────
+def _call_app_launch(command: str, args: list[str] | None = None, wait: bool = False) -> Any:
+    return launch_app(command, args, wait)
+
+def _call_app_kill(name_or_pid: str) -> Any:
+    return kill_app(name_or_pid)
+
+def _call_app_list(filter_name: str = "") -> Any:
+    return list_processes(filter_name)
+
+def _call_app_active_window() -> Any:
+    return get_active_window()
+
+# ── system: browser ─────────────────────────────────────────────────────
+def _call_browser_open(url: str, browser: str = "default") -> Any:
+    return open_url(url, browser)
+
+def _call_browser_search(query: str, engine: str = "google") -> Any:
+    return search_in_browser(query, engine)
+
+def _call_browser_get_text(url: str) -> Any:
+    return get_page_text(url)
+
+# ── system: clipboard ────────────────────────────────────────────────────
+def _call_clipboard_get() -> Any:
+    return get_clipboard()
+
+def _call_clipboard_set(text: str) -> Any:
+    return set_clipboard(text)
+
+
+# ── Главная таблица инструментов ─────────────────────────────────────────
 _TOOL_MAP: dict[str, Any] = {
-    "weather":          _call_weather,
-    "crypto.search":    _call_crypto_search,
-    "crypto.price":     _call_crypto_price,
-    "currency.rates":   _call_currency_rates,
-    "currency.convert": _call_currency_convert,
-    "time":             _call_time,
-    "timer.set":        _call_timer_set,
-    "timer.list":       _call_timer_list,
-    "timer.cancel":     _call_timer_cancel,
-    "auditor.run":      _call_auditor,
+    # Существующие
+    "weather":            _call_weather,
+    "crypto.search":      _call_crypto_search,
+    "crypto.price":       _call_crypto_price,
+    "currency.rates":     _call_currency_rates,
+    "currency.convert":   _call_currency_convert,
+    "time":               _call_time,
+    "timer.set":          _call_timer_set,
+    "timer.list":         _call_timer_list,
+    "timer.cancel":       _call_timer_cancel,
+    "auditor.run":        _call_auditor,
+    # Файлы (Level 2)
+    "file.read":          _call_file_read,
+    "file.write":         _call_file_write,
+    "file.list":          _call_file_list,
+    "file.search":        _call_file_search,
+    "file.delete":        _call_file_delete,
+    # Приложения (Level 2)
+    "app.launch":         _call_app_launch,
+    "app.kill":           _call_app_kill,
+    "app.list":           _call_app_list,
+    "app.active_window":  _call_app_active_window,
+    # Браузер (Level 2)
+    "browser.open":       _call_browser_open,
+    "browser.search":     _call_browser_search,
+    "browser.get_text":   _call_browser_get_text,
+    # Буфер обмена (Level 2)
+    "clipboard.get":      _call_clipboard_get,
+    "clipboard.set":      _call_clipboard_set,
 }
 
 

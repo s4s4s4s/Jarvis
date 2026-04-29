@@ -57,13 +57,13 @@ def _route_llm(text: str) -> dict[str, Any]:
     except (json.JSONDecodeError, ValueError):
         data = {}
     return {
-        "route":     data.get("route", "chat"),
-        "tool":      data.get("tool"),
-        "tool_args": data.get("tool_args") or {},
+        "route":      data.get("route", "chat"),
+        "tool":       data.get("tool"),
+        "tool_args":  data.get("tool_args") or {},
         "confidence": data.get("confidence", 0.0),
-        "filler":    data.get("filler") or "",
-        "reason":    data.get("reason") or "",
-        "_source":   "llm",
+        "filler":     data.get("filler") or "",
+        "reason":     data.get("reason") or "",
+        "_source":    "llm",
     }
 
 
@@ -82,9 +82,6 @@ def _route_smart(text: str) -> dict[str, Any]:
 
 
 def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
-    """LLM генерирует естественный ответ об ошибке инструмента.
-    Fallback на константу только если Ollama недоступна.
-    """
     msgs = [
         {"role": "system", "content": TOOL_FORMAT_SYSTEM},
         {"role": "user", "content": (
@@ -102,10 +99,6 @@ def _format_tool_error(text: str, tool_name: str | None, error: str) -> str:
 
 
 def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> tuple[str, bool]:
-    """
-    Dispatches to the right agent.
-    Returns (answer, tool_ok) for feedback evaluation.
-    """
     route = route_data["route"]
 
     if route == "feedback":
@@ -114,6 +107,10 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> tup
         if tool == "feedback.correct":
             return user_says_correct(), True
         return user_says_wrong(), True
+
+    if route == "plan":
+        from brain.agents.planner import run as planner_run
+        return planner_run(text, history), True
 
     if route == "tool":
         from brain.agents.tool_agent import tool_agent
@@ -155,13 +152,13 @@ def ask_llm(text: str) -> AskResult:
         route_data = _route_smart(text)
     except Exception as e:
         route_data = {
-            "route":     "chat",
-            "tool":      None,
-            "tool_args": {},
+            "route":      "chat",
+            "tool":       None,
+            "tool_args":  {},
             "confidence": 0.0,
-            "filler":    "",
-            "reason":    f"router error: {e}",
-            "_source":   "error",
+            "filler":     "",
+            "reason":     f"router error: {e}",
+            "_source":    "error",
         }
     route_ms = int((time.monotonic() - t_route0) * 1000)
 
@@ -173,7 +170,6 @@ def ask_llm(text: str) -> AskResult:
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         hist.append("assistant", answer)
 
-        # Оценка + запись фидбека
         try:
             from brain.implicit_eval import evaluate as implicit_eval
             from brain.feedback_store import record as fb_record
