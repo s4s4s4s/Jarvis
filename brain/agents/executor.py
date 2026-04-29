@@ -1,18 +1,16 @@
 """brain/agents/executor.py
 
-Asynchronous Executor with two execution modes:
-  1. Serial   — tasks with dependencies run sequentially (original behaviour)
-  2. Parallel — independent tasks (depends_on=[]) run concurrently via
-                asyncio.gather + llama-server backend
+Asynchronous Executor with:
+  1. Parallel wave  — independent tasks run concurrently
+  2. Serial phase   — dependent tasks run sequentially
+  3. CriticAgent    — every code task goes through review→fix loop
+  4. ProjectContext — persistent state across conversations
 
 Flow:
-  Executor.run_async(tasks) →
-      _run_parallel_wave(independent_tasks)   ← asyncio.gather, llama-server
-      _run_serial_task(dependent_tasks)       ← one by one, Ollama
-
-Optimisations:
-  - tool-only parallel wave → skips llama-server entirely
-  - chat tasks use MODEL_FAST (8b) — formatting only, quality != reasoning
+  Executor.run(tasks) →
+      _run_parallel_wave(independent_tasks)   ← asyncio.gather
+      _run_serial(dependent_tasks)            ← one by one
+      Every code task: CriticAgent.review_and_fix() loop until green
 """
 from __future__ import annotations
 
@@ -29,11 +27,23 @@ from typing import Callable
 
 from brain.client import chat, chat_async, MODEL_FAST, MODEL_HEAVY, set_backend
 from brain.agents.types import Task
+from brain.agents.critic_agent import review_and_fix
+from brain.agents.project_context import ProjectContext
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CRITIC_RETRIES = 3
 JARVIS_ROOT = Path("C:/jarvis")
+
+# Global project context — loaded once, shared across executor runs
+_project_ctx: ProjectContext | None = None
+
+
+def get_project_context() -> ProjectContext:
+    global _project_ctx
+    if _project_ctx is None:
+        _project_ctx = ProjectContext.load()
+    return _project_ctx
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +51,6 @@ JARVIS_ROOT = Path("C:/jarvis")
 # ---------------------------------------------------------------------------
 
 def _findings_key(finding_line: str) -> tuple[str, str]:
-    """Extract (type, line_number) from an audit finding line for stable comparison."""
     type_match = re.search(r"\[([A-Z_]+)\]", finding_line)
     line_match = re.search(r"line (\d+)", finding_line)
     ftype = type_match.group(1) if type_match else ""
@@ -50,10 +59,6 @@ def _findings_key(finding_line: str) -> tuple[str, str]:
 
 
 def _findings_normalized_set(report: str) -> frozenset[tuple[str, str]]:
-    """FIX-5: normalize findings to (type, line) pairs for stagnation detection.
-    MD5 of raw LLM text is unreliable because temperature>0 produces slight
-    variations each call even when the actual bugs are identical.
-    """
     lines = [l.strip() for l in report.splitlines() if l.strip()]
     return frozenset(_findings_key(l) for l in lines if "[" in l and "line" in l)
 
@@ -166,58 +171,32 @@ def _fix_pip_deps_in_output(llm_output: str, final_code: str) -> str:
 
 
 def _git_stage_and_commit(saved_files: list[Path], goal: str) -> str | None:
-    """FIX-6 (revised): commit generated files to an ISOLATED local branch.
-
-    Behaviour:
-    - Creates a new branch  jarvis/synthesize-<unix_ts>  off the current HEAD.
-    - Stages and commits only the saved files there.
-    - Does NOT push anything to remote — human must review and merge manually.
-    - Returns the branch name on success, None on failure.
-
-    This prevents Jarvis from silently modifying the active feature branch
-    or polluting the remote repository with unreviewed generated code.
-    """
+    """Commit generated files to an ISOLATED local branch."""
     branch_name = f"jarvis/synthesize-{int(time.time())}"
     try:
-        # 1. Create isolated branch from current HEAD (no checkout needed for commit)
         subprocess.run(
             ["git", "checkout", "-b", branch_name],
-            cwd=str(JARVIS_ROOT),
-            check=True,
-            capture_output=True,
+            cwd=str(JARVIS_ROOT), check=True, capture_output=True,
         )
-        # 2. Stage only the files produced by this synthesize run
         subprocess.run(
             ["git", "add"] + [str(p.resolve()) for p in saved_files],
-            cwd=str(JARVIS_ROOT),
-            check=True,
-            capture_output=True,
+            cwd=str(JARVIS_ROOT), check=True, capture_output=True,
         )
-        # 3. Commit
         msg = f"jarvis/synthesize: {goal[:72]}"
         subprocess.run(
             ["git", "commit", "-m", msg],
-            cwd=str(JARVIS_ROOT),
-            check=True,
-            capture_output=True,
+            cwd=str(JARVIS_ROOT), check=True, capture_output=True,
         )
-        logger.info(
-            "[Synthesize] Committed to isolated branch '%s'. "
-            "Review with: git diff feature/planner-agent..%s",
-            branch_name, branch_name,
-        )
+        logger.info("[Synthesize] Committed to isolated branch '%s'", branch_name)
         return branch_name
     except subprocess.CalledProcessError as exc:
         logger.warning(
             "[Synthesize] git operation failed (non-fatal): %s\nstderr: %s",
             exc, exc.stderr.decode(errors="replace") if exc.stderr else "",
         )
-        # Attempt to return to original branch so we don't leave repo in detached state
         subprocess.run(
             ["git", "checkout", "-"],
-            cwd=str(JARVIS_ROOT),
-            check=False,
-            capture_output=True,
+            cwd=str(JARVIS_ROOT), check=False, capture_output=True,
         )
         return None
     except Exception as exc:
@@ -229,7 +208,7 @@ def _git_stage_and_commit(saved_files: list[Path], goal: str) -> str | None:
 # Tool handler
 # ---------------------------------------------------------------------------
 
-def _run_tool(task: Task, context: dict[str, str]) -> str:  # noqa: ARG001
+def _run_tool(task: Task, context: dict[str, str]) -> str:
     from tools.registry import call_tool
     result = call_tool(task.tool_name, task.inputs)
     if result.ok:
@@ -246,7 +225,7 @@ async def _run_tool_async(task: Task, context: dict[str, str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Sub-agent handlers  (sync — serial / dependent tasks)
+# Sub-agent handlers
 # ---------------------------------------------------------------------------
 
 def _run_research(task: Task, context: dict[str, str]) -> str:
@@ -270,10 +249,19 @@ def _run_code(
     fix_instructions: str | None = None,
     all_tasks: list[Task] | None = None,
 ) -> str:
+    """
+    Write code AND immediately pass it through CriticAgent.
+    The critic runs up to MAX_CRITIC_ROUNDS of review→fix iterations.
+    Returns the best version of the code (critic-approved if possible).
+    """
     if all_tasks:
         ctx_text = _build_code_context(task, context, all_tasks)
     else:
         ctx_text = _build_context_block(task, context)
+
+    # Inject project context so the author knows what already exists
+    proj_ctx = get_project_context()
+    proj_summary = proj_ctx.summary() if not proj_ctx.is_empty() else ""
 
     if fix_instructions:
         user_content = (
@@ -283,23 +271,61 @@ def _run_code(
     else:
         user_content = f"{ctx_text}Code task: {task.goal}"
 
+    if proj_summary:
+        user_content = f"PROJECT CONTEXT:\n{proj_summary}\n\n" + user_content
+
     messages = [
         {
             "role": "system",
             "content": (
-                "You are an expert Python developer. Write clean, working code. "
+                "You are an expert Python developer. Write clean, production-ready code. "
                 "If existing code is provided, EXTEND it — do not rewrite from scratch. "
+                "Handle edge cases. Include proper error handling. "
                 "Return ONLY the complete final code inside a ```python ... ``` block."
             ),
         },
         {"role": "user", "content": user_content},
     ]
     raw = chat(model=MODEL_HEAVY, messages=messages)
-    return _strip_code_fences(raw)
+    initial_code = _strip_code_fences(raw)
+
+    # ----------------------------------------------------------------
+    # CriticAgent loop — review → fix until no blocking issues
+    # ----------------------------------------------------------------
+    from brain.ask import report_progress
+    report_progress(f"🔍 Critic reviewing: {task.goal[:60]}...")
+
+    critic_result = review_and_fix(initial_code, task.goal)
+
+    logger.info(
+        "[Executor] Code task %s — %s",
+        task.id, critic_result.summary(),
+    )
+    report_progress(f"{'✅' if critic_result.passed else '⚠️'} {critic_result.summary()}")
+
+    final_code = critic_result.fixed_code or initial_code
+
+    # Update project context with this file
+    if final_code:
+        proj_ctx.add_file(
+            rel_path=f"output/{task.id}.py",
+            code=final_code,
+            summary=task.goal[:80],
+        )
+        proj_ctx.record_test(
+            name=f"critic_{task.id}",
+            passed=critic_result.passed,
+            details=critic_result.summary(),
+        )
+        if not critic_result.passed:
+            for issue in critic_result.blocking_issues()[:3]:
+                proj_ctx.record_error(f"{task.id}: [{issue.severity}] {issue.description}")
+        proj_ctx.save()
+
+    return final_code
 
 
 def _run_audit_raw(task: Task, code_artifact: str) -> tuple[str, bool]:
-    # FIX-3: гарантируем существование папки logs/ перед созданием temp-файла
     Path("logs").mkdir(parents=True, exist_ok=True)
     try:
         from dev.auditor import AuditorAgent, GENERIC_SYSTEM_PROMPT
@@ -357,8 +383,6 @@ def _run_audit(
         return chat(model=MODEL_HEAVY, messages=messages)
 
     current_code = _strip_code_fences(code_artifact)
-    # FIX-5: используем нормализованное множество (type, line) вместо MD5 строки.
-    # LLM при temperature>0 производит слегка разные тексты — MD5 никогда не совпадал.
     prev_findings: frozenset[tuple[str, str]] | None = None
     combined_report = ""
 
@@ -381,10 +405,9 @@ def _run_audit(
             logger.info("[Critic] Task %s passed audit on attempt %d ✅", task.id, attempt)
             return combined_report
 
-        # FIX-5: stagnation по нормализованному множеству findings
         current_findings = _findings_normalized_set(combined_report)
         if prev_findings is not None and current_findings == prev_findings:
-            logger.warning("[Critic] Task %s: stagnation at attempt %d (same findings set)", task.id, attempt)
+            logger.warning("[Critic] Task %s: stagnation at attempt %d", task.id, attempt)
             return combined_report + f"\n\n[Critic] Stopped: stagnated at attempt {attempt}/{max_retries}."
         prev_findings = current_findings
 
@@ -456,17 +479,21 @@ def _run_synthesize(
             saved_files.append(saved_path)
             logger.info("[Synthesize] Saved code to %s", saved_path)
 
+            # Register in project context
+            ctx = get_project_context()
+            ctx.add_file(str(saved_path), code, summary=task.goal[:80])
+            ctx.close_task(task.goal)
+            ctx.save()
+
     if final_code:
         llm_output = _fix_pip_deps_in_output(llm_output, final_code)
 
     if saved_files:
-        # FIX-6 (revised): commit to an ISOLATED local branch — never push to remote.
-        # The developer reviews via:  git diff feature/planner-agent..jarvis/synthesize-<ts>
         branch = _git_stage_and_commit(saved_files, task.goal)
         paths_str = "\n".join(f"  → {p.resolve()}" for p in saved_files)
         branch_note = (
             f"\n⚠️  Код сохранён в изолированную ветку: {branch}\n"
-            f"    Проверь и смержь вручную: git diff feature/planner-agent..{branch}"
+            f"    Проверь и смержи вручную: git diff feature/planner-agent..{branch}"
             if branch else
             "\n⚠️  git commit не удался — файлы сохранены на диск, но не закоммичены."
         )
@@ -490,7 +517,7 @@ def _run_chat(task: Task, context: dict[str, str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Async sub-agent handlers  (llama-server backend)
+# Async sub-agent handlers
 # ---------------------------------------------------------------------------
 
 async def _run_research_async(task: Task, context: dict[str, str]) -> str:
@@ -513,25 +540,11 @@ async def _run_code_async(
     context: dict[str, str],
     all_tasks: list[Task] | None = None,
 ) -> str:
-    if all_tasks:
-        ctx_text = _build_code_context(task, context, all_tasks)
-    else:
-        ctx_text = _build_context_block(task, context)
-
-    user_content = f"{ctx_text}Code task: {task.goal}"
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are an expert Python developer. Write clean, working code. "
-                "If existing code is provided, EXTEND it — do not rewrite from scratch. "
-                "Return ONLY the complete final code inside a ```python ... ``` block."
-            ),
-        },
-        {"role": "user", "content": user_content},
-    ]
-    raw = await chat_async(model=MODEL_HEAVY, messages=messages)
-    return _strip_code_fences(raw)
+    # Async wrapper — runs sync _run_code (which includes CriticAgent) in executor
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None, lambda: _run_code(task, context, all_tasks=all_tasks)
+    )
 
 
 async def _run_chat_async(task: Task, context: dict[str, str]) -> str:
@@ -559,7 +572,6 @@ async def _run_task_async(
     elif task.type == "tool":
         artifact = await _run_tool_async(task, context)
     else:
-        # FIX BUG-01: use get_running_loop() instead of deprecated get_event_loop()
         loop = asyncio.get_running_loop()
         if task.type == "audit":
             artifact = await loop.run_in_executor(
@@ -592,10 +604,16 @@ class Executor:
         self.use_parallel   = use_parallel
 
     def run(self, tasks: list[Task], user_request: str = "") -> dict[str, str]:
+        # Register open tasks in project context
+        ctx = get_project_context()
+        for t in tasks:
+            if t.type == "code":
+                ctx.open_task(t.goal)
+        ctx.save()
+
         if self.use_parallel:
             independent = [t for t in tasks if not t.depends_on]
             if len(independent) > 1:
-                # FIX BUG-06: handle already-running event loop
                 try:
                     loop = asyncio.get_running_loop()
                 except RuntimeError:
@@ -635,7 +653,6 @@ class Executor:
                 "[Executor] Parallel wave: %d tasks (LLM) → launching llama-server",
                 len(independent),
             )
-            # FIX BUG-04: always restore backend via try/finally
             try:
                 async with LlamaServerManager() as srv:
                     set_backend("llama")
@@ -661,9 +678,6 @@ class Executor:
             logger.info(
                 "[Executor] Serial phase: %d dependent tasks (Ollama)", len(dependent)
             )
-            # FIX-2: обновляем context результатами зависимых задач.
-            # Без этого context из serial-фазы терялся и финальный артефакт
-            # (synthesize) не имел доступа к результатам parallel-волны.
             serial_context = self._run_serial(
                 dependent, user_request, context=context, all_tasks=tasks
             )
@@ -684,7 +698,6 @@ class Executor:
         errors: list[str] = []
 
         for task in tasks:
-            # FIX BUG-05: check dependencies but don't abort entire pipeline on one failure
             dep_failed = False
             for dep in task.depends_on:
                 dep_task = next((t for t in effective_all if t.id == dep), None)
@@ -702,7 +715,7 @@ class Executor:
             if dep_failed:
                 task.status = "failed"
                 errors.append(task.id)
-                continue  # skip this task but continue with others
+                continue
 
             logger.info("[Executor] Running %s [%s]: %s", task.id, task.type, task.goal)
             task.status = "running"
@@ -743,7 +756,9 @@ class Executor:
                 logger.error("[Executor] Task %s failed: %s", task.id, e)
                 task.status = "failed"
                 errors.append(task.id)
-                # FIX BUG-05: continue instead of return — don't abort remaining tasks
+                # Record error in project context
+                get_project_context().record_error(f"{task.id}: {e}")
+                get_project_context().save()
 
         if errors:
             logger.warning("[Executor] Pipeline completed with %d failed task(s): %s", len(errors), errors)
