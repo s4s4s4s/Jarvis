@@ -2,19 +2,19 @@
 """
 Хранилище обратной связи для самообучения Jarvis.
 
-Каждая запись в logs/feedback.jsonl:
+Каждая запись:
 {
-  "id":         str (uuid),
-  "ts":         str (ISO 8601),
-  "text":       str (запрос пользователя),
-  "route":      str,
-  "tool":       str | null,
-  "confidence": float,
-  "source":     "embed" | "llm",
-  "answer":     str (первые 500 символов ответа),
-  "outcome":    "success" | "failure" | "unknown",
-  "reason":     str,
-  "verified":   bool (true = пользователь подтвердил вручную)
+  "id":         "uuid",
+  "ts":         "2026-05-01T14:32:00Z",
+  "text":       "запрос пользователя",
+  "route":      "chat",
+  "tool":       null,
+  "confidence": 0.91,
+  "source":     "embed",     # "embed" или "llm"
+  "answer":     "ответ...",
+  "outcome":    "success",   # "success" | "failure" | "unknown"
+  "reason":     "",
+  "verified":   false        # true = пользователь подтвердил вручную
 }
 """
 from __future__ import annotations
@@ -28,6 +28,7 @@ from typing import Literal
 from core.paths import FEEDBACK_LOG
 
 _lock = threading.Lock()
+
 Outcome = Literal["success", "failure", "unknown"]
 
 
@@ -43,7 +44,7 @@ def record(
     reason: str = "",
     verified: bool = False,
 ) -> str:
-    """Записывает оценку одного ответа. Возвращает ID записи."""
+    """Records one feedback entry. Returns the record ID."""
     entry = {
         "id":         str(uuid.uuid4()),
         "ts":         datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -62,7 +63,10 @@ def record(
 
 
 def mark_verified(record_id: str, correct: bool) -> None:
-    """Помечает запись как верифицированную пользователем."""
+    """
+    Marks a record as user-verified.
+    Reads full file, updates target line, rewrites.
+    """
     if not FEEDBACK_LOG.exists():
         return
     lines = FEEDBACK_LOG.read_text("utf-8").splitlines()
@@ -83,7 +87,6 @@ def mark_verified(record_id: str, correct: bool) -> None:
 
 
 def load_all() -> list[dict]:
-    """Загружает все записи из feedback.jsonl."""
     if not FEEDBACK_LOG.exists():
         return []
     result = []
@@ -95,6 +98,35 @@ def load_all() -> list[dict]:
         except json.JSONDecodeError:
             continue
     return result
+
+
+def archive_processed(record_ids: set[str]) -> None:
+    """
+    Moves processed records to feedback_archive.jsonl.
+    Keeps feedback.jsonl small — only unprocessed records remain.
+    """
+    from core.paths import FEEDBACK_ARCHIVE
+    if not FEEDBACK_LOG.exists():
+        return
+    lines = FEEDBACK_LOG.read_text("utf-8").splitlines()
+    keep = []
+    archive = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+            if obj.get("id") in record_ids:
+                archive.append(line)
+            else:
+                keep.append(line)
+        except json.JSONDecodeError:
+            keep.append(line)
+    with _lock:
+        FEEDBACK_LOG.write_text("\n".join(keep) + ("\n" if keep else ""), encoding="utf-8")
+        if archive:
+            with open(FEEDBACK_ARCHIVE, "a", encoding="utf-8") as f:
+                f.write("\n".join(archive) + "\n")
 
 
 def _write(entry: dict) -> None:

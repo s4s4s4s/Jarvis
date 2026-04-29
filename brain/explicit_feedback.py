@@ -2,15 +2,16 @@
 """
 Явная обратная связь от пользователя голосом.
 
-Подключается через маршрут feedback в ROUTER_SYSTEM.
-Хранит ID последней записи feedback_store, чтобы пометить её верифицированной.
+Триггеры (определяются роутером):
+  route="feedback", tool="feedback.correct"  → последний ответ был верным
+  route="feedback", tool="feedback.wrong"    → последний ответ был неверным
+
+Хранит ID последней записи feedback_store, чтобы пометить её.
 """
 from __future__ import annotations
 
 import logging
 import threading
-
-from brain.feedback_store import mark_verified
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,6 @@ _lock = threading.Lock()
 
 
 def set_last_id(record_id: str) -> None:
-    """Вызывается из ask.py после каждого ответа."""
     global _last_record_id
     with _lock:
         _last_record_id = record_id
@@ -33,8 +33,12 @@ def get_last_id() -> str | None:
 def user_says_correct() -> str:
     rid = get_last_id()
     if rid:
-        mark_verified(rid, correct=True)
-        logger.info(f"[explicit_feedback] Верифицировано как SUCCESS: {rid}")
+        try:
+            from brain.feedback_store import mark_verified
+            mark_verified(rid, correct=True)
+            logger.info(f"[feedback] Verified correct: {rid}")
+        except Exception as e:
+            logger.error(f"[feedback] mark_verified error: {e}")
         return "Отлично, запомню что так правильно."
     return "Хорошо."
 
@@ -42,30 +46,26 @@ def user_says_correct() -> str:
 def user_says_wrong() -> str:
     rid = get_last_id()
     if rid:
-        mark_verified(rid, correct=False)
-        logger.info(f"[explicit_feedback] Верифицировано как FAILURE: {rid}")
-        threading.Thread(
-            target=_trigger_learning,
-            args=(rid,),
-            daemon=True,
-            name="jarvis-learning-trigger",
-        ).start()
-        return "Понял, запомню ошибку. В следующий раз сделаю лучше."
-    return "Понял, учту."
+        try:
+            from brain.feedback_store import mark_verified
+            mark_verified(rid, correct=False)
+            logger.info(f"[feedback] Verified wrong: {rid}")
+            # Немедленно удаляем авто-пример если он есть
+            threading.Thread(
+                target=_trigger_immediate_removal,
+                args=(rid,),
+                daemon=True,
+                name="jarvis-learning-trigger",
+            ).start()
+        except Exception as e:
+            logger.error(f"[feedback] user_says_wrong error: {e}")
+        return "Понял, запомню ошибку. В следующий раз буду точнее."
+    return "Хорошо, учту."
 
 
-def run(tool: str) -> str:
-    """Точка входа из _dispatch в ask.py."""
-    if tool == "feedback.correct":
-        return user_says_correct()
-    if tool == "feedback.wrong":
-        return user_says_wrong()
-    return "Хорошо."
-
-
-def _trigger_learning(record_id: str) -> None:
+def _trigger_immediate_removal(record_id: str) -> None:
     try:
-        from brain.learning_loop import add_failure_example
-        add_failure_example(record_id)
+        from brain.learning_loop import remove_failed_example
+        remove_failed_example(record_id)
     except Exception as e:
-        logger.error(f"[explicit_feedback] Ошибка немедленного обучения: {e}")
+        logger.error(f"[feedback] immediate removal error: {e}")
