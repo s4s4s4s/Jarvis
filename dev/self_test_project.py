@@ -969,5 +969,30 @@ class TestRoleSplitModels(unittest.TestCase):
         self.assertEqual(c.MODEL_REPORT, cfg.PROJECT_REPORT_MODEL)
 
 
+# ─── P7: nightly E2E smoke ────────────────────────────────────────────────────
+class TestNightlyE2ESmoke(unittest.TestCase):
+    """P7: проверяем что nightly_e2e импортируется и корректно SKIPит при отсутствии ollama."""
+
+    def test_module_imports_and_has_5_tasks(self):
+        from dev import nightly_e2e
+        self.assertEqual(len(nightly_e2e.REFERENCE_TASKS), 5)
+        names = [t.name for t in nightly_e2e.REFERENCE_TASKS]
+        # все имена уникальные
+        self.assertEqual(len(set(names)), 5)
+
+    def test_main_returns_zero_when_ollama_unavailable(self):
+        """Когда ollama недоступна — main() отдаёт rc=0 (cron-safe)."""
+        from dev import nightly_e2e
+        with patch.object(nightly_e2e, "is_ollama_available", return_value=False):
+            rc = nightly_e2e.main([])
+        self.assertEqual(rc, 0)
+
+    def test_main_returns_2_for_unknown_task(self):
+        from dev import nightly_e2e
+        with patch.object(nightly_e2e, "is_ollama_available", return_value=True):
+            rc = nightly_e2e.main(["--task", "несуществующая-задача-zzz"])
+        self.assertEqual(rc, 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
