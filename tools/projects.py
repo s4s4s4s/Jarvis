@@ -35,6 +35,9 @@ SAFE_FILE_RE  = re.compile(r"^[A-Za-z0-9_./-]+$")
 MAX_FILE_BYTES = 200_000          # 200 KB на один файл
 MAX_TOTAL_BYTES = 5_000_000       # 5 MB на проект целиком
 SUBPROCESS_TIMEOUT = 30           # секунд на один запуск
+VENV_DIR_NAME = ".venv"
+PIP_INSTALL_TIMEOUT = 180         # 3 мин на pip install
+ALLOWED_PKG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}([<>=!~]=?[A-Za-z0-9._-]+)?$")
 
 
 # ─── slug ────────────────────────────────────────────────────────────────────
@@ -85,6 +88,9 @@ class ProjectManifest:
     status: str = "in_progress"                     # "in_progress"|"done"|"failed"
     created_at: str = ""
     updated_at: str = ""
+    request: str = ""                               # исходный запрос пользователя
+    metrics: dict = field(default_factory=dict)     # llm_calls, durations, heal_iters
+    last_phase: str = ""                            # последняя успешно пройденная фаза (для resume)
 
     def __post_init__(self):
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -289,3 +295,133 @@ def _journal(rec: dict) -> None:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception as e:
         logger.warning(f"[projects] journal write failed: {e}")
+
+
+# ─── venv и зависимости ────────────────────────────────────────────────────
+def _venv_python(slug: str) -> Path:
+    """Путь к python внутри изолированного venv. Работает на Windows и POSIX."""
+    pdir = _project_dir(slug)
+    if sys.platform == "win32":
+        return pdir / VENV_DIR_NAME / "Scripts" / "python.exe"
+    return pdir / VENV_DIR_NAME / "bin" / "python"
+
+
+def ensure_venv(slug: str) -> dict:
+    """Создать venv в папке проекта если его нет. Идемпотентно."""
+    py = _venv_python(slug)
+    if py.exists():
+        return {"ok": True, "created": False, "python": str(py)}
+    pdir = _project_dir(slug)
+    try:
+        # python -m venv .venv  — без pip-upgrade чтобы было быстро и оффлайн-дружелюбно
+        proc = subprocess.run(
+            [sys.executable, "-m", "venv", VENV_DIR_NAME],
+            cwd=str(pdir),
+            capture_output=True, text=True, timeout=60, shell=False, check=False,
+        )
+        if proc.returncode != 0 or not py.exists():
+            return {"ok": False, "error": (proc.stderr or proc.stdout or "venv create failed")[-500:]}
+        return {"ok": True, "created": True, "python": str(py)}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "venv creation timed out"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _validate_pkg_spec(pkg: str) -> bool:
+    return bool(ALLOWED_PKG_RE.match(pkg or ""))
+
+
+def pip_install(slug: str, packages: list[str], timeout: int = PIP_INSTALL_TIMEOUT) -> dict:
+    """Установить пакеты в venv проекта. Никаких -e/--user/git+ — только PyPI-имена."""
+    if not isinstance(packages, list) or not packages:
+        return {"ok": True, "installed": [], "skipped": True}
+    bad = [p for p in packages if not isinstance(p, str) or not _validate_pkg_spec(p)]
+    if bad:
+        return {"ok": False, "error": f"unsafe package spec: {bad}"}
+    ev = ensure_venv(slug)
+    if not ev["ok"]:
+        return {"ok": False, "error": f"venv: {ev.get('error')}"}
+    py = _venv_python(slug)
+    cmd = [str(py), "-m", "pip", "install", "--no-input", "--disable-pip-version-check", *packages]
+    try:
+        proc = subprocess.run(
+            cmd, cwd=str(_project_dir(slug)),
+            capture_output=True, text=True, timeout=timeout, shell=False, check=False,
+        )
+        ok = (proc.returncode == 0)
+        log_path = _project_dir(slug) / "logs" / f"pip-{int(time.time())}.log"
+        log_path.write_text(
+            f"$ {' '.join(cmd)}\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}\n--- rc={proc.returncode} ---\n",
+            encoding="utf-8",
+        )
+        return {
+            "ok": ok,
+            "installed": packages if ok else [],
+            "returncode": proc.returncode,
+            "stderr": (proc.stderr or "")[-1500:],
+            "log": str(log_path),
+        }
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "pip install timed out", "installed": []}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "installed": []}
+
+
+def run_with_project_python(slug: str, args: list[str], timeout: int = SUBPROCESS_TIMEOUT) -> dict:
+    """Запуск команды через venv-python (или sys.executable если venv не создан)."""
+    py = _venv_python(slug)
+    interp = str(py) if py.exists() else sys.executable
+    return run_in_project(slug, [interp, *args], timeout=timeout)
+
+
+def run_pytest(slug: str, timeout: int = SUBPROCESS_TIMEOUT) -> dict:
+    """Запустить pytest внутри проекта (если pytest установлен в venv)."""
+    return run_with_project_python(slug, ["-m", "pytest", "-q", "--no-header", "--tb=short"], timeout=timeout)
+
+
+# ─── индекс и метрики ────────────────────────────────────────────────────────
+def _index_path() -> Path:
+    return PROJECTS_DIR / "_index.jsonl"
+
+
+def append_index_record(rec: dict) -> None:
+    """Дописать одну строку в _index.jsonl. Не падаем если файловая ошибка."""
+    rec.setdefault("ts", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    try:
+        PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+        with _index_path().open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning(f"[projects] _index write failed: {e}")
+
+
+def read_index() -> list[dict]:
+    p = _index_path()
+    if not p.exists():
+        return []
+    out = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except Exception:
+            continue
+    return out
+
+
+def get_project_files(slug: str) -> dict[str, str]:
+    """Прочитать все сохранённые файлы проекта в dict {rel_path: content}. Исключает venv и logs."""
+    out: dict[str, str] = {}
+    try:
+        m = load_manifest(slug)
+    except Exception:
+        return out
+    for rel in m.files:
+        try:
+            out[rel] = read_project_file(slug, rel)
+        except Exception:
+            continue
+    return out

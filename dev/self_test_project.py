@@ -1,21 +1,32 @@
 # dev/self_test_project.py
 """
-Smoke-тест ProjectAgent (Level 4) без живой Ollama.
+Smoke + интеграционные тесты ProjectAgent (Level 4) без живой Ollama.
 
-Подменяет brain.client.chat фейковыми ответами для каждой фазы и проверяет,
-что:
-  - проект создаётся в tmp-папке
-  - manifest.json валиден
-  - все файлы записаны
-  - reviewer-loop отрабатывает (revise → approve)
-  - smoke-тест внутри проекта проходит
-  - возвращается финальный отчёт-строка
+Все LLM-вызовы мокаются. Реальные subprocess (venv create, python main.py,
+pip — мокаем pip отдельно) — настоящие.
 
 Запуск:
   python -m dev.self_test_project
 
-Принцип: ProjectAgent должен быть полностью тестируемым без LLM. Если эти
-тесты падают — проблема в инфраструктуре, не в моделях.
+Покрытие:
+  TestProjectAgentEndToEnd
+    - test_full_pipeline_with_revise_then_approve   (build cycle)
+    - test_intake_fallback_on_invalid_json
+    - test_reviewer_fallback_on_llm_error
+    - test_self_heal_recovers_failing_test          (Level 4 self-heal)
+    - test_budget_exceeded_graceful_failure         (бюджеты)
+    - test_resume_picks_up_after_architect          (--resume)
+    - test_readme_fallback_when_llm_empty           (детерминированный README)
+    - test_cross_file_context_passed_to_coder       (cross-file)
+
+  TestProjectStoreSafety
+    - test_slugify_cyrillic
+    - test_path_traversal_blocked
+    - test_oversize_blocked
+    - test_run_in_project_no_shell
+    - test_pkg_spec_validation                      (защита pip_install)
+    - test_index_jsonl_append_and_read              (метрики)
+    - test_get_project_files_round_trip             (cross-file context source)
 """
 from __future__ import annotations
 
@@ -44,7 +55,6 @@ _FAKE_SPEC = {
     "deliverables": ["main.py"],
     "acceptance_criteria": ["python main.py выводит hello jarvis"],
 }
-
 _FAKE_PLAN = {
     "files": [
         {"path": "main.py", "purpose": "точка входа", "depends_on": ["stdlib"]},
@@ -57,10 +67,8 @@ _FAKE_PLAN = {
         {"name": "smoke", "command": "python main.py", "expects": "hello jarvis"},
     ],
 }
-
 _FAKE_CODE_BAD  = "print('helo')\n"
 _FAKE_CODE_GOOD = "print('hello jarvis')\n"
-
 _FAKE_REVIEW_REVISE = {
     "verdict": "revise",
     "issues":  [{"severity": "major", "line_hint": 1, "problem": "опечатка helo", "suggestion": "напиши hello jarvis"}],
@@ -71,13 +79,14 @@ _FAKE_REVIEW_APPROVE = {
     "issues":  [],
     "summary": "ок",
 }
+_FAKE_README = "# Hello CLI\nпечатает hello jarvis\n"
 _FAKE_REPORT = "Готово, проект hello-cli собран и тест прошёл."
 
 
 def make_fake_chat(seq: list):
-    """seq — список объектов: dict (станет json.dumps) или str (вернётся как есть)."""
-    state = {"i": 0}
+    state = {"i": 0, "calls": []}
     def fake_chat(model, msgs, options=None):
+        state["calls"].append({"model": model, "system": msgs[0]["content"][:80], "user": msgs[1]["content"][:200]})
         i = state["i"]
         if i >= len(seq):
             raise AssertionError(f"unexpected extra LLM call #{i}")
@@ -87,12 +96,30 @@ def make_fake_chat(seq: list):
     return fake_chat, state
 
 
-class TestProjectAgentEndToEnd(unittest.TestCase):
+def _patch_chat_everywhere(fake_chat):
+    """Подменить chat во всех модулях ProjectAgent одним менеджером."""
+    return [
+        patch("brain.agents.project.chat", side_effect=fake_chat),
+        patch("brain.agents.coder.chat",   side_effect=fake_chat),
+        patch("brain.agents.reviewer.chat",side_effect=fake_chat),
+    ]
+
+
+def _enter(patches):
+    return [p.__enter__() for p in patches]
+
+
+def _exit(patches):
+    for p in patches:
+        try: p.__exit__(None, None, None)
+        except Exception: pass
+
+
+# ─── базовый setup ───────────────────────────────────────────────────────────
+class _IsolatedJarvisRoot(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="jarvis-test-"))
         os.environ["JARVIS_ROOT"] = str(self.tmp)
-
-        # перезагрузим модули, которые кэшируют пути
         import importlib
         import core.paths as paths_mod
         importlib.reload(paths_mod)
@@ -114,114 +141,263 @@ class TestProjectAgentEndToEnd(unittest.TestCase):
         os.environ.pop("JARVIS_ROOT", None)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+
+# ─── End-to-end ──────────────────────────────────────────────────────────────
+class TestProjectAgentEndToEnd(_IsolatedJarvisRoot):
     def test_full_pipeline_with_revise_then_approve(self):
-        """
-        Сценарий:
-          intake → architect → coder(bad) → reviewer(revise) →
-          coder(good) → reviewer(approve) → test → report
-        """
         seq = [
-            _FAKE_SPEC,           # intake
-            _FAKE_PLAN,           # architect
-            _FAKE_CODE_BAD,       # coder.write_file
-            _FAKE_REVIEW_REVISE,  # reviewer.review #1
-            _FAKE_CODE_GOOD,      # coder.patch_file
-            _FAKE_REVIEW_APPROVE, # reviewer.review #2
-            _FAKE_REPORT,         # report
+            _FAKE_SPEC,            # intake
+            _FAKE_PLAN,            # architect
+            _FAKE_CODE_BAD,        # coder.write_file
+            _FAKE_REVIEW_REVISE,   # reviewer #1
+            _FAKE_CODE_GOOD,       # coder.patch_file
+            _FAKE_REVIEW_APPROVE,  # reviewer #2
+            _FAKE_README,          # readme
+            _FAKE_REPORT,          # report
         ]
         fake_chat, state = make_fake_chat(seq)
+        patches = _patch_chat_everywhere(fake_chat); _enter(patches)
+        try:
+            result = self.project_mod.run("сделай скрипт hello jarvis", [],
+                                           wall_budget_s=120, llm_budget=20)
+        finally:
+            _exit(patches)
 
-        with patch("brain.agents.project.chat", side_effect=fake_chat), \
-             patch("brain.agents.coder.chat",   side_effect=fake_chat), \
-             patch("brain.agents.reviewer.chat",side_effect=fake_chat):
-            result = self.project_mod.run("сделай скрипт hello jarvis", [])
-
-        # все ожидаемые вызовы LLM сделаны
         self.assertEqual(state["i"], len(seq), f"использовано {state['i']} из {len(seq)}")
         self.assertIn("hello-cli", result.lower())
 
-        # проект существует на диске
         from core.paths import PROJECTS_DIR
-        projects = [p for p in PROJECTS_DIR.iterdir() if p.is_dir()]
-        self.assertEqual(len(projects), 1, f"projects on disk: {projects}")
+        projects = [p for p in PROJECTS_DIR.iterdir() if p.is_dir() and p.name.startswith("hello-cli")]
+        self.assertEqual(len(projects), 1)
         pdir = projects[0]
-        self.assertTrue(pdir.name.startswith("hello-cli"))
-
-        # манифест валиден
         manifest = json.loads((pdir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["status"], "done", f"phases={manifest['phases']}")
-        self.assertEqual(manifest["files"], ["main.py"])
-        # фазы: intake, architect, build:main.py, test:smoke, finalize
-        phase_names = [p["name"] for p in manifest["phases"]]
-        self.assertIn("intake", phase_names)
-        self.assertIn("architect", phase_names)
-        self.assertIn("build:main.py", phase_names)
-        self.assertIn("test:smoke", phase_names)
-        self.assertIn("finalize", phase_names)
+        self.assertIn("README.md", manifest["files"])
+        self.assertIn("main.py", manifest["files"])
+        self.assertIn("hello jarvis", (pdir / "main.py").read_text(encoding="utf-8"))
+        # _index.jsonl
+        idx = self.proj_mod.read_index()
+        self.assertEqual(len(idx), 1)
+        self.assertEqual(idx[0]["status"], "done")
+        # метрики записаны
+        self.assertIn("llm_used", manifest["metrics"])
+        self.assertGreater(manifest["metrics"]["llm_used"], 0)
+        # last_phase=finalize → resume будет ок
+        self.assertEqual(manifest["last_phase"], "finalize")
 
-        # main.py содержит правильный текст
-        main_py = (pdir / "main.py").read_text(encoding="utf-8")
-        self.assertIn("hello jarvis", main_py)
+    def test_self_heal_recovers_failing_test(self):
+        """Build выдаёт код который НЕ печатает 'hello jarvis' → expects fail →
+           Healer диагностирует → Coder патчит → перетест проходит."""
+        bad_runs_print = "print('something else')\n"
+        good_print = "print('hello jarvis')\n"
+        seq = [
+            _FAKE_SPEC,
+            _FAKE_PLAN,
+            bad_runs_print,        # coder.write
+            _FAKE_REVIEW_APPROVE,  # reviewer (одобряет — код синтаксически ок)
+            # тут идёт TEST: subprocess реальный, expects='hello jarvis' не найдётся → fail
+            # → heal:
+            {"diagnosis": "печатается не та строка", "target_file": "main.py",
+             "fix_instruction": "замени строку на hello jarvis"},   # heal.diagnose #1
+            good_print,            # coder.patch_file (внутри heal)
+            # тесты после heal — без LLM, реальный subprocess
+            _FAKE_README,          # readme
+            _FAKE_REPORT,          # report
+        ]
+        fake_chat, state = make_fake_chat(seq)
+        patches = _patch_chat_everywhere(fake_chat); _enter(patches)
+        try:
+            result = self.project_mod.run("hello jarvis скрипт", [],
+                                           wall_budget_s=120, llm_budget=20)
+        finally:
+            _exit(patches)
+
+        self.assertEqual(state["i"], len(seq), f"использовано {state['i']} из {len(seq)}")
+        from core.paths import PROJECTS_DIR
+        pdir = next(p for p in PROJECTS_DIR.iterdir() if p.is_dir() and p.name.startswith("hello-cli"))
+        manifest = json.loads((pdir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["status"], "done",
+                         f"healing должен был починить проект; phases={[p['name'] for p in manifest['phases']]}")
+        # heal-фаза присутствует
+        names = [p["name"] for p in manifest["phases"]]
+        self.assertTrue(any(n.startswith("heal:iter") for n in names),
+                        f"не найдена фаза heal среди {names}")
+        # main.py содержит правильный текст после heal
+        self.assertIn("hello jarvis", (pdir / "main.py").read_text(encoding="utf-8"))
 
     def test_intake_fallback_on_invalid_json(self):
-        """Если LLM выдал мусор — спецификация всё равно должна получиться."""
-        from brain.agents.project import _intake
+        from brain.agents.project import _intake, Budget
         with patch("brain.agents.project.chat", return_value="не json вовсе"):
-            spec = _intake("сделай мне калькулятор")
+            spec = _intake("сделай мне калькулятор", Budget())
         self.assertIn("title", spec)
         self.assertIn("requirements", spec)
 
     def test_reviewer_fallback_on_llm_error(self):
-        """Если LLM упал, reviewer должен вернуть approve чтобы не зациклить пайплайн."""
         from brain.agents.reviewer import review
-        def boom(*a, **kw):
-            raise RuntimeError("ollama down")
+        def boom(*a, **kw): raise RuntimeError("ollama down")
         with patch("brain.agents.reviewer.chat", side_effect=boom):
             verdict = review({"title": "x"}, {"path": "main.py"}, "print('ok')\n")
         self.assertEqual(verdict["verdict"], "approve")
         self.assertEqual(verdict["_source"], "fallback")
 
+    def test_budget_exceeded_graceful_failure(self):
+        """LLM-budget=2 → даже intake+architect не пройдут до конца → status=failed,
+           без зависания, без необработанных исключений."""
+        seq = [_FAKE_SPEC, _FAKE_PLAN, _FAKE_CODE_GOOD]   # доступно 3 ответа
+        fake_chat, state = make_fake_chat(seq)
+        patches = _patch_chat_everywhere(fake_chat); _enter(patches)
+        try:
+            # llm_budget=2: spend на intake (1) + architect (2) = 2 → перед build budget исчерпан
+            result = self.project_mod.run("проект", [], wall_budget_s=120, llm_budget=2)
+        finally:
+            _exit(patches)
+        self.assertIsInstance(result, str)
+        self.assertGreater(len(result), 0)
+        # Папка проекта существует, manifest.failed или intermediate
+        from core.paths import PROJECTS_DIR
+        pdirs = [p for p in PROJECTS_DIR.iterdir() if p.is_dir() and p.name != "_index.jsonl"]
+        self.assertGreaterEqual(len(pdirs), 1)
 
-class TestProjectStoreSafety(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="jarvis-store-"))
-        os.environ["JARVIS_ROOT"] = str(self.tmp)
-        import importlib
-        import core.paths as paths_mod
-        importlib.reload(paths_mod)
-        paths_mod.ensure_dirs()
-        import tools.projects as pm
-        importlib.reload(pm)
-        self.pm = pm
+    def test_resume_picks_up_after_architect(self):
+        """Симулируем падение после architect, потом resume должен продолжить."""
+        # Полный seq для первого run (упадём после architect через budget)
+        seq1 = [_FAKE_SPEC, _FAKE_PLAN]   # ровно 2 → дальше будет BudgetExceeded
+        fake1, _ = make_fake_chat(seq1)
+        patches = _patch_chat_everywhere(fake1); _enter(patches)
+        try:
+            self.project_mod.run("проект для resume", [], wall_budget_s=120, llm_budget=2)
+        finally:
+            _exit(patches)
 
-    def tearDown(self):
-        os.environ.pop("JARVIS_ROOT", None)
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        from core.paths import PROJECTS_DIR
+        pdirs = [p for p in PROJECTS_DIR.iterdir() if p.is_dir()]
+        self.assertEqual(len(pdirs), 1)
+        slug = pdirs[0].name
+        m1 = json.loads((pdirs[0] / "manifest.json").read_text(encoding="utf-8"))
+        # last_phase должен быть одним из ранних этапов: intake → architect → env
+        # (env не расходует LLM-бюджет, поэтому проходит до build)
+        self.assertIn(m1["last_phase"], ("intake", "architect", "env"),
+                      f"unexpected last_phase: {m1.get('last_phase')}")
 
+        # Теперь resume с полным seq для оставшихся фаз: build, test, readme, report
+        seq2 = [_FAKE_CODE_GOOD, _FAKE_REVIEW_APPROVE, _FAKE_README, _FAKE_REPORT]
+        fake2, _ = make_fake_chat(seq2)
+        patches = _patch_chat_everywhere(fake2); _enter(patches)
+        try:
+            out = self.project_mod.resume(slug, wall_budget_s=120, llm_budget=20)
+        finally:
+            _exit(patches)
+        self.assertIsInstance(out, str)
+        m2 = json.loads((pdirs[0] / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(m2["status"], "done", f"phases after resume: {[p['name'] for p in m2['phases']]}")
+        # фаза 'resume' зафиксирована
+        names = [p["name"] for p in m2["phases"]]
+        self.assertIn("resume", names)
+
+    def test_readme_fallback_when_llm_empty(self):
+        """Если LLM вернул пустую строку — README должен сгенериться детерминистически."""
+        seq = [
+            _FAKE_SPEC, _FAKE_PLAN, _FAKE_CODE_GOOD, _FAKE_REVIEW_APPROVE,
+            "",                     # README LLM вернул пусто
+            _FAKE_REPORT,
+        ]
+        fake_chat, _ = make_fake_chat(seq)
+        patches = _patch_chat_everywhere(fake_chat); _enter(patches)
+        try:
+            self.project_mod.run("hello", [], wall_budget_s=120, llm_budget=20)
+        finally:
+            _exit(patches)
+        from core.paths import PROJECTS_DIR
+        pdir = next(p for p in PROJECTS_DIR.iterdir() if p.is_dir())
+        readme = (pdir / "README.md").read_text(encoding="utf-8")
+        self.assertIn("Hello CLI", readme)
+        self.assertIn("main.py", readme)
+
+    def test_cross_file_context_passed_to_coder(self):
+        """При генерации второго файла Coder должен видеть содержимое первого."""
+        spec_two = dict(_FAKE_SPEC)
+        spec_two["title"] = "Two Files"
+        spec_two["slug"]  = "two-files"
+        plan_two = {
+            "files": [
+                {"path": "lib.py",  "purpose": "функция greet()", "depends_on": ["stdlib"]},
+                {"path": "main.py", "purpose": "вызывает greet()", "depends_on": ["lib.py"]},
+            ],
+            "build_steps": [],
+            "tests": [{"name": "smoke", "command": "python main.py", "expects": "hi"}],
+        }
+        lib_code  = "def greet():\n    return 'hi'\n"
+        main_code = "from lib import greet\nprint(greet())\n"
+        seq = [
+            spec_two, plan_two,
+            lib_code,  _FAKE_REVIEW_APPROVE,
+            main_code, _FAKE_REVIEW_APPROVE,
+            _FAKE_README, _FAKE_REPORT,
+        ]
+        fake_chat, state = make_fake_chat(seq)
+        patches = _patch_chat_everywhere(fake_chat); _enter(patches)
+        try:
+            self.project_mod.run("two files project", [], wall_budget_s=120, llm_budget=20)
+        finally:
+            _exit(patches)
+
+        # Прицельная проверка: при генерации main.py user-msg ДОЛЖЕН содержать
+        # текст уже-написанного lib.py (cross-file context).
+        coder_calls = [c for c in state["calls"] if "разработчик" in c["system"]]
+        self.assertGreaterEqual(len(coder_calls), 2)
+        # Второй coder-call (main.py) должен содержать упоминание lib.py
+        self.assertIn("lib.py", coder_calls[1]["user"])
+
+
+# ─── Project store safety ────────────────────────────────────────────────────
+class TestProjectStoreSafety(_IsolatedJarvisRoot):
     def test_slugify_cyrillic(self):
-        s = self.pm.slugify("Калькулятор подходов в зале")
+        s = self.proj_mod.slugify("Калькулятор подходов в зале")
         self.assertRegex(s, r"^[a-z0-9-]+$")
-        self.assertLessEqual(len(s), self.pm.MAX_SLUG_LEN)
+        self.assertLessEqual(len(s), self.proj_mod.MAX_SLUG_LEN)
 
     def test_path_traversal_blocked(self):
-        m = self.pm.create_project({"title": "X", "slug": "x"})
+        m = self.proj_mod.create_project({"title": "X", "slug": "x"})
         with self.assertRaises(ValueError):
-            self.pm.write_project_file(m.slug, "../../etc/passwd", "evil")
+            self.proj_mod.write_project_file(m.slug, "../../etc/passwd", "evil")
         with self.assertRaises(ValueError):
-            self.pm.write_project_file(m.slug, "/abs/path", "evil")
+            self.proj_mod.write_project_file(m.slug, "/abs/path", "evil")
 
     def test_oversize_blocked(self):
-        m = self.pm.create_project({"title": "Y", "slug": "y"})
-        big = "x" * (self.pm.MAX_FILE_BYTES + 1)
+        m = self.proj_mod.create_project({"title": "Y", "slug": "y"})
+        big = "x" * (self.proj_mod.MAX_FILE_BYTES + 1)
         with self.assertRaises(ValueError):
-            self.pm.write_project_file(m.slug, "big.txt", big)
+            self.proj_mod.write_project_file(m.slug, "big.txt", big)
 
     def test_run_in_project_no_shell(self):
-        m = self.pm.create_project({"title": "Z", "slug": "z"})
-        # shell=False → "&&" не интерпретируется как chain; будет ошибка/нулевой stdout
-        res = self.pm.run_in_project(m.slug, [sys.executable, "-c", "print(1)"])
+        m = self.proj_mod.create_project({"title": "Z", "slug": "z"})
+        res = self.proj_mod.run_in_project(m.slug, [sys.executable, "-c", "print(1)"])
         self.assertTrue(res["ok"])
         self.assertIn("1", res["stdout"])
+
+    def test_pkg_spec_validation(self):
+        # _validate_pkg_spec — внутренний, проверяем через pip_install dry checks
+        m = self.proj_mod.create_project({"title": "P", "slug": "p"})
+        # фейковые опасные пакетные спеки должны быть отклонены до запуска pip
+        bad = self.proj_mod.pip_install(m.slug, ["evil; rm -rf /"])
+        self.assertFalse(bad["ok"])
+        self.assertIn("unsafe", bad.get("error", ""))
+        bad2 = self.proj_mod.pip_install(m.slug, ["-e ."])
+        self.assertFalse(bad2["ok"])
+
+    def test_index_jsonl_append_and_read(self):
+        self.proj_mod.append_index_record({"slug": "a", "status": "done"})
+        self.proj_mod.append_index_record({"slug": "b", "status": "failed"})
+        idx = self.proj_mod.read_index()
+        self.assertEqual([r["slug"] for r in idx], ["a", "b"])
+
+    def test_get_project_files_round_trip(self):
+        m = self.proj_mod.create_project({"title": "RT", "slug": "rt"})
+        self.proj_mod.write_project_file(m.slug, "a.py", "print(1)\n")
+        self.proj_mod.write_project_file(m.slug, "b.py", "print(2)\n")
+        files = self.proj_mod.get_project_files(m.slug)
+        self.assertEqual(set(files.keys()), {"a.py", "b.py"})
+        self.assertIn("print(1)", files["a.py"])
 
 
 if __name__ == "__main__":

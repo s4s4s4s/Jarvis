@@ -37,7 +37,34 @@ def _strip_code_fence(raw: str) -> str:
     return s.rstrip() + "\n"
 
 
-def _build_user_message(spec: dict, plan: dict, target: dict, feedback: str) -> str:
+MAX_CTX_FILE_BYTES = 4000  # лимит на один соседний файл в контексте
+MAX_CTX_TOTAL_BYTES = 12000  # общий лимит на cross-file context
+
+
+def _format_existing_files(existing: dict[str, str] | None, current_path: str) -> str:
+    if not existing:
+        return ""
+    chunks = []
+    total = 0
+    for path, content in existing.items():
+        if path == current_path:
+            continue
+        body = (content or "")[:MAX_CTX_FILE_BYTES]
+        if not body.strip():
+            continue
+        chunk = f"### {path}\n```\n{body}\n```\n"
+        if total + len(chunk) > MAX_CTX_TOTAL_BYTES:
+            chunks.append("### … (остальные файлы урезаны по бюджету)\n")
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    if not chunks:
+        return ""
+    return "\nУже написанные файлы проекта (используй их API корректно):\n" + "".join(chunks)
+
+
+def _build_user_message(spec: dict, plan: dict, target: dict, feedback: str,
+                        existing: dict[str, str] | None = None) -> str:
     files_outline = "\n".join(
         f"  - {f.get('path')}: {f.get('purpose','')}"
         for f in (plan.get("files") or [])
@@ -49,8 +76,11 @@ def _build_user_message(spec: dict, plan: dict, target: dict, feedback: str) -> 
         f"Суть: {spec.get('summary','')}\n\n"
         f"Требования:\n" + "\n".join(f"  - {r}" for r in (spec.get('requirements') or [])) + "\n\n"
         f"Acceptance criteria:\n" + "\n".join(f"  - {a}" for a in (spec.get('acceptance_criteria') or [])) + "\n\n"
-        f"Структура проекта:\n{files_outline}\n\n"
-        f"Сейчас тебе нужно написать ОДИН файл:\n"
+        f"Структура проекта:\n{files_outline}\n"
+    )
+    msg += _format_existing_files(existing, target.get("path", ""))
+    msg += (
+        f"\nСейчас тебе нужно написать ОДИН файл:\n"
         f"  путь:    {target.get('path')}\n"
         f"  цель:    {target.get('purpose','')}\n"
         f"  зависит: {', '.join(target.get('depends_on') or []) or 'stdlib'}\n"
@@ -69,6 +99,7 @@ def write_file(
     target: dict,
     feedback: str = "",
     *,
+    existing: dict[str, str] | None = None,
     model: str = MODEL_FAST,
 ) -> str:
     """Generate full file content. Falls back to stub on error."""
@@ -76,7 +107,7 @@ def write_file(
         raise ValueError("target must have 'path'")
     msgs = [
         {"role": "system", "content": PROJECT_CODER_SYSTEM},
-        {"role": "user",   "content": _build_user_message(spec, plan, target, feedback)},
+        {"role": "user",   "content": _build_user_message(spec, plan, target, feedback, existing)},
     ]
     try:
         raw = chat(model, msgs, options={"temperature": CODER_TEMPERATURE, "num_ctx": CODER_NUM_CTX})
@@ -101,6 +132,7 @@ def patch_file(
     current_code: str,
     feedback: str,
     *,
+    existing: dict[str, str] | None = None,
     model: str = MODEL_FAST,
 ) -> str:
     """
@@ -108,7 +140,7 @@ def patch_file(
     For now, regeneration mode (LLM rewrites whole file). Diff-based patching
     is a future iteration.
     """
-    user_msg = _build_user_message(spec, plan, target, feedback)
+    user_msg = _build_user_message(spec, plan, target, feedback, existing)
     user_msg += (
         "\n\nТекущая версия файла (требует исправления):\n"
         f"```\n{current_code}\n```\n"
