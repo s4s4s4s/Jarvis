@@ -106,6 +106,18 @@ def _project_dir(slug: str) -> Path:
     return PROJECTS_DIR / slug
 
 
+def project_dir(slug: str) -> Path:
+    """Публичный helper: безопасный путь к корню проекта."""
+    return _project_dir(slug)
+
+
+def safe_project_path(slug: str, rel: str) -> Path:
+    """Публичный helper: резолвить относительный путь внутри проекта,
+    блокируя .. и абсолютные пути. Бросает ValueError при попытке выйти из корня.
+    """
+    return _safe_resolve(slug, rel)
+
+
 def _manifest_path(slug: str) -> Path:
     return _project_dir(slug) / "manifest.json"
 

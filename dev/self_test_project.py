@@ -492,5 +492,90 @@ class TestEnvParserAndAutoHeal(_IsolatedJarvisRoot):
         self.assertEqual(res["installed_as"], "opencv-python")
 
 
+# ─── P0: structured machine checks ───────────────────────────────────────
+class TestStructuredChecks(_IsolatedJarvisRoot):
+    """P0: машинно-проверяемые checks заменяют свободный expects-в-stdout."""
+
+    def _make_proj_with_file(self, rel_path: str, content: str) -> str:
+        m = self.proj_mod.create_project({"title": "chk", "slug": "chk"})
+        self.proj_mod.write_project_file(m.slug, rel_path, content)
+        return m.slug
+
+    def test_check_rc_zero(self):
+        ev = self.project_mod._evaluate_check
+        self.assertTrue(ev("any", {"type": "rc_zero"}, {"returncode": 0})["ok"])
+        self.assertFalse(ev("any", {"type": "rc_zero"}, {"returncode": 1})["ok"])
+
+    def test_check_file_exists(self):
+        slug = self._make_proj_with_file("out.txt", "hi")
+        ev = self.project_mod._evaluate_check
+        self.assertTrue(ev(slug, {"type": "file_exists", "path": "out.txt"}, {})["ok"])
+        self.assertFalse(ev(slug, {"type": "file_exists", "path": "missing.txt"}, {})["ok"])
+
+    def test_check_file_min_size(self):
+        slug = self._make_proj_with_file("data.csv", "a,b,c\n1,2,3\n")  # 12 bytes
+        ev = self.project_mod._evaluate_check
+        self.assertTrue(ev(slug, {"type": "file_min_size", "path": "data.csv", "bytes": 5}, {})["ok"])
+        self.assertFalse(ev(slug, {"type": "file_min_size", "path": "data.csv", "bytes": 9999}, {})["ok"])
+
+    def test_check_file_min_lines(self):
+        slug = self._make_proj_with_file("news.csv", "h1,h2\nr1c1,r1c2\nr2c1,r2c2\n")
+        ev = self.project_mod._evaluate_check
+        self.assertTrue(ev(slug, {"type": "file_min_lines", "path": "news.csv", "lines": 3}, {})["ok"])
+        self.assertFalse(ev(slug, {"type": "file_min_lines", "path": "news.csv", "lines": 100}, {})["ok"])
+
+    def test_check_stdout_contains_case_insensitive(self):
+        ev = self.project_mod._evaluate_check
+        run = {"stdout": "Done. Saved 25 rows to news.csv"}
+        self.assertTrue(ev("any", {"type": "stdout_contains", "text": "saved"}, run)["ok"])
+        self.assertFalse(ev("any", {"type": "stdout_contains", "text": "failed"}, run)["ok"])
+
+    def test_check_unknown_type_rejected(self):
+        ev = self.project_mod._evaluate_check
+        r = ev("any", {"type": "shell_exec", "cmd": "rm -rf /"}, {"returncode": 0})
+        self.assertFalse(r["ok"])
+        self.assertIn("unknown check type", r["reason"])
+
+    def test_check_path_traversal_rejected(self):
+        slug = self._make_proj_with_file("a.txt", "x")
+        ev = self.project_mod._evaluate_check
+        r = ev(slug, {"type": "file_exists", "path": "../../../etc/passwd"}, {})
+        self.assertFalse(r["ok"])
+        self.assertIn("unsafe path", r["reason"])
+
+    def test_run_one_test_with_structured_checks_passes(self):
+        """Полный _run_one_test: скрипт пишет файл, checks проверяют результат на диске."""
+        m = self.proj_mod.create_project({"title": "E2E", "slug": "e2e"})
+        # Скрипт создаёт news.csv с 4 строками
+        self.proj_mod.write_project_file(m.slug, "main.py",
+            "open('news.csv','w').write('h1,h2\\na,b\\nc,d\\ne,f\\n')\nprint('done')\n")
+        self.proj_mod.ensure_venv(m.slug)
+        t = {
+            "name": "e2e",
+            "command": "python main.py",
+            "checks": [
+                {"type": "rc_zero"},
+                {"type": "file_exists", "path": "news.csv"},
+                {"type": "file_min_lines", "path": "news.csv", "lines": 3},
+                {"type": "stdout_contains", "text": "done"},
+            ],
+        }
+        rec = self.project_mod._run_one_test(m.slug, t)
+        self.assertTrue(rec["ok"], f"checks failed: {rec.get('checks')}")
+        self.assertEqual(len(rec["checks"]), 4)
+        self.assertTrue(all(c["ok"] for c in rec["checks"]))
+
+    def test_run_one_test_legacy_expects_still_works(self):
+        """Старые планы с expects-в-stdout должны продолжать работать."""
+        m = self.proj_mod.create_project({"title": "Legacy", "slug": "legacy"})
+        self.proj_mod.write_project_file(m.slug, "main.py", "print('hello world')\n")
+        self.proj_mod.ensure_venv(m.slug)
+        t = {"name": "legacy", "command": "python main.py", "expects": "hello"}
+        rec = self.project_mod._run_one_test(m.slug, t)
+        self.assertTrue(rec["ok"])
+        self.assertTrue(rec["expects_ok"])
+        self.assertEqual(rec["checks"], [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

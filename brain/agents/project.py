@@ -68,6 +68,8 @@ from tools.projects import (
     pip_install,
     append_index_record,
     get_project_files,
+    project_dir,
+    safe_project_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -362,13 +364,85 @@ def _build(slug: str, spec: dict, plan: dict, budget: Budget) -> list[dict]:
 
 
 # ─── PHASE 5: test ──────────────────────────────────────────────────────────
+# Машинно-проверяемые типы checks. Заменяют свободнотекстовый `expects`,
+# который заставлял Coder хардкодить ожидаемые строки в код.
+VALID_CHECK_TYPES = {
+    "rc_zero",          # код возврата == 0
+    "file_exists",      # path существует
+    "file_min_size",    # path имеет размер >= bytes
+    "file_min_lines",   # path имеет >= lines строк
+    "stdout_contains",  # text встречается в stdout (case-insensitive)
+}
+
+
+def _evaluate_check(slug: str, check: dict, run_result: dict) -> dict:
+    """Проверяет одно условие против результата запуска. Возвращает dict с ok/reason."""
+    if not isinstance(check, dict):
+        return {"type": "invalid", "ok": False, "reason": "check is not a dict"}
+    ctype = (check.get("type") or "").strip()
+    if ctype not in VALID_CHECK_TYPES:
+        return {"type": ctype, "ok": False, "reason": f"unknown check type: {ctype!r}"}
+
+    if ctype == "rc_zero":
+        rc = run_result.get("returncode")
+        return {"type": ctype, "ok": rc == 0, "reason": f"rc={rc}"}
+
+    if ctype == "stdout_contains":
+        text = (check.get("text") or "").strip()
+        if not text:
+            return {"type": ctype, "ok": False, "reason": "empty text"}
+        stdout = (run_result.get("stdout") or "")
+        ok = text.lower() in stdout.lower()
+        return {"type": ctype, "ok": ok, "reason": f"text={text!r} found={ok}"}
+
+    # Файловые проверки: путь относительно корня проекта, защищаем safe_project_path
+    rel = (check.get("path") or "").strip()
+    if not rel:
+        return {"type": ctype, "ok": False, "reason": "empty path"}
+    try:
+        abs_path = safe_project_path(slug, rel)
+    except Exception as e:
+        return {"type": ctype, "ok": False, "reason": f"unsafe path: {e}"}
+
+    if ctype == "file_exists":
+        ok = abs_path.exists() and abs_path.is_file()
+        return {"type": ctype, "ok": ok, "reason": f"path={rel} exists={ok}"}
+
+    if ctype == "file_min_size":
+        try:
+            min_bytes = int(check.get("bytes", 0))
+        except (TypeError, ValueError):
+            return {"type": ctype, "ok": False, "reason": "bad bytes value"}
+        if not abs_path.exists():
+            return {"type": ctype, "ok": False, "reason": f"file not found: {rel}"}
+        actual = abs_path.stat().st_size
+        return {"type": ctype, "ok": actual >= min_bytes,
+                "reason": f"path={rel} size={actual} min={min_bytes}"}
+
+    if ctype == "file_min_lines":
+        try:
+            min_lines = int(check.get("lines", 0))
+        except (TypeError, ValueError):
+            return {"type": ctype, "ok": False, "reason": "bad lines value"}
+        if not abs_path.exists():
+            return {"type": ctype, "ok": False, "reason": f"file not found: {rel}"}
+        try:
+            content = abs_path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            return {"type": ctype, "ok": False, "reason": f"read error: {e}"}
+        actual = len([ln for ln in content.splitlines() if ln.strip()])
+        return {"type": ctype, "ok": actual >= min_lines,
+                "reason": f"path={rel} lines={actual} min={min_lines}"}
+
+    return {"type": ctype, "ok": False, "reason": "unhandled check type"}
+
+
 def _run_one_test(slug: str, t: dict) -> dict:
     cmd = (t.get("command") or "").strip()
-    expects = t.get("expects") or ""
     parts = cmd.split()
     if not parts:
         return {"name": t.get("name", "test"), "command": cmd, "ok": False,
-                "rc": -1, "stdout": "", "stderr": "empty command", "expects_ok": False}
+                "rc": -1, "stdout": "", "stderr": "empty command", "checks": []}
     # Запускаем через venv-python если первая часть — python/python3 или pytest
     if parts[0].lower() in ("python", "python3"):
         res = run_with_project_python(slug, parts[1:], timeout=PHASE_TEST_TIMEOUT)
@@ -376,8 +450,29 @@ def _run_one_test(slug: str, t: dict) -> dict:
         res = run_with_project_python(slug, ["-m", "pytest", *parts[1:]], timeout=PHASE_TEST_TIMEOUT)
     else:
         res = run_in_project(slug, parts, timeout=PHASE_TEST_TIMEOUT)
-    expects_ok = (expects.lower() in (res.get("stdout", "")).lower()) if expects else True
-    overall_ok = bool(res.get("ok")) and expects_ok
+
+    # Структурные checks из плана архитектора (P0): машинно-проверяемые условия.
+    raw_checks = t.get("checks")
+    check_results: list[dict] = []
+    if isinstance(raw_checks, list) and raw_checks:
+        for ch in raw_checks:
+            check_results.append(_evaluate_check(slug, ch, res))
+        checks_ok = all(c.get("ok") for c in check_results)
+        # rc уже отдельная проверка только если её попросили; если её нет — 
+        # требуем rc=0 неявно как минимальный sanity-check.
+        has_rc_check = any(c.get("type") == "rc_zero" for c in check_results)
+        rc_implicit_ok = True if has_rc_check else (res.get("returncode") == 0)
+        overall_ok = checks_ok and rc_implicit_ok
+        legacy_expects = ""
+        legacy_expects_ok = True
+    else:
+        # Legacy fallback: свободнотекстовый expects ищется в stdout.
+        # Сохранён ради обратной совместимости со старыми планами,
+        # но архитектор больше не должен его генерировать.
+        legacy_expects = t.get("expects") or ""
+        legacy_expects_ok = (legacy_expects.lower() in (res.get("stdout", "")).lower()) if legacy_expects else True
+        overall_ok = bool(res.get("ok")) and legacy_expects_ok
+
     return {
         "name":    t.get("name", "test"),
         "command": cmd,
@@ -385,8 +480,9 @@ def _run_one_test(slug: str, t: dict) -> dict:
         "rc":      res.get("returncode"),
         "stdout":  (res.get("stdout") or "")[-400:],
         "stderr":  (res.get("stderr") or "")[-800:],
-        "expects": expects,
-        "expects_ok": expects_ok,
+        "checks":  check_results,
+        "expects": legacy_expects,
+        "expects_ok": legacy_expects_ok,
     }
 
 
