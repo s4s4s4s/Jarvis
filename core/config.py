@@ -28,6 +28,9 @@ PROJECT_REPORT_MODEL   = OLLAMA_FAST_MODEL
 # P9: aider как builder/healer (внешний coding-агент под локальный ollama).
 # Переключатель позволяет полностью откатиться на свой путь без изменения кода.
 AIDER_ENABLED       = False    # включаем поэтапно после миграции _build_one_file и _heal_loop
+# Требуется coder-tier модель в ollama. Скачать:
+#   ollama pull qwen2.5-coder:32b-instruct-q4_K_M
+# Имя ДОЛЖНО совпадать с выводом `ollama list`.
 AIDER_MODEL         = "ollama/qwen2.5-coder:32b-instruct-q4_K_M"
 AIDER_TIMEOUT_S     = 300      # жёсткий таймаут на один вызов aider
 AIDER_MAX_RETRIES   = 2        # сколько раз ретраим при timeout/сбое subprocess

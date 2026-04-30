@@ -81,9 +81,13 @@ class TestAiderBuildHappyPath(_TempProjectDir):
         self.assertIn("--yes-always", argv)
         self.assertIn("--message", argv)
         self.assertIn("--no-stream", argv)
+        self.assertIn("--no-show-model-warnings", argv)
         self.assertIn(self.target, argv)
-        # env должен содержать OPENAI_API_BASE с /v1
+        # env: OLLAMA_API_BASE без /v1 (нативный эндпоинт), OPENAI_API_BASE с /v1
         env = captured["env"]
+        self.assertIn("OLLAMA_API_BASE", env)
+        self.assertFalse(env["OLLAMA_API_BASE"].endswith("/v1"),
+                         "OLLAMA_API_BASE не должен иметь /v1 — это нативный эндпоинт")
         self.assertIn("OPENAI_API_BASE", env)
         self.assertTrue(env["OPENAI_API_BASE"].endswith("/v1"))
         self.assertIn("OPENAI_API_KEY", env)

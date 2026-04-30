@@ -83,6 +83,7 @@ def _build_argv(
         "--no-pretty",
         "--no-stream",
         "--no-check-update",
+        "--no-show-model-warnings",
         "--message", instruction,
         target_file,
     ]
@@ -94,10 +95,16 @@ def _build_argv(
 def _aider_env(api_base: str) -> dict:
     """Переменные окружения для aider: указываем где ollama.
 
-    aider читает OPENAI_API_BASE / OPENAI_API_KEY (с ollama ключ — что угодно).
+    Для моделей вида 'ollama/...' aider/litellm используют НАТИВНЫЙ ollama-провайдер
+    и читают OLLAMA_API_BASE (без /v1, это не OpenAI-совместимый эндпоинт).
+    OPENAI_* ставим на всякий случай, если кто-то свалится на OpenAI-путь.
     """
     env = os.environ.copy()
-    env["OPENAI_API_BASE"] = api_base + ("/v1" if not api_base.rstrip("/").endswith("/v1") else "")
+    base = api_base.rstrip("/")
+    # НАТИВНЫЙ ollama-эндпоинт — без /v1
+    env["OLLAMA_API_BASE"] = base[:-3] if base.endswith("/v1") else base
+    # OpenAI-совместимый — с /v1
+    env["OPENAI_API_BASE"] = base if base.endswith("/v1") else base + "/v1"
     env.setdefault("OPENAI_API_KEY", "ollama-local")  # любая непустая строка
     # Тише по умолчанию
     env.setdefault("AIDER_ANALYTICS", "false")
