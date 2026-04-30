@@ -971,9 +971,55 @@ def _heal_missing_module(slug: str, failed: dict) -> dict | None:
     }
 
 
+def _pick_heal_target(plan: dict, failed: dict) -> str | None:
+    """Выбрать файл-кандидат для хилинга без LLM-диагностики.
+
+    Эвристика:
+    1. Если в stderr/stdout прямо встречается имя файла из plan.files — берём его.
+    2. Иначе — первый .py-файл в plan.files (entry point).
+    3. Иначе None.
+    """
+    file_paths = [f["path"] for f in plan.get("files", []) if isinstance(f, dict) and "path" in f]
+    if not file_paths:
+        return None
+    blob = (failed.get("stderr", "") or "") + "\n" + (failed.get("stdout", "") or "")
+    for p in file_paths:
+        if p and p in blob:
+            return p
+    py_files = [p for p in file_paths if p.lower().endswith(".py")]
+    return py_files[0] if py_files else file_paths[0]
+
+
+def _heal_via_aider(slug: str, plan: dict, failed: dict) -> dict:
+    """P9.4: попытаться починить файл через aider_heal.
+
+    Результат — dict с полями ok/target/error/duration. Никогда не бросает исключение.
+    """
+    target = _pick_heal_target(plan, failed)
+    if not target:
+        return {"ok": False, "target": None, "error": "no candidate file in plan"}
+    error_text = (failed.get("stderr", "") or failed.get("stdout", "") or "").strip()
+    if not error_text:
+        error_text = f"test '{failed.get('name','?')}' failed (rc={failed.get('rc','?')})"
+    test_command = failed.get("command", "") or ""
+    try:
+        pdir = project_dir(slug)
+        res = aider_runner.aider_heal(pdir, target, error_text, test_command=test_command)
+        return {
+            "ok":         bool(res.ok),
+            "target":     target,
+            "error":      res.error if not res.ok else "",
+            "duration_s": res.duration_s,
+            "attempts":   res.attempts,
+        }
+    except Exception as e:
+        return {"ok": False, "target": target, "error": f"{type(e).__name__}: {e}"}
+
+
 def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budget: Budget) -> list[dict]:
     if all(r.get("ok") for r in test_results):
         return test_results
+    from core.config import AIDER_ENABLED, AIDER_BIN  # локальный импорт — динамический флаг
     file_paths = [f["path"] for f in plan["files"] if isinstance(f, dict) and "path" in f]
 
     for heal_iter in range(1, MAX_HEAL_ITERS + 1):
@@ -1026,6 +1072,33 @@ def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budg
         if diag is None:
             diag = _heal_json_decode(slug, failed, plan)
             det_category = "json" if diag else None
+
+        # P9.4: aider-ветка — если детерминистические хилеры не помогли и aider включён,
+        # отдаём ему файл и stderr напрямую. Aider сам и диагностирует, и патчит, и сохраняет.
+        # Если aider успешно применил правку — ретестируем; иначе fallthrough в LLM-диагностику.
+        if diag is None and AIDER_ENABLED and aider_runner.is_aider_available(AIDER_BIN):
+            try:
+                budget.check(f"heal:aider:iter{heal_iter}")
+                ah = _heal_via_aider(slug, plan, failed)
+                budget.spend(1)
+            except BudgetExceeded as e:
+                add_phase(slug, f"heal:iter{heal_iter}", "failed", f"budget: {e}")
+                break
+            if ah.get("ok"):
+                add_phase(
+                    slug, f"heal:iter{heal_iter}", "ok",
+                    f"aider heal target={ah.get('target')} duration={ah.get('duration_s')}s"
+                )
+                test_results = _test(slug, plan)
+                if all(r.get("ok") for r in test_results):
+                    break
+                continue
+            else:
+                logger.info(
+                    f"[heal] aider failed (target={ah.get('target')} err={ah.get('error','')[:200]}), "
+                    "fallback to LLM diagnose"
+                )
+                # fallthrough в обычный LLM-путь ниже
 
         if diag is not None:
             add_phase(slug, f"heal:iter{heal_iter}", "ok",

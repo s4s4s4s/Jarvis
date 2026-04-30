@@ -1155,6 +1155,114 @@ class TestAiderBuildPathSwitch(_IsolatedJarvisRoot):
 
 
 # ─── P7: nightly E2E smoke ─────────────────────────────────────────────────
+class TestHealViaAider(_IsolatedJarvisRoot):
+    """P9.4: aider-ветка в _heal_loop работает корректно."""
+
+    def test_pick_heal_target_finds_file_in_stderr(self):
+        plan = {"files": [{"path": "main.py"}, {"path": "helper.py"}]}
+        failed = {"stderr": "Traceback ... File 'helper.py', line 5, in <module>\nValueError"}
+        self.assertEqual(self.project_mod._pick_heal_target(plan, failed), "helper.py")
+
+    def test_pick_heal_target_falls_back_to_first_py(self):
+        plan = {"files": [{"path": "data.csv"}, {"path": "main.py"}, {"path": "helper.py"}]}
+        failed = {"stderr": "some unrelated error without filenames"}
+        self.assertEqual(self.project_mod._pick_heal_target(plan, failed), "main.py")
+
+    def test_pick_heal_target_returns_none_for_empty_plan(self):
+        self.assertIsNone(self.project_mod._pick_heal_target({"files": []}, {"stderr": "x"}))
+
+    def test_heal_via_aider_success(self):
+        m = self.proj_mod.create_project({"title": "X", "slug": "heal-ok"})
+        plan = {"files": [{"path": "main.py"}]}
+        failed = {"name": "smoke", "stderr": "NameError", "command": "python main.py"}
+        fake_result = type("R", (), {
+            "ok": True, "error": "", "duration_s": 1.5, "attempts": 1, "content": "x=1\n",
+            "stderr": "", "exit_code": 0,
+        })()
+        with patch.object(self.project_mod.aider_runner, "aider_heal", return_value=fake_result) as mock_heal:
+            res = self.project_mod._heal_via_aider(m.slug, plan, failed)
+        mock_heal.assert_called_once()
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["target"], "main.py")
+
+    def test_heal_via_aider_handles_exception(self):
+        m = self.proj_mod.create_project({"title": "X", "slug": "heal-ex"})
+        plan = {"files": [{"path": "main.py"}]}
+        failed = {"name": "smoke", "stderr": "x", "command": "python main.py"}
+        with patch.object(self.project_mod.aider_runner, "aider_heal", side_effect=RuntimeError("boom")):
+            res = self.project_mod._heal_via_aider(m.slug, plan, failed)
+        self.assertFalse(res["ok"])
+        self.assertIn("boom", res["error"])
+
+    def test_heal_loop_uses_aider_when_enabled(self):
+        m = self.proj_mod.create_project({"title": "X", "slug": "heal-aider"})
+        self.proj_mod.write_project_file(m.slug, "main.py", "x=1\n")
+        plan = {"files": [{"path": "main.py", "purpose": "entry"}],
+                "tests": [{"name": "smoke", "command": "python main.py", "checks": [{"type": "rc_zero"}]}]}
+        spec = {"title": "X", "summary": "", "requirements": []}
+        budget = self.project_mod.Budget(wall_s=60, llm=10)
+        test_results_failing = [{"name": "smoke", "ok": False, "stderr": "some runtime err",
+                                  "stdout": "", "command": "python main.py", "rc": 1}]
+        test_results_ok = [{"name": "smoke", "ok": True, "stderr": "", "stdout": "",
+                            "command": "python main.py", "rc": 0}]
+        from core import config as cfg
+        fake_ah = {"ok": True, "target": "main.py", "error": "", "duration_s": 2.0, "attempts": 1}
+        with patch.object(cfg, "AIDER_ENABLED", True), \
+             patch.object(self.project_mod.aider_runner, "is_aider_available", return_value=True), \
+             patch.object(self.project_mod, "_heal_via_aider", return_value=fake_ah) as mock_aider, \
+             patch.object(self.project_mod, "_test", return_value=test_results_ok), \
+             patch.object(self.project_mod, "_diagnose") as mock_diagnose:
+            out = self.project_mod._heal_loop(m.slug, spec, plan, test_results_failing, budget)
+        mock_aider.assert_called_once()
+        mock_diagnose.assert_not_called()
+        self.assertTrue(all(r["ok"] for r in out))
+
+    def test_heal_loop_falls_back_to_llm_when_aider_fails(self):
+        m = self.proj_mod.create_project({"title": "X", "slug": "heal-fb"})
+        self.proj_mod.write_project_file(m.slug, "main.py", "x=1\n")
+        plan = {"files": [{"path": "main.py", "purpose": "entry"}],
+                "tests": [{"name": "smoke", "command": "python main.py", "checks": [{"type": "rc_zero"}]}]}
+        spec = {"title": "X", "summary": "", "requirements": []}
+        budget = self.project_mod.Budget(wall_s=60, llm=10)
+        test_results_failing = [{"name": "smoke", "ok": False, "stderr": "err",
+                                  "stdout": "", "command": "python main.py", "rc": 1}]
+        test_results_ok = [{"name": "smoke", "ok": True, "stderr": "", "stdout": "",
+                            "command": "python main.py", "rc": 0}]
+        from core import config as cfg
+        fake_ah = {"ok": False, "target": "main.py", "error": "aider timeout"}
+        with patch.object(cfg, "AIDER_ENABLED", True), \
+             patch.object(self.project_mod.aider_runner, "is_aider_available", return_value=True), \
+             patch.object(self.project_mod, "_heal_via_aider", return_value=fake_ah), \
+             patch.object(self.project_mod, "_diagnose",
+                          return_value={"target_file": "main.py", "diagnosis": "x", "fix_instruction": "fix it"}) as mock_diag, \
+             patch.object(self.project_mod.coder_agent, "patch_file", return_value="y=2\n"), \
+             patch.object(self.project_mod, "_test", return_value=test_results_ok):
+            out = self.project_mod._heal_loop(m.slug, spec, plan, test_results_failing, budget)
+        mock_diag.assert_called_once()
+        self.assertTrue(all(r["ok"] for r in out))
+
+    def test_heal_loop_skips_aider_when_disabled(self):
+        m = self.proj_mod.create_project({"title": "X", "slug": "heal-off"})
+        self.proj_mod.write_project_file(m.slug, "main.py", "x=1\n")
+        plan = {"files": [{"path": "main.py"}],
+                "tests": [{"name": "smoke", "command": "python main.py", "checks": [{"type": "rc_zero"}]}]}
+        spec = {"title": "X"}
+        budget = self.project_mod.Budget(wall_s=60, llm=10)
+        test_results_failing = [{"name": "smoke", "ok": False, "stderr": "err",
+                                  "stdout": "", "command": "python main.py", "rc": 1}]
+        test_results_ok = [{"name": "smoke", "ok": True, "stderr": "", "stdout": "",
+                            "command": "python main.py", "rc": 0}]
+        from core import config as cfg
+        with patch.object(cfg, "AIDER_ENABLED", False), \
+             patch.object(self.project_mod, "_heal_via_aider") as mock_aider, \
+             patch.object(self.project_mod, "_diagnose",
+                          return_value={"target_file": "main.py", "diagnosis": "x", "fix_instruction": "fix"}), \
+             patch.object(self.project_mod.coder_agent, "patch_file", return_value="x=2\n"), \
+             patch.object(self.project_mod, "_test", return_value=test_results_ok):
+            self.project_mod._heal_loop(m.slug, spec, plan, test_results_failing, budget)
+        mock_aider.assert_not_called()
+
+
 class TestNightlyE2ESmoke(unittest.TestCase):
     """P7: проверяем что nightly_e2e импортируется и корректно SKIPит при отсутствии ollama."""
 
