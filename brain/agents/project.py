@@ -61,6 +61,7 @@ from brain.prompts import (
 )
 from brain.agents import coder as coder_agent
 from brain.agents import reviewer as reviewer_agent
+from brain.agents import aider_runner
 from tools.static_checks import (
     static_check,
     static_errors_to_feedback,
@@ -451,15 +452,112 @@ def _phase_env(slug: str, plan: dict) -> dict:
 
 
 # ─── PHASE 4: build (coder ↔ reviewer loop) ────────────────────────────────
+def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budget: Budget) -> dict:
+    """P9: build через aider. Один вызов вместо coder/reviewer цикла.
+
+    aider сам разберётся с syntax/parse-проблемами (это его киллер-фича).
+    Мы только формулируем понятную инструкцию из spec+target и читаем результат.
+
+    Бюджет: один вызов aider = 1 spend (как один LLM-вызов в нашей метрике),
+    хотя внутри aider может сделать несколько обращений к ollama.
+    """
+    from core.config import AIDER_TIMEOUT_S
+    pdir = project_dir(slug)
+    rel_path = target.get("path") or "main.py"
+
+    # Собираем инструкцию для aider из spec + target
+    title = spec.get("title") or slug
+    summary = spec.get("summary") or ""
+    requirements = spec.get("requirements") or []
+    acceptance = spec.get("acceptance_criteria") or []
+    target_purpose = target.get("purpose") or target.get("description") or ""
+
+    instruction_parts = [f"Проект «{title}»: {summary}".strip(": ")]
+    if target_purpose:
+        instruction_parts.append(f"Назначение файла {rel_path}: {target_purpose}")
+    if requirements:
+        reqs_str = "\n".join(f"- {r}" for r in requirements[:8])
+        instruction_parts.append(f"Требования к проекту:\n{reqs_str}")
+    if acceptance:
+        ac_str = "\n".join(f"- {a}" for a in acceptance[:5])
+        instruction_parts.append(f"Критерии приёмки:\n{ac_str}")
+    instruction_parts.append(
+        f"Создай (или обнови) файл {rel_path}. "
+        "Пиши работающий, синтаксически корректный код. "
+        "Не добавляй комментариев-извинений и заглушек."
+    )
+    instruction = "\n\n".join(instruction_parts)
+
+    budget.check(f"build:{rel_path}:aider")
+    res = aider_runner.aider_build(pdir, rel_path, instruction)
+    budget.spend(1)
+
+    # Пост-проверка: даже если aider сказал ok, прогоним static_check для метрик манифеста.
+    sc = static_check(rel_path, res.content) if res.content else {"applicable": False}
+    static_summary = {
+        "tools":         sc.get("tools") or [],
+        "errors":        sc.get("errors") or [],
+        "warnings":      sc.get("warnings") or [],
+        "fail_streak":   0 if sc.get("ok", True) else 1,
+        "final_ast_ok":  bool(sc.get("ok", True)),
+    }
+
+    if not res.ok:
+        logger.warning(f"[project.build_aider] {rel_path} failed: {res.error}")
+        return {
+            "path": rel_path,
+            "ok": False,
+            "error": res.error,
+            "verdict": "revise",
+            "summary": (res.error or "aider failure")[:200],
+            "iters": res.attempts,
+            "static": static_summary,
+            "_via": "aider",
+            "aider": {
+                "duration_s": res.duration_s,
+                "exit_code":  res.exit_code,
+                "stderr_tail": res.stderr[-400:] if res.stderr else "",
+            },
+        }
+
+    return {
+        "path":    rel_path,
+        "ok":      True,
+        "verdict": "approve",
+        "issues":  len(static_summary["errors"]) + len(static_summary["warnings"]),
+        "summary": f"aider built {rel_path} in {res.duration_s}s",
+        "iters":   res.attempts,
+        "static":  static_summary,
+        "_via":    "aider",
+        "aider":   {
+            "duration_s": res.duration_s,
+            "exit_code":  res.exit_code,
+        },
+    }
+
+
 def _build_one_file(slug: str, spec: dict, plan: dict, target: dict, budget: Budget) -> dict:
     """Build-loop с детерминистической статикой перед LLM-Reviewer (P1).
 
-    На каждой итерации:
+    P9: если AIDER_ENABLED и aider доступен — делегируем в _build_one_file_aider.
+    Иначе — старый путь coder/reviewer.
+
+    На каждой итерации (старый путь):
       1. Coder пишет/патчит код.
       2. static_check (ast.parse + ruff/pyflakes если есть).
       3. Если синтаксис битый → пропускаем LLM-Reviewer, ast-ошибка — feedback.
       4. Иначе вызываем Reviewer (при наличии lint-warnings — пробросим их как hint).
     """
+    from core.config import AIDER_ENABLED
+    if AIDER_ENABLED and aider_runner.is_aider_available():
+        try:
+            return _build_one_file_aider(slug, spec, plan, target, budget)
+        except BudgetExceeded:
+            raise
+        except Exception as e:
+            logger.warning(f"[project.build] aider path failed ({e}); falling back to legacy")
+            # Падаем в старый путь — fallback по принципу проекта
+
     feedback = ""
     code = ""
     final_review: dict[str, Any] = {}

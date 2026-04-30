@@ -1054,7 +1054,107 @@ class TestBadTitlePlaceholders(_IsolatedJarvisRoot):
         self.assertIn("_intake_warning", out)
 
 
-# ─── P7: nightly E2E smoke ────────────────────────────────────────────────────
+# ─── P9: aider build path switching ───────────────────────────────────
+class TestAiderBuildPathSwitch(_IsolatedJarvisRoot):
+    """P9: развилка _build_one_file (aider vs legacy) работает правильно."""
+
+    def _make_target_and_budget(self):
+        target = {"path": "main.py", "purpose": "hello world"}
+        budget = self.project_mod.Budget(wall_s=60, llm=10)
+        return target, budget
+
+    def _make_project(self, slug: str = "aider-test"):
+        return self.proj_mod.create_project({"title": "X", "slug": slug})
+
+    def test_aider_used_when_enabled_and_available(self):
+        """AIDER_ENABLED=True + aider доступен → вызывается _build_one_file_aider."""
+        m = self._make_project()
+        target, budget = self._make_target_and_budget()
+        spec = {"title": "X", "summary": "hello", "requirements": ["печатай hi"]}
+        plan = {"files": [target]}
+
+        from core import config as cfg
+        with patch.object(cfg, "AIDER_ENABLED", True), \
+             patch.object(self.project_mod.aider_runner, "is_aider_available", return_value=True), \
+             patch.object(self.project_mod, "_build_one_file_aider",
+                          return_value={"path": "main.py", "ok": True, "_via": "aider",
+                                        "verdict": "approve", "iters": 1, "static": {}}) as mock_aider:
+            res = self.project_mod._build_one_file(m.slug, spec, plan, target, budget)
+        mock_aider.assert_called_once()
+        self.assertEqual(res["_via"], "aider")
+        self.assertTrue(res["ok"])
+
+    def test_legacy_used_when_aider_disabled(self):
+        """AIDER_ENABLED=False → _build_one_file_aider НЕ вызывается, идёт старый путь."""
+        m = self._make_project()
+        target, budget = self._make_target_and_budget()
+        spec = {"title": "X", "summary": "hello", "requirements": ["x"]}
+        plan = {"files": [target]}
+
+        from core import config as cfg
+        with patch.object(cfg, "AIDER_ENABLED", False), \
+             patch.object(self.project_mod, "_build_one_file_aider") as mock_aider, \
+             patch.object(self.project_mod.coder_agent, "write_file", return_value="print('hi')\n"), \
+             patch.object(self.project_mod.reviewer_agent, "review",
+                          return_value={"verdict": "approve", "issues": [], "summary": "ok", "_source": "static"}):
+            res = self.project_mod._build_one_file(m.slug, spec, plan, target, budget)
+        mock_aider.assert_not_called()
+        self.assertTrue(res["ok"])
+        self.assertNotIn("_via", res)  # legacy не ставит _via
+
+    def test_legacy_used_when_aider_missing_binary(self):
+        """AIDER_ENABLED=True но is_aider_available()=False → fallback на legacy."""
+        m = self._make_project()
+        target, budget = self._make_target_and_budget()
+        spec = {"title": "X", "summary": "hello", "requirements": ["x"]}
+        plan = {"files": [target]}
+
+        from core import config as cfg
+        with patch.object(cfg, "AIDER_ENABLED", True), \
+             patch.object(self.project_mod.aider_runner, "is_aider_available", return_value=False), \
+             patch.object(self.project_mod, "_build_one_file_aider") as mock_aider, \
+             patch.object(self.project_mod.coder_agent, "write_file", return_value="x=1\n"), \
+             patch.object(self.project_mod.reviewer_agent, "review",
+                          return_value={"verdict": "approve", "issues": [], "summary": "ok", "_source": "static"}):
+            res = self.project_mod._build_one_file(m.slug, spec, plan, target, budget)
+        mock_aider.assert_not_called()
+        self.assertTrue(res["ok"])
+
+    def test_aider_exception_falls_back_to_legacy(self):
+        """Если _build_one_file_aider кидает любое исключение (кроме BudgetExceeded) → fallback."""
+        m = self._make_project()
+        target, budget = self._make_target_and_budget()
+        spec = {"title": "X", "summary": "hello", "requirements": ["x"]}
+        plan = {"files": [target]}
+
+        from core import config as cfg
+        with patch.object(cfg, "AIDER_ENABLED", True), \
+             patch.object(self.project_mod.aider_runner, "is_aider_available", return_value=True), \
+             patch.object(self.project_mod, "_build_one_file_aider",
+                          side_effect=RuntimeError("aider exploded")), \
+             patch.object(self.project_mod.coder_agent, "write_file", return_value="x=1\n"), \
+             patch.object(self.project_mod.reviewer_agent, "review",
+                          return_value={"verdict": "approve", "issues": [], "summary": "ok", "_source": "static"}):
+            res = self.project_mod._build_one_file(m.slug, spec, plan, target, budget)
+        self.assertTrue(res["ok"])  # legacy довёл до конца
+
+    def test_budget_exceeded_in_aider_propagates(self):
+        """BudgetExceeded из aider-пути НЕ перехватывается — всегда всплывает наверх."""
+        m = self._make_project()
+        target, budget = self._make_target_and_budget()
+        spec = {"title": "X"}
+        plan = {"files": [target]}
+
+        from core import config as cfg
+        with patch.object(cfg, "AIDER_ENABLED", True), \
+             patch.object(self.project_mod.aider_runner, "is_aider_available", return_value=True), \
+             patch.object(self.project_mod, "_build_one_file_aider",
+                          side_effect=self.project_mod.BudgetExceeded("out of budget")):
+            with self.assertRaises(self.project_mod.BudgetExceeded):
+                self.project_mod._build_one_file(m.slug, spec, plan, target, budget)
+
+
+# ─── P7: nightly E2E smoke ─────────────────────────────────────────────────
 class TestNightlyE2ESmoke(unittest.TestCase):
     """P7: проверяем что nightly_e2e импортируется и корректно SKIPит при отсутствии ollama."""
 
