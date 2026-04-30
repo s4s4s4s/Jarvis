@@ -239,9 +239,10 @@ def _normalize_intake_spec(spec: dict, query: str) -> dict:
     if not isinstance(spec, dict):
         spec = {}
 
-    # title
+    # title — ПЛОХИЕ значения (плейсхолдеры из промпта) отбрасываем
     title = str(spec.get("title") or "").strip()
-    if not title or len(title) > 100:
+    bad_titles = {"untitled-project", "untitled", "project", "unnamed", "name", "название", "проект"}
+    if not title or len(title) > 100 or title.lower() in bad_titles:
         words = (query or "").strip().split()[:5]
         title = " ".join(words) if words else "untitled-project"
     spec["title"] = title
@@ -263,10 +264,14 @@ def _normalize_intake_spec(spec: dict, query: str) -> dict:
     lang = str(spec.get("language") or "").strip().lower()
     spec["language"] = lang if lang in allowed_lang else "python"
 
-    # summary
+    # summary — если ровно равен запросу (эхо), берём первые ~15 слов
     summary = str(spec.get("summary") or "").strip()
+    q_norm_full = (query or "").strip()
     if not summary:
-        summary = (query or "").strip()[:200]
+        summary = q_norm_full[:200]
+    elif summary.lower() == q_norm_full.lower():
+        words = q_norm_full.split()[:15]
+        summary = " ".join(words) + ("…" if len(q_norm_full.split()) > 15 else "")
     spec["summary"] = summary[:300]
 
     # requirements: список строк; флаг эхо если LLM выдала весь query одним пунктом
@@ -280,9 +285,16 @@ def _normalize_intake_spec(spec: dict, query: str) -> dict:
         and q_norm
         and reqs[0].lower().startswith(q_norm[: min(40, len(q_norm))])
     )
-    spec["requirements"] = reqs
+    # P6.1: если эхо — разбиваем примитивно по знакам препинания. Не заменяет LLM,
+    # но хотя бы даёт архитектору отдельные куски вместо одной слипшейся строки.
     if is_echo:
         spec["_intake_warning"] = "requirements is echo of query"
+        # Разбиваем по , ; и « и »
+        chunks = re.split(r"[,;]|\s+и\s+|\s+и\s+", reqs[0])
+        chunks = [c.strip(" .!?—-") for c in chunks if c.strip(" .!?—-")]
+        if len(chunks) >= 2:
+            reqs = chunks[:6]
+    spec["requirements"] = reqs
 
     # deliverables
     dlv_raw = spec.get("deliverables") or []
@@ -982,8 +994,72 @@ def _generate_readme(slug: str, spec: dict, plan: dict, test_results: list[dict]
 
 
 # ─── PHASE 8: report ────────────────────────────────────────────────────────
+def _deterministic_report(slug: str, spec: dict, build_results: list[dict],
+                          test_results: list[dict]) -> str:
+    """P5.2: детерминистический отчёт — без LLM, без галлюцинаций, строго по фактам.
+
+    Никогда не выдумывает ошибки. Описывает только то что реально в build_results/test_results.
+    """
+    title = spec.get("title") or slug
+    files_ok = [r["path"] for r in build_results if r.get("ok")]
+    build_ok = len(files_ok)
+    build_total = len(build_results)
+    tests_total = len(test_results)
+    tests_ok = sum(1 for r in test_results if r.get("ok"))
+    failed_tests = [r for r in test_results if not r.get("ok")]
+
+    parts: list[str] = []
+    parts.append(f"Готово, сэр. Проект «{title}» лежит в data/projects/{slug}.")
+
+    # Файлы
+    if files_ok:
+        if len(files_ok) <= 3:
+            files_str = ", ".join(files_ok)
+        else:
+            files_str = f"{len(files_ok)} файлов включая " + ", ".join(files_ok[:3])
+        parts.append(f"Собраны: {files_str}.")
+    else:
+        parts.append("Ни один файл не собрался.")
+
+    # Тесты — только факты
+    if tests_total == 0:
+        parts.append("Тесты не были заданы.")
+    elif tests_ok == tests_total:
+        if tests_total == 1:
+            parts.append("Тест прошёл успешно.")
+        else:
+            parts.append(f"Все {tests_total} тестов прошли успешно.")
+    else:
+        parts.append(f"Тестов прошло {tests_ok} из {tests_total}.")
+        # Короткий фрагмент первой ошибки — только если реально есть.
+        first = failed_tests[0]
+        err = (first.get("stderr") or "").strip()
+        if err:
+            short = err.splitlines()[-1][:120]
+            parts.append(f"Первая ошибка: {short}.")
+
+    # build vs total — если не все файлы собрались, упомянуть
+    if build_ok < build_total:
+        parts.append(f"Собралось {build_ok} из {build_total} файлов.")
+
+    return " ".join(parts)
+
+
 def _report(slug: str, spec: dict, build_results: list[dict], test_results: list[dict],
             budget: Budget) -> str:
+    """P5.2: если все тесты ок и все файлы собрались — детерминистика без LLM (врать нечему).
+
+    LLM зовём только когда есть реальные проблемы и нужно объяснить.
+    """
+    all_files_ok = all(r.get("ok") for r in build_results) and len(build_results) > 0
+    all_tests_ok = all(r.get("ok") for r in test_results)
+    has_failed_tests = any(not r.get("ok") for r in test_results)
+
+    # Счастливый путь — без LLM. Невозможно врать.
+    if all_files_ok and all_tests_ok and not has_failed_tests:
+        return _deterministic_report(slug, spec, build_results, test_results)
+
+    # Иначе — пробуем LLM, но fallback на детерминистику при любой ошибке.
     summary = {
         "title":       spec.get("title"),
         "slug":        slug,
@@ -994,22 +1070,15 @@ def _report(slug: str, spec: dict, build_results: list[dict], test_results: list
         "tests_total": len(test_results),
         "first_test_error": next((r["stderr"] for r in test_results if not r["ok"] and r.get("stderr")), ""),
     }
-    user = ("Итоги проекта в JSON:\n" + json.dumps(summary, ensure_ascii=False, indent=2)
+    user = ("Итоги проекта в JSON (опирайся ТОЛЬКО на эти данные):\n"
+            + json.dumps(summary, ensure_ascii=False, indent=2)
             + f"\n\nПапка проекта: data/projects/{slug}/")
     try:
         return _llm(budget, MODEL_REPORT, PROJECT_REPORT_SYSTEM, user,
-                    temperature=0.3, num_ctx=2048, where="report").strip()
+                    temperature=0.2, num_ctx=2048, where="report").strip()
     except (BudgetExceeded, Exception) as e:
         logger.warning(f"[project.report] LLM unavailable: {e} — using deterministic")
-        ok = summary["build_ok"]
-        total = summary["build_total"]
-        tn_ok = summary["tests_ok"]
-        tn = summary["tests_total"]
-        msg = (f"Проект {summary['title']} собран. Файлов: {ok} из {total}, "
-               f"тестов прошло: {tn_ok} из {tn}. Лежит в data/projects/{slug}.")
-        if summary["first_test_error"]:
-            msg += " Есть ошибка в тестах — детали в manifest."
-        return msg
+        return _deterministic_report(slug, spec, build_results, test_results)
 
 
 # ─── PUBLIC: run() ──────────────────────────────────────────────────────────

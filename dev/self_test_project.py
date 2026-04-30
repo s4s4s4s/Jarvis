@@ -153,7 +153,7 @@ class TestProjectAgentEndToEnd(_IsolatedJarvisRoot):
             _FAKE_CODE_GOOD,       # coder.patch_file
             _FAKE_REVIEW_APPROVE,  # reviewer #2
             _FAKE_README,          # readme
-            _FAKE_REPORT,          # report
+            # P5.2: report не зовёт LLM на happy path — детерминистика
         ]
         fake_chat, state = make_fake_chat(seq)
         patches = _patch_chat_everywhere(fake_chat); _enter(patches)
@@ -202,7 +202,7 @@ class TestProjectAgentEndToEnd(_IsolatedJarvisRoot):
             good_print,            # coder.patch_file (внутри heal)
             # тесты после heal — без LLM, реальный subprocess
             _FAKE_README,          # readme
-            _FAKE_REPORT,          # report
+            # P5.2: report не зовёт LLM на happy path
         ]
         fake_chat, state = make_fake_chat(seq)
         patches = _patch_chat_everywhere(fake_chat); _enter(patches)
@@ -967,6 +967,91 @@ class TestRoleSplitModels(unittest.TestCase):
         self.assertEqual(c.MODEL_INTAKE, cfg.PROJECT_INTAKE_MODEL)
         self.assertEqual(c.MODEL_README, cfg.PROJECT_README_MODEL)
         self.assertEqual(c.MODEL_REPORT, cfg.PROJECT_REPORT_MODEL)
+
+
+# ─── P5.2: deterministic report (no hallucinations) ───────────────────────────
+class TestDeterministicReport(_IsolatedJarvisRoot):
+    """P5.2: _deterministic_report() и _report() не выдумывают ошибки."""
+
+    def test_happy_path_no_error_words(self):
+        """Все файлы собрались, все тесты прошли — отчёт без слов 'не смогли', 'ошибка', 'провал'."""
+        spec = {"title": "RSS Parser"}
+        builds = [{"path": "main.py", "ok": True}, {"path": "utils.py", "ok": True}]
+        tests = [{"name": "test_smoke", "ok": True}]
+        out = self.project_mod._deterministic_report("rss-parser-123", spec, builds, tests).lower()
+        for forbidden in ["не смогли", "не получилось", "провал", "что именно пошло не так", "к сожалению"]:
+            self.assertNotIn(forbidden, out, f"forbidden '{forbidden}' in: {out}")
+        self.assertIn("rss parser", out)
+        self.assertIn("main.py", out)
+
+    def test_failed_test_mentions_real_stderr(self):
+        """Если тест упал — отчёт упоминает реальный stderr, а не выдумывает."""
+        spec = {"title": "Project X"}
+        builds = [{"path": "main.py", "ok": True}]
+        tests = [{"name": "test_x", "ok": False, "stderr": "AssertionError: expected 5 got 3"}]
+        out = self.project_mod._deterministic_report("project-x-1", spec, builds, tests)
+        self.assertIn("AssertionError", out)
+        self.assertIn("0 из 1", out)
+
+    def test_no_tests_says_no_tests(self):
+        """Когда тестов нет — отчёт говорит 'не были заданы', а не 'все прошли'."""
+        spec = {"title": "Hello"}
+        builds = [{"path": "main.py", "ok": True}]
+        tests = []
+        out = self.project_mod._deterministic_report("hello-1", spec, builds, tests)
+        self.assertIn("не были заданы", out)
+        self.assertNotIn("прошли успешно", out)
+
+    def test_partial_build_mentions_count(self):
+        """Когда не все файлы собрались — отчёт говорит 'X из Y'."""
+        spec = {"title": "Big"}
+        builds = [{"path": "a.py", "ok": True}, {"path": "b.py", "ok": False}]
+        tests = []
+        out = self.project_mod._deterministic_report("big-1", spec, builds, tests)
+        self.assertIn("1 из 2", out)
+
+    def test_report_skips_llm_on_happy_path(self):
+        """P5.2: _report() не зовёт LLM когда всё ok."""
+        spec = {"title": "OK"}
+        builds = [{"path": "main.py", "ok": True}]
+        tests = [{"name": "test_a", "ok": True}]
+        budget = self.project_mod.Budget(wall_s=60, llm=10)
+        with patch.object(self.project_mod, "_llm") as llm_mock:
+            out = self.project_mod._report("ok-1", spec, builds, tests, budget)
+        llm_mock.assert_not_called()
+        self.assertIn("OK", out)
+
+
+# ─── P6.1: bad-title placeholder rejection ────────────────────────────────────
+class TestBadTitlePlaceholders(_IsolatedJarvisRoot):
+    """P6.1: _normalize_intake_spec отбрасывает плейсхолдеры из промпта."""
+
+    def test_untitled_project_replaced_by_query_words(self):
+        spec = {"title": "untitled-project", "summary": "x"}
+        out = self.project_mod._normalize_intake_spec(spec, "парсер RSS на feedparser")
+        self.assertNotEqual(out["title"].lower(), "untitled-project")
+        self.assertIn("парсер", out["title"].lower())
+
+    def test_untitled_replaced(self):
+        spec = {"title": "Untitled", "summary": "x"}
+        out = self.project_mod._normalize_intake_spec(spec, "скачать файл по url")
+        self.assertNotEqual(out["title"].lower(), "untitled")
+
+    def test_summary_echo_truncated(self):
+        """Если LLM вернула summary == query целиком — обрезаем до ~15 слов."""
+        long_q = " ".join(["слово"] * 30)
+        spec = {"title": "X", "summary": long_q}
+        out = self.project_mod._normalize_intake_spec(spec, long_q)
+        self.assertLess(len(out["summary"].split()), 20)
+        self.assertTrue(out["summary"].endswith("…") or len(out["summary"].split()) <= 16)
+
+    def test_requirements_echo_split_by_punctuation(self):
+        """Если requirements это эхо запроса — разбиваем по запятым/«и»."""
+        q = "скачать файл, распарсить json, сохранить в csv"
+        spec = {"title": "Y", "requirements": [q]}
+        out = self.project_mod._normalize_intake_spec(spec, q)
+        self.assertGreaterEqual(len(out["requirements"]), 2)
+        self.assertIn("_intake_warning", out)
 
 
 # ─── P7: nightly E2E smoke ────────────────────────────────────────────────────

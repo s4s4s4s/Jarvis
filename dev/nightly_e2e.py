@@ -158,10 +158,17 @@ def _run_one(task: ReferenceTask) -> dict:
                     m = json.loads(manifest_path.read_text(encoding="utf-8"))
                     record["manifest_status"] = m.get("status")
                     record["files_count"] = len(m.get("files") or [])
-                    tests = m.get("test_results") or []
-                    record["tests_total"] = len(tests)
-                    record["tests_ok"] = sum(1 for t in tests if t.get("ok"))
-                    record["llm_calls"] = (m.get("metrics") or {}).get("llm_calls", 0)
+                    # Тесты реально лежат в phases как name='test:<smth>'
+                    phases = m.get("phases") or []
+                    test_phases = [p for p in phases if str(p.get("name", "")).startswith("test:")]
+                    record["tests_total"] = len(test_phases)
+                    record["tests_ok"] = sum(1 for p in test_phases if p.get("status") == "ok")
+                    record["llm_calls"] = (m.get("metrics") or {}).get("llm_used", 0)
+                    # Добавляем фазы с ошибками для диагностики
+                    failed_phases = [p["name"] for p in phases
+                                     if p.get("status") not in ("ok", None)]
+                    if failed_phases:
+                        record["failed_phases"] = failed_phases[:5]
                 except Exception as e:
                     record["error"] = f"manifest read: {e}"
         # Вердикт.
@@ -196,7 +203,7 @@ def _append_log(record: dict) -> None:
 def _print_summary(records: list[dict]) -> int:
     """Печатает сводку и возвращает rc (0 = все ok)."""
     passed = sum(1 for r in records if r["status"] == "passed")
-    failed = [r for r in records if r["status"] not in ("passed", "skipped")]
+    failed_records = [r for r in records if r["status"] not in ("passed", "skipped")]
     total = len(records)
     print()
     print("=" * 60)
@@ -215,9 +222,12 @@ def _print_summary(records: list[dict]) -> int:
         files = r.get("files_count", 0)
         tests = f"{r.get('tests_ok', 0)}/{r.get('tests_total', 0)}"
         err = (" — " + r["error"][:80]) if r.get("error") else ""
-        print(f"  [{icon}] {r['task']:<20} wall={wall}s files={files} tests={tests}{err}")
+        fp = r.get("failed_phases")
+        fail_str = f" failed={','.join(fp)}" if fp else ""
+        ms = r.get("manifest_status") or "-"
+        print(f"  [{icon}] {r['task']:<20} wall={wall}s files={files} tests={tests} manifest={ms}{fail_str}{err}")
     print()
-    return 0 if not failed else 1
+    return 0 if not failed_records else 1
 
 
 def main(argv: list[str] | None = None) -> int:

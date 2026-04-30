@@ -54,7 +54,7 @@ def review(
     target: dict,
     code: str,
     *,
-    model: str = MODEL_HEAVY,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """
     Review a single file. Returns:
@@ -65,6 +65,10 @@ def review(
         "_source":  "llm"|"fallback"
       }
     """
+    # P5: вставляем статический хинт в user_msg чтобы LLM его реально видела
+    static_hint = (spec.get("_static_lint_hint") or "").strip()
+    static_block = f"\nПредупреждения статики (уже учтены, НЕ дублируй):\n{static_hint}\n" if static_hint else ""
+
     user_msg = (
         f"Файл: {target.get('path','?')}\n"
         f"Цель файла: {target.get('purpose','')}\n\n"
@@ -75,13 +79,18 @@ def review(
         + "\n".join(f"    - {r}" for r in (spec.get('requirements') or []))
         + "\n  acceptance_criteria:\n"
         + "\n".join(f"    - {a}" for a in (spec.get('acceptance_criteria') or []))
-        + "\n\n"
+        + static_block
+        + "\n"
         f"Исходный код:\n```\n{code}\n```\n"
     )
     msgs = [
         {"role": "system", "content": PROJECT_REVIEWER_SYSTEM},
         {"role": "user",   "content": user_msg},
     ]
+    # P4: ролевая модель для Reviewer (14b если установлена)
+    if model is None:
+        from brain.client import MODEL_REVIEWER
+        model = MODEL_REVIEWER
     try:
         raw = chat(model, msgs, options={"temperature": REVIEWER_TEMPERATURE, "num_ctx": REVIEWER_NUM_CTX})
     except Exception as e:
