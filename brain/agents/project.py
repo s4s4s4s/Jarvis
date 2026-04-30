@@ -465,6 +465,41 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
     pdir = project_dir(slug)
     rel_path = target.get("path") or "main.py"
 
+    # Early-return для runtime-deliverable: если файл значится в spec.deliverables
+    # и не является source-кодом — это артефакт времени выполнения (output.json, news.csv и т.п.).
+    # Создаём пустую заглушку, smoke_test заполнит её при запуске entry-point.
+    # Это избавляет aider от попытки "написать" runtime-данные и согласуется с поведением
+    # legacy-пайплайна, где такие файлы фактически перезаписывались тестом.
+    deliverables = [str(d).strip() for d in (spec.get("deliverables") or []) if d]
+    # Source-расширения — эти файлы всегда строит aider, даже если они в deliverables.
+    # Runtime-форматы (.json, .csv, .xml, .html и пр.) — результат работы кода.
+    SOURCE_EXTS = {".py", ".md", ".sh", ".ps1", ".bat", ".js", ".ts", ".toml", ".yaml", ".yml", ".cfg", ".ini"}
+    rel_lower = rel_path.lower()
+    is_runtime_deliverable = (
+        rel_path in deliverables
+        and not any(rel_lower.endswith(ext) for ext in SOURCE_EXTS)
+    )
+    if is_runtime_deliverable:
+        try:
+            full = safe_project_path(slug, rel_path)
+            full.parent.mkdir(parents=True, exist_ok=True)
+            if not full.exists():
+                full.write_bytes(b"")
+            logger.info(f"[project.build_aider] {rel_path} is runtime deliverable — created empty stub, skipping aider")
+            return {
+                "path":    rel_path,
+                "ok":      True,
+                "verdict": "approve",
+                "issues":  0,
+                "summary": f"runtime deliverable stub for {rel_path}",
+                "iters":   0,
+                "static":  {"tools": [], "errors": [], "warnings": [], "fail_streak": 0, "final_ast_ok": True},
+                "_via":    "aider:stub",
+            }
+        except Exception as e:
+            logger.warning(f"[project.build_aider] failed to create stub for {rel_path}: {e}")
+            # fallthrough в обычный aider-путь
+
     # Собираем инструкцию для aider из spec + target
     title = spec.get("title") or slug
     summary = spec.get("summary") or ""
