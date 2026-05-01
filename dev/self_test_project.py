@@ -1281,6 +1281,152 @@ class TestHealViaAider(_IsolatedJarvisRoot):
         mock_aider.assert_not_called()
 
 
+# ─── P9.7: фиксы плохих планов архитектора ─────────────────────────────────────
+class TestPlanRobustnessP97(_IsolatedJarvisRoot):
+    """P9.7: автофикстуры входов, мягкий file_min_size, изоляция deliverables."""
+
+    # ─── _is_input_fixture ──────────────────────────────────────────────────────
+    def test_is_input_fixture_true_for_unknown_data_file(self):
+        # backup_example.txt не в deliverables, не исходник → это вход.
+        self.assertTrue(self.project_mod._is_input_fixture("backup_example.txt", ["main.py", "output.csv"]))
+
+    def test_is_input_fixture_false_for_deliverable(self):
+        # output.csv в deliverables → это выход, не вход.
+        self.assertFalse(self.project_mod._is_input_fixture("output.csv", ["main.py", "output.csv"]))
+
+    def test_is_input_fixture_false_for_source_file(self):
+        # main.py — исходник, никогда не dummy.
+        self.assertFalse(self.project_mod._is_input_fixture("helper.py", []))
+
+    def test_is_input_fixture_normalizes_slashes_and_prefix(self):
+        # "./data/in.txt" и "data\\in.txt" должны матчиться с "data/in.txt" в deliverables.
+        self.assertFalse(self.project_mod._is_input_fixture("./data/in.txt", ["data/in.txt"]))
+        self.assertFalse(self.project_mod._is_input_fixture("data\\in.txt", ["data/in.txt"]))
+
+    def test_is_input_fixture_empty_path(self):
+        self.assertFalse(self.project_mod._is_input_fixture("", ["main.py"]))
+
+    # ─── _prepare_test_fixtures ────────────────────────────────────────────────
+    def _make_proj(self, deliverables):
+        m = self.proj_mod.create_project({"title": "t", "slug": "p97", "summary": "s",
+                                          "deliverables": deliverables, "requirements": ["r"]})
+        return m
+
+    def test_prepare_fixtures_creates_dummy_for_input_file(self):
+        m = self._make_proj(["main.py", "output.csv"])
+        plan = {"tests": [{"name": "smoke", "command": "python main.py", "checks": [
+            {"type": "rc_zero"},
+            {"type": "file_exists", "path": "input.csv"},
+        ]}]}
+        spec = {"deliverables": ["main.py", "output.csv"]}
+        created = self.project_mod._prepare_test_fixtures(m.slug, plan, spec)
+        self.assertEqual(created, ["input.csv"])
+        # файл реально создан и пуст.
+        p = self.proj_mod.safe_project_path(m.slug, "input.csv")
+        self.assertTrue(p.exists())
+        self.assertEqual(p.stat().st_size, 0)
+
+    def test_prepare_fixtures_skips_deliverable(self):
+        m = self._make_proj(["main.py", "output.csv"])
+        plan = {"tests": [{"name": "smoke", "command": "python main.py", "checks": [
+            {"type": "file_exists", "path": "output.csv"},
+        ]}]}
+        spec = {"deliverables": ["main.py", "output.csv"]}
+        created = self.project_mod._prepare_test_fixtures(m.slug, plan, spec)
+        self.assertEqual(created, [])
+
+    def test_prepare_fixtures_skips_source_file(self):
+        m = self._make_proj(["main.py"])
+        plan = {"tests": [{"name": "smoke", "command": "python main.py", "checks": [
+            {"type": "file_exists", "path": "helper.py"},
+        ]}]}
+        spec = {"deliverables": ["main.py"]}
+        created = self.project_mod._prepare_test_fixtures(m.slug, plan, spec)
+        self.assertEqual(created, [])
+
+    def test_prepare_fixtures_no_spec_returns_empty(self):
+        m = self._make_proj(["main.py"])
+        plan = {"tests": [{"name": "smoke", "command": "python main.py", "checks": [
+            {"type": "file_exists", "path": "x.txt"},
+        ]}]}
+        self.assertEqual(self.project_mod._prepare_test_fixtures(m.slug, plan, None), [])
+
+    def test_prepare_fixtures_does_not_overwrite_existing(self):
+        m = self._make_proj(["main.py"])
+        # рукой создаём файл с содержимым
+        p = self.proj_mod.safe_project_path(m.slug, "input.txt")
+        p.write_text("hello", encoding="utf-8")
+        plan = {"tests": [{"name": "smoke", "command": "python main.py", "checks": [
+            {"type": "file_exists", "path": "input.txt"},
+        ]}]}
+        created = self.project_mod._prepare_test_fixtures(m.slug, plan, {"deliverables": ["main.py"]})
+        self.assertEqual(created, [])  # уже существует — не трогаем
+        self.assertEqual(p.read_text(encoding="utf-8"), "hello")
+
+    # ─── _normalize_min_size_check ────────────────────────────────────────────
+    def test_normalize_min_size_softens_when_file_smaller_than_floor_demand(self):
+        m = self._make_proj(["page.html"])
+        p = self.proj_mod.safe_project_path(m.slug, "page.html")
+        p.write_text("x" * 529, encoding="utf-8")  # как example.com
+        check = {"type": "file_min_size", "path": "page.html", "bytes": 1024}
+        out = self.project_mod._normalize_min_size_check(m.slug, check)
+        self.assertTrue(out.get("_soft"))
+        self.assertEqual(out.get("_original_bytes"), 1024)
+        self.assertLessEqual(out.get("bytes"), 529)
+
+    def test_normalize_min_size_keeps_strict_when_file_missing(self):
+        m = self._make_proj(["page.html"])
+        check = {"type": "file_min_size", "path": "page.html", "bytes": 1024}
+        out = self.project_mod._normalize_min_size_check(m.slug, check)
+        # файл не существует — check остаётся жёстким
+        self.assertFalse(out.get("_soft"))
+        self.assertEqual(out.get("bytes"), 1024)
+
+    def test_normalize_min_size_keeps_strict_when_file_empty(self):
+        m = self._make_proj(["page.html"])
+        p = self.proj_mod.safe_project_path(m.slug, "page.html")
+        p.write_bytes(b"")
+        check = {"type": "file_min_size", "path": "page.html", "bytes": 1024}
+        out = self.project_mod._normalize_min_size_check(m.slug, check)
+        # файл пустой (< _MIN_SIZE_REALISTIC_FLOOR=64) — check остаётся жёстким
+        self.assertFalse(out.get("_soft"))
+        self.assertEqual(out.get("bytes"), 1024)
+
+    def test_normalize_min_size_no_op_for_non_min_size_check(self):
+        m = self._make_proj(["x"])
+        check = {"type": "file_exists", "path": "foo.txt"}
+        out = self.project_mod._normalize_min_size_check(m.slug, check)
+        self.assertEqual(out, check)
+
+    # ─── интеграция в _test ─────────────────────────────────────────────────────
+    def test_test_function_creates_fixtures_when_spec_passed(self):
+        m = self._make_proj(["main.py"])
+        # Напишем простой скрипт чтобы rc=0
+        self.proj_mod.write_project_file(m.slug, "main.py", "print('ok')\n")
+        plan = {"tests": [{"name": "smoke", "command": "python main.py", "checks": [
+            {"type": "rc_zero"},
+            {"type": "file_exists", "path": "input_data.csv"},  # входной файл
+        ]}]}
+        spec = {"deliverables": ["main.py"]}
+        results = self.project_mod._test(m.slug, plan, spec)
+        # фикстура создана раньше smoke → file_exists пройдён
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0]["ok"], f"expected pass, got {results[0]}")
+        # и сам файл лежит
+        self.assertTrue(self.proj_mod.safe_project_path(m.slug, "input_data.csv").exists())
+
+    def test_test_function_backward_compat_without_spec(self):
+        m = self._make_proj(["main.py"])
+        self.proj_mod.write_project_file(m.slug, "main.py", "print('ok')\n")
+        plan = {"tests": [{"name": "smoke", "command": "python main.py", "checks": [
+            {"type": "rc_zero"},
+        ]}]}
+        # без spec — работает как раньше
+        results = self.project_mod._test(m.slug, plan)
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0]["ok"])
+
+
 class TestNightlyE2ESmoke(unittest.TestCase):
     """P7: проверяем что nightly_e2e импортируется и корректно SKIPит при отсутствии ollama."""
 
