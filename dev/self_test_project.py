@@ -798,10 +798,11 @@ class TestDeterministicHealers(_IsolatedJarvisRoot):
 
     def test_heal_syntax_error_finds_broken_file(self):
         """Битый синтаксис в файле → детерминистический хилер указывает на него."""
-        self._make_project_with_file("p2syn", "main.py", "def f(:\n    pass\n")
+        # P9.6: create_project теперь всегда добавляет ts-suffix — используем m.slug.
+        m = self._make_project_with_file("p2syn", "main.py", "def f(:\n    pass\n")
         plan = {"files": [{"path": "main.py"}]}
         failed = {"stderr": "  File \"main.py\", line 1\nSyntaxError: invalid syntax\n"}
-        diag = self.project_mod._heal_syntax_error("p2syn", failed, plan)
+        diag = self.project_mod._heal_syntax_error(m.slug, failed, plan)
         self.assertIsNotNone(diag)
         self.assertEqual(diag["target_file"], "main.py")
         self.assertEqual(diag["category"], "syntax")
@@ -809,10 +810,10 @@ class TestDeterministicHealers(_IsolatedJarvisRoot):
 
     def test_heal_syntax_error_returns_none_when_stderr_clean(self):
         """Без SyntaxError в stderr — None."""
-        self._make_project_with_file("p2syn2", "main.py", "print('ok')\n")
+        m = self._make_project_with_file("p2syn2", "main.py", "print('ok')\n")
         plan = {"files": [{"path": "main.py"}]}
         failed = {"stderr": "AssertionError: not equal"}
-        diag = self.project_mod._heal_syntax_error("p2syn2", failed, plan)
+        diag = self.project_mod._heal_syntax_error(m.slug, failed, plan)
         self.assertIsNone(diag)
 
     def test_heal_syntax_error_no_python_files(self):
@@ -849,24 +850,41 @@ class TestDeterministicHealers(_IsolatedJarvisRoot):
 
     def test_heal_json_decode_finds_file_with_json_loads(self):
         """json.JSONDecodeError + код с json.loads → дет. хилер выдаёт хинт."""
-        self._make_project_with_file(
+        m = self._make_project_with_file(
             "p2json", "main.py",
             "import json\nimport requests\nr = requests.get('x')\nd = json.loads(r.text)\n",
         )
         plan = {"files": [{"path": "main.py"}]}
         failed = {"stderr": "json.decoder.JSONDecodeError: Expecting value: line 1"}
-        diag = self.project_mod._heal_json_decode("p2json", failed, plan)
+        diag = self.project_mod._heal_json_decode(m.slug, failed, plan)
         self.assertIsNotNone(diag)
         self.assertEqual(diag["target_file"], "main.py")
         self.assertEqual(diag["category"], "json")
         self.assertIn("json", diag["fix_instruction"].lower())
 
     def test_heal_json_decode_returns_none_when_no_json_in_code(self):
-        self._make_project_with_file("p2json2", "main.py", "print('hi')\n")
+        m = self._make_project_with_file("p2json2", "main.py", "print('hi')\n")
         plan = {"files": [{"path": "main.py"}]}
         failed = {"stderr": "json.JSONDecodeError: bad"}
-        diag = self.project_mod._heal_json_decode("p2json2", failed, plan)
+        diag = self.project_mod._heal_json_decode(m.slug, failed, plan)
         self.assertIsNone(diag)
+
+    def test_heal_missing_module_recognizes_bs4_feature_not_found(self):
+        """P9.6: bs4.FeatureNotFound: features you requested: xml → pip install lxml."""
+        m = self._make_project_with_file("p2bs4", "main.py", "x=1\n")
+        stderr = (
+            "Traceback (most recent call last):\n"
+            "  File 'main.py', line 1, in <module>\n"
+            "    soup = BeautifulSoup(c, 'xml')\n"
+            "bs4.exceptions.FeatureNotFound: Couldn't find a tree builder with the features you requested: xml. "
+            "Do you need to install a parser library?\n"
+        )
+        with patch.object(self.project_mod, "pip_install", return_value={"ok": True}) as mock_pip:
+            res = self.project_mod._heal_missing_module(m.slug, {"stderr": stderr})
+        self.assertIsNotNone(res)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["installed_as"], "lxml")
+        mock_pip.assert_called_once_with(m.slug, ["lxml"])
 
     def test_heal_json_decode_returns_none_for_other_errors(self):
         failed = {"stderr": "KeyError: 'foo'"}

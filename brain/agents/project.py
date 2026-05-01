@@ -90,7 +90,7 @@ from tools.projects import (
 logger = logging.getLogger(__name__)
 
 MAX_REVIEW_ITERS = 2
-MAX_HEAL_ITERS   = 2
+MAX_HEAL_ITERS   = 4  # P9.6: было 2 — расширили для detmin+aider цепочки (rss_parser требовал 3+)
 MAX_FILES        = 10
 PHASE_TEST_TIMEOUT = 30
 PROJECT_WALL_BUDGET_S = 600       # 10 минут на проект целиком
@@ -811,9 +811,13 @@ def _test(slug: str, plan: dict) -> list[dict]:
     for t in (plan.get("tests") or []):
         rec = _run_one_test(slug, t)
         out.append(rec)
+        # P9.6: включаем детальные checks в деталь фазы для диагностики
+        # файловых/контент-проверок (file_min_size, stdout_contains и т.п.).
+        # Без этого в логах видно только rc=0 stderr="" и непонятно почему failed.
+        keys = ["command", "rc", "expects_ok", "stderr", "checks"]
         add_phase(slug, f"test:{rec['name']}",
                   "ok" if rec["ok"] else "failed",
-                  json.dumps({k: rec[k] for k in ("command","rc","expects_ok","stderr")}, ensure_ascii=False))
+                  json.dumps({k: rec.get(k) for k in keys if k in rec}, ensure_ascii=False))
     return out
 
 
@@ -848,6 +852,8 @@ _NETWORK_ERR_RE  = re.compile(
     r"socket\.gaierror|socket\.timeout|TimeoutExpired)"
 )
 _JSONDEC_RE      = re.compile(r"json\.decoder\.JSONDecodeError|json\.JSONDecodeError")
+# P9.6: bs4 жалуется на отсутствие парсера (xml/lxml/html5lib) — ставим нужный пакет.
+_BS4_FEATURE_RE  = re.compile(r"FeatureNotFound.*?features you requested:\s*([a-zA-Z0-9_\-]+)", re.DOTALL)
 
 
 # Сопоставление import-имени → PyPI-имя для очевидных расхождений
@@ -953,8 +959,28 @@ def _heal_missing_module(slug: str, failed: dict) -> dict | None:
     """Детерминистический healer для ModuleNotFoundError — без LLM.
     Выдергивает имя модуля из stderr и ставит его в venv.
     Возвращает dict с результатом или None если это не ModuleNotFoundError.
+
+    P9.6: также распознаёт bs4.FeatureNotFound — это не ModuleNotFoundError, но
+    получается когда код зовёт BeautifulSoup(text, 'xml') без установленного lxml.
     """
     stderr = failed.get("stderr", "") or ""
+
+    # Сначала пробуем bs4 FeatureNotFound (более специфичный паттерн).
+    bm = _BS4_FEATURE_RE.search(stderr)
+    if bm:
+        feature = bm.group(1).lower()
+        feature_to_pkg = {"xml": "lxml", "lxml": "lxml", "lxml-xml": "lxml", "html5lib": "html5lib"}
+        pkg = feature_to_pkg.get(feature, "lxml")
+        if not _PKG_PATTERN.match(pkg):
+            return {"ok": False, "missing": f"bs4-feature:{feature}", "reason": "unsafe pkg name"}
+        res = pip_install(slug, [pkg])
+        return {
+            "ok": bool(res.get("ok")),
+            "missing": f"bs4-feature:{feature}",
+            "installed_as": pkg,
+            "stderr": res.get("stderr", "")[-400:],
+        }
+
     m = _MODNOTFOUND_RE.search(stderr)
     if not m:
         return None

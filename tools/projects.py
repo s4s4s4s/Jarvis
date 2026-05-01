@@ -151,9 +151,12 @@ def create_project(spec: dict) -> ProjectManifest:
     raw_slug = (spec.get("slug") or "").strip().lower()
     slug = slugify(raw_slug or title)
 
-    # collision: append timestamp suffix
-    if (PROJECTS_DIR / slug).exists():
-        slug = f"{slug}-{int(time.time())}"[:MAX_SLUG_LEN]
+    # P9.6: всегда добавляем timestamp для гарантии уникальности
+    # было: проверялась только файловая система, но если предыдущий проект был удалён или ещё не закоммичен на диск, будет коллизия.
+    # Исправляет nightly E2E баг: csv_to_json и rename_files писали в один slug.
+    ts_suffix = str(int(time.time()))
+    base_max = MAX_SLUG_LEN - len(ts_suffix) - 1
+    slug = f"{slug[:base_max]}-{ts_suffix}"
 
     pdir = PROJECTS_DIR / slug
     pdir.mkdir(parents=True, exist_ok=True)
