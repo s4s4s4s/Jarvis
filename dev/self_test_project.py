@@ -1399,21 +1399,20 @@ class TestPlanRobustnessP97(_IsolatedJarvisRoot):
         self.assertEqual(out, check)
 
     # ─── интеграция в _test ─────────────────────────────────────────────────────
-    def test_test_function_creates_fixtures_when_spec_passed(self):
+    def test_test_function_filters_lonely_file_exists_p99(self):
+        """P9.9 изменил поведение: одинокий file_exists на вход (без
+        выходных чеков) убирается filter-этапом как бессмысленный.
+        Тест проходит по оставшемуся rc_zero."""
         m = self._make_proj(["main.py"])
-        # Напишем простой скрипт чтобы rc=0
         self.proj_mod.write_project_file(m.slug, "main.py", "print('ok')\n")
         plan = {"tests": [{"name": "smoke", "command": "python main.py", "checks": [
             {"type": "rc_zero"},
-            {"type": "file_exists", "path": "input_data.csv"},  # входной файл
+            {"type": "file_exists", "path": "input_data.csv"},
         ]}]}
         spec = {"deliverables": ["main.py"]}
         results = self.project_mod._test(m.slug, plan, spec)
-        # фикстура создана раньше smoke → file_exists пройдён
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0]["ok"], f"expected pass, got {results[0]}")
-        # и сам файл лежит
-        self.assertTrue(self.proj_mod.safe_project_path(m.slug, "input_data.csv").exists())
 
     def test_test_function_backward_compat_without_spec(self):
         m = self._make_proj(["main.py"])
@@ -1425,6 +1424,202 @@ class TestPlanRobustnessP97(_IsolatedJarvisRoot):
         results = self.project_mod._test(m.slug, plan)
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0]["ok"])
+
+
+# ─── P9.9: output-aware fixtures ────────────────────────────────────
+class TestOutputAwareFixturesP99(_IsolatedJarvisRoot):
+    """P9.9: фикстуры НЕ создаются для путей, которые скрипт сам должен создать
+    (путь упомянут в file_min_lines/file_min_size/json_valid/file_contains или
+    в build_steps:create_file)."""
+
+    def _make_proj(self, deliverables):
+        m = self.proj_mod.create_project({"title": "t", "slug": "p99", "summary": "s",
+                                          "deliverables": deliverables, "requirements": ["r"]})
+        return m
+
+    # ─── _collect_output_paths ──────────────────────────────────────
+    def test_collect_output_paths_from_file_min_lines(self):
+        plan = {"tests": [{"name": "s", "command": "python main.py", "checks": [
+            {"type": "file_min_lines", "path": "emails.csv", "lines": 2},
+        ]}]}
+        out = self.project_mod._collect_output_paths(plan)
+        self.assertIn("emails.csv", out)
+
+    def test_collect_output_paths_from_file_min_size(self):
+        plan = {"tests": [{"name": "s", "command": "x", "checks": [
+            {"type": "file_min_size", "path": "page.html", "bytes": 100},
+        ]}]}
+        out = self.project_mod._collect_output_paths(plan)
+        self.assertIn("page.html", out)
+
+    def test_collect_output_paths_from_json_valid(self):
+        plan = {"tests": [{"name": "s", "command": "x", "checks": [
+            {"type": "json_valid", "path": "output.json"},
+        ]}]}
+        out = self.project_mod._collect_output_paths(plan)
+        self.assertIn("output.json", out)
+
+    def test_collect_output_paths_from_file_contains(self):
+        plan = {"tests": [{"name": "s", "command": "x", "checks": [
+            {"type": "file_contains", "path": "log.txt", "text": "abc"},
+        ]}]}
+        out = self.project_mod._collect_output_paths(plan)
+        self.assertIn("log.txt", out)
+
+    def test_collect_output_paths_from_build_steps_create_file(self):
+        plan = {"build_steps": [
+            {"step": 1, "kind": "create_file", "target": "data.csv"},
+        ]}
+        out = self.project_mod._collect_output_paths(plan)
+        self.assertIn("data.csv", out)
+
+    def test_collect_output_paths_normalizes_slashes(self):
+        plan = {"tests": [{"name": "s", "command": "x", "checks": [
+            {"type": "file_min_lines", "path": "./out\\result.csv", "lines": 1},
+        ]}]}
+        out = self.project_mod._collect_output_paths(plan)
+        self.assertIn("out/result.csv", out)
+
+    def test_collect_output_paths_ignores_file_exists(self):
+        # file_exists САМ по себе не делает путь выходом — это может быть вход.
+        plan = {"tests": [{"name": "s", "command": "x", "checks": [
+            {"type": "file_exists", "path": "input.csv"},
+        ]}]}
+        out = self.project_mod._collect_output_paths(plan)
+        self.assertNotIn("input.csv", out)
+
+    def test_collect_output_paths_empty_plan(self):
+        self.assertEqual(self.project_mod._collect_output_paths({}), set())
+        self.assertEqual(self.project_mod._collect_output_paths(None), set())
+
+    # ─── _is_input_fixture с output_paths ─────────────────────────────
+    def test_is_input_fixture_false_when_path_in_outputs(self):
+        # emails.csv в output_paths → это выход, не вход.
+        self.assertFalse(self.project_mod._is_input_fixture(
+            "emails.csv", ["main.py"], output_paths={"emails.csv"}))
+
+    def test_is_input_fixture_true_when_not_in_outputs(self):
+        # input.csv НЕ в deliverables и НЕ в outputs → вход.
+        self.assertTrue(self.project_mod._is_input_fixture(
+            "input.csv", ["main.py"], output_paths={"emails.csv"}))
+
+    def test_is_input_fixture_backward_compat_no_outputs(self):
+        # Без output_paths (legacy) — работает как в P9.7.
+        self.assertTrue(self.project_mod._is_input_fixture(
+            "backup_example.txt", ["main.py"]))
+
+    # ─── сценарии regex_extractor и rename_files (регрессии P9.8) ────────────────
+    def test_prepare_fixtures_skips_emails_csv_when_file_min_lines(self):
+        """Регрессия regex_extractor: emails.csv — ВЫХОД, фикстуру НЕ создавать."""
+        m = self._make_proj(["main.py"])
+        plan = {"tests": [{"name": "smoke", "command": "python main.py", "checks": [
+            {"type": "rc_zero"},
+            {"type": "file_exists", "path": "emails.csv"},
+            {"type": "file_min_lines", "path": "emails.csv", "lines": 2},
+        ]}]}
+        spec = {"deliverables": ["main.py"]}
+        created = self.project_mod._prepare_test_fixtures(m.slug, plan, spec)
+        self.assertEqual(created, [], "emails.csv — выход, фикстура не должна быть создана")
+        # файл реально НЕ создан
+        self.assertFalse(self.proj_mod.safe_project_path(m.slug, "emails.csv").exists())
+
+    def test_prepare_fixtures_skips_path_in_create_file_step(self):
+        """Регрессия rename_files: если путь создаётся в build_steps — это выход."""
+        m = self._make_proj(["main.py"])
+        plan = {
+            "build_steps": [
+                {"step": 1, "kind": "create_file", "target": "backup_example.txt"},
+            ],
+            "tests": [{"name": "smoke", "command": "python main.py", "checks": [
+                {"type": "file_exists", "path": "backup_example.txt"},
+            ]}],
+        }
+        spec = {"deliverables": ["main.py"]}
+        created = self.project_mod._prepare_test_fixtures(m.slug, plan, spec)
+        self.assertEqual(created, [])
+        self.assertFalse(self.proj_mod.safe_project_path(m.slug, "backup_example.txt").exists())
+
+    # ─── _filter_invalid_checks ───────────────────────────────────
+    def test_filter_removes_stdout_contains(self):
+        plan = {"tests": [{"name": "s", "command": "x", "checks": [
+            {"type": "rc_zero"},
+            {"type": "stdout_contains", "text": "Processing complete"},
+        ]}]}
+        new_plan, removed = self.project_mod._filter_invalid_checks(plan, {"deliverables": []})
+        self.assertEqual(len(removed), 1)
+        self.assertEqual(removed[0]["reason"], "stdout_contains_violates_principles")
+        types = [c["type"] for c in new_plan["tests"][0]["checks"]]
+        self.assertNotIn("stdout_contains", types)
+        self.assertIn("rc_zero", types)
+
+    def test_filter_keeps_file_exists_on_output(self):
+        """file_exists на выход (есть file_min_lines на тот же путь) ОСТАВЛЯЕМ."""
+        plan = {"tests": [{"name": "s", "command": "x", "checks": [
+            {"type": "file_exists", "path": "emails.csv"},
+            {"type": "file_min_lines", "path": "emails.csv", "lines": 2},
+        ]}]}
+        new_plan, removed = self.project_mod._filter_invalid_checks(plan, {"deliverables": []})
+        self.assertEqual(removed, [])
+        types = [c["type"] for c in new_plan["tests"][0]["checks"]]
+        self.assertEqual(types.count("file_exists"), 1)
+        self.assertEqual(types.count("file_min_lines"), 1)
+
+    def test_filter_removes_file_exists_on_lonely_input(self):
+        """file_exists на вход без выходных чеков — бессмыслен, убираем."""
+        plan = {"tests": [{"name": "s", "command": "x", "checks": [
+            {"type": "rc_zero"},
+            {"type": "file_exists", "path": "input.csv"},
+        ]}]}
+        new_plan, removed = self.project_mod._filter_invalid_checks(plan, {"deliverables": ["main.py"]})
+        self.assertEqual(len(removed), 1)
+        self.assertEqual(removed[0]["reason"], "file_exists_on_input_fixture")
+        types = [c["type"] for c in new_plan["tests"][0]["checks"]]
+        self.assertEqual(types, ["rc_zero"])
+
+    def test_filter_keeps_file_exists_on_deliverable(self):
+        """file_exists на deliverable (выход явный) — ОСТАВЛЯЕМ."""
+        plan = {"tests": [{"name": "s", "command": "x", "checks": [
+            {"type": "file_exists", "path": "output.json"},
+        ]}]}
+        new_plan, removed = self.project_mod._filter_invalid_checks(
+            plan, {"deliverables": ["main.py", "output.json"]})
+        self.assertEqual(removed, [])
+        types = [c["type"] for c in new_plan["tests"][0]["checks"]]
+        self.assertIn("file_exists", types)
+
+    def test_filter_handles_none_spec(self):
+        plan = {"tests": [{"name": "s", "command": "x", "checks": [
+            {"type": "stdout_contains", "text": "ok"},
+            {"type": "rc_zero"},
+        ]}]}
+        new_plan, removed = self.project_mod._filter_invalid_checks(plan, None)
+        self.assertEqual(len(removed), 1)
+        types = [c["type"] for c in new_plan["tests"][0]["checks"]]
+        self.assertEqual(types, ["rc_zero"])
+
+    def test_filter_does_not_mutate_input_plan(self):
+        """Исходный plan НЕ должен меняться по ссылке."""
+        plan = {"tests": [{"name": "s", "command": "x", "checks": [
+            {"type": "stdout_contains", "text": "x"},
+            {"type": "rc_zero"},
+        ]}]}
+        original_len = len(plan["tests"][0]["checks"])
+        self.project_mod._filter_invalid_checks(plan, None)
+        self.assertEqual(len(plan["tests"][0]["checks"]), original_len)
+
+    def test_prepare_fixtures_creates_only_real_input_when_mixed(self):
+        """Смешанный сценарий: input.csv — вход, output.json — выход."""
+        m = self._make_proj(["main.py"])
+        plan = {"tests": [{"name": "smoke", "command": "python main.py", "checks": [
+            {"type": "file_exists", "path": "input.csv"},      # вход → фикстура
+            {"type": "file_exists", "path": "output.json"},     # выход, есть json_valid → нет фикстуры
+            {"type": "json_valid", "path": "output.json"},
+        ]}]}
+        spec = {"deliverables": ["main.py"]}
+        created = self.project_mod._prepare_test_fixtures(m.slug, plan, spec)
+        self.assertEqual(created, ["input.csv"])
+        self.assertTrue(self.proj_mod.safe_project_path(m.slug, "input.csv").exists())
+        self.assertFalse(self.proj_mod.safe_project_path(m.slug, "output.json").exists())
 
 
 class TestNightlyE2ESmoke(unittest.TestCase):

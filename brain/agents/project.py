@@ -773,17 +773,74 @@ _SOURCE_EXT_FOR_FIXTURE = {".py", ".js", ".ts", ".go", ".rs", ".rb", ".java", ".
 # Минимальный реалистичный пол для file_min_size, если архитектор завысил.
 _MIN_SIZE_REALISTIC_FLOOR = 64
 
+# P9.9: типы checks, которые подразумевают что path — это ВЫХОД скрипта
+# (пост-проверки результата работы). Если file_exists(path) встречается
+# вместе с любым из этих чеков на тот же путь — path считается выходом,
+# фикстуру создавать НЕЛЬЗЯ (создание пустого файла-заглушки сломает логику
+# скрипта: либо он пропустит уже существующий «обработанный» файл, либо
+# перезапишет нулевыми байтами). file_exists на выход — валидная пост-проверка,
+# её нужно оставить.
+_OUTPUT_CHECK_TYPES = {
+    "file_min_lines", "file_min_size", "file_max_size",
+    "json_valid", "yaml_valid", "file_contains", "file_matches_regex",
+    "line_count_min", "line_count_max",
+}
 
-def _is_input_fixture(rel_path: str, deliverables: list[str]) -> bool:
+
+def _norm_path(p: str) -> str:
+    """Унифицированная нормализация относительного пути для сравнения."""
+    if not p:
+        return ""
+    return str(p).replace("\\", "/").lstrip("./")
+
+
+def _collect_output_paths(plan: dict | None) -> set[str]:
+    """Собирает пути, которые скрипт ПИШЕТ/СОЗДАЁТ, из plan'а:
+    1) Любой path в чеках типа _OUTPUT_CHECK_TYPES.
+    2) build_steps[].target если step.kind in {create_file, write_file}.
+    Возвращает множество нормализованных путей."""
+    out: set[str] = set()
+    if not isinstance(plan, dict):
+        return out
+    # 1) пост-проверки результата
+    for t in (plan.get("tests") or []):
+        for ch in (t.get("checks") or []):
+            if not isinstance(ch, dict):
+                continue
+            ctype = (ch.get("type") or "").strip()
+            if ctype in _OUTPUT_CHECK_TYPES:
+                rel = _norm_path(ch.get("path") or "")
+                if rel:
+                    out.add(rel)
+    # 2) build_steps описывающие создание файла
+    for st in (plan.get("build_steps") or []):
+        if not isinstance(st, dict):
+            continue
+        kind = (st.get("kind") or "").strip().lower()
+        if kind in {"create_file", "write_file", "generate_file"}:
+            rel = _norm_path(st.get("target") or "")
+            if rel:
+                out.add(rel)
+    return out
+
+
+def _is_input_fixture(rel_path: str, deliverables: list[str], output_paths: set[str] | None = None) -> bool:
     """True, если file_exists(rel_path) — это, вероятно, ВХОДНОЙ файл,
-    а не выходной артефакт. Эвристика: путь не значится в deliverables И не
-    является исходником. Тогда смело можно создать пустой dummy чтобы тест
-    не падал на отсутствии входа."""
+    а не выходной артефакт. Эвристика:
+    - путь НЕ значится в deliverables;
+    - путь НЕ значится в output_paths (P9.9: пути с пост-проверками результата
+      или явно создаваемые в build_steps);
+    - путь НЕ является исходником.
+    Тогда смело можно создать пустой dummy чтобы тест не падал на отсутствии входа."""
     if not rel_path:
         return False
-    rel_norm = rel_path.replace("\\", "/").lstrip("./")
-    norm_dlv = {str(d).replace("\\", "/").lstrip("./") for d in (deliverables or [])}
+    rel_norm = _norm_path(rel_path)
+    norm_dlv = {_norm_path(d) for d in (deliverables or [])}
     if rel_norm in norm_dlv:
+        return False
+    if output_paths and rel_norm in output_paths:
+        # P9.9: путь упомянут в чеках типа file_min_lines/file_min_size/json_valid
+        # или явно создаётся скриптом — это ВЫХОД, не вход.
         return False
     # Извлекаем расширение без внешних модулей (os/pathlib не импортированы выше).
     last_seg = rel_norm.rsplit("/", 1)[-1]
@@ -795,14 +852,19 @@ def _is_input_fixture(rel_path: str, deliverables: list[str]) -> bool:
 
 def _prepare_test_fixtures(slug: str, plan: dict, spec: dict | None) -> list[str]:
     """Перед запуском тестов: для каждого file_exists(path) check'а в plan.tests,
-    если path выглядит как ВХОДНОЙ файл (не deliverable, не исходник) и его
-    реально нет в проекте — создаём пустую заглушку. Возвращает список созданных
-    относительных путей (для логов).
+    если path выглядит как ВХОДНОЙ файл (не deliverable, не выход, не исходник)
+    и его реально нет в проекте — создаём пустую заглушку. Возвращает список
+    созданных относительных путей (для логов).
 
-    Детерминистично, без LLM, без ключевых слов."""
+    Детерминистично, без LLM, без ключевых слов.
+
+    P9.9: дополнительно собираем output_paths из плана и не создаём фикстуры
+    для путей, которые скрипт сам должен создать (file_min_lines/file_min_size/
+    json_valid/file_contains/build_steps:create_file)."""
     if not isinstance(plan, dict) or not isinstance(spec, dict):
         return []
     deliverables = [str(d) for d in (spec.get("deliverables") or [])]
+    output_paths = _collect_output_paths(plan)
     created: list[str] = []
     for t in (plan.get("tests") or []):
         for ch in (t.get("checks") or []):
@@ -811,7 +873,7 @@ def _prepare_test_fixtures(slug: str, plan: dict, spec: dict | None) -> list[str
             if (ch.get("type") or "").strip() != "file_exists":
                 continue
             rel = (ch.get("path") or "").strip()
-            if not _is_input_fixture(rel, deliverables):
+            if not _is_input_fixture(rel, deliverables, output_paths):
                 continue
             try:
                 abs_path = safe_project_path(slug, rel)
@@ -919,7 +981,68 @@ def _run_one_test(slug: str, t: dict) -> dict:
     }
 
 
+def _filter_invalid_checks(plan: dict, spec: dict | None) -> tuple[dict, list[dict]]:
+    """P9.9: детерминистически убирает из plan.tests[].checks чеки, которые
+    нарушают принципы Jarvis или логически бессмысленны:
+
+    1) stdout_contains — ВСЕГДА удаляем. Нарушает принцип «запрещены
+       ключевые слова» (проверка по жёсткому фрагменту текста).
+    2) file_exists(path) на входной файл ПРИ УСЛОВИИ что этот же path НЕ
+       упомянут в выходных чеках (file_min_lines/file_min_size/json_valid/...).
+       Такой file_exists бессмыслен — фикстура уже создана _prepare_test_fixtures.
+       ИСКЛЮЧЕНИЕ: file_exists на выход (такие пути в output_paths) ГРОМКО
+       информативен — валидная пост-проверка, ОСТАВЛЯЕМ.
+
+    Возвращает (новый plan, список удалённых чеков с reason для лога)."""
+    if not isinstance(plan, dict):
+        return plan, []
+    deliverables = []
+    if isinstance(spec, dict):
+        deliverables = [str(d) for d in (spec.get("deliverables") or [])]
+    output_paths = _collect_output_paths(plan)
+
+    new_plan = dict(plan)
+    new_tests = []
+    removed: list[dict] = []
+    for t in (plan.get("tests") or []):
+        if not isinstance(t, dict):
+            new_tests.append(t)
+            continue
+        new_t = dict(t)
+        new_checks = []
+        for ch in (t.get("checks") or []):
+            if not isinstance(ch, dict):
+                new_checks.append(ch)
+                continue
+            ctype = (ch.get("type") or "").strip()
+            # 1) stdout_contains — всегда убираем
+            if ctype == "stdout_contains":
+                removed.append({"check": ch, "reason": "stdout_contains_violates_principles"})
+                continue
+            # 2) file_exists на вход без выходных чеков на тот же путь
+            if ctype == "file_exists":
+                rel = _norm_path(ch.get("path") or "")
+                if rel and rel not in output_paths and _is_input_fixture(rel, deliverables, output_paths):
+                    removed.append({"check": ch, "reason": "file_exists_on_input_fixture"})
+                    continue
+            new_checks.append(ch)
+        new_t["checks"] = new_checks
+        new_tests.append(new_t)
+    new_plan["tests"] = new_tests
+    return new_plan, removed
+
+
 def _test(slug: str, plan: dict, spec: dict | None = None) -> list[dict]:
+    # P9.9: фильтрация невалидных checks (stdout_contains по принципам +
+    # file_exists на входную фикстуру без выходных чеков). Первым этапом.
+    try:
+        plan, removed = _filter_invalid_checks(plan, spec)
+        if removed:
+            reasons = sorted({r["reason"] for r in removed})
+            add_phase(slug, "test:filter", "ok",
+                      f"removed {len(removed)} invalid check(s): reasons={reasons}")
+    except Exception as e:
+        logger.debug(f"[test.filter] error: {e}")
     # P9.7: автофикстуры для входных файлов, которые архитектор ошибочно
     # включил в file_exists. Спек опционален для обратной совместимости с тестами.
     if spec is not None:
