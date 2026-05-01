@@ -516,6 +516,29 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
     if acceptance:
         ac_str = "\n".join(f"- {a}" for a in acceptance[:5])
         instruction_parts.append(f"Критерии приёмки:\n{ac_str}")
+
+    # P9.10: явно передаём входные файлы в инструкцию aider'у.
+    # Без этого блока aider хардкодит example.txt вместо реального имени из spec.
+    plan_inputs = (plan.get("inputs") or []) if isinstance(plan, dict) else []
+    if plan_inputs:
+        in_lines = []
+        for it in plan_inputs:
+            if not isinstance(it, dict):
+                continue
+            p = it.get("path", "")
+            if not p:
+                continue
+            sample = it.get("sample_content", "")
+            preview = (sample[:160] + "…") if len(sample) > 160 else sample
+            preview_one = preview.replace("\n", " \u21b5 ")
+            in_lines.append(f"- {p} (пример содержимого: {preview_one!r})")
+        if in_lines:
+            instruction_parts.append(
+                "ВХОДНЫЕ ФАЙЛЫ (используй РОВНО эти пути в коде, НЕ придумывай свои):\n"
+                + "\n".join(in_lines)
+                + "\nФайлы будут созданы с реалистичным содержимым перед запуском теста."
+            )
+
     instruction_parts.append(
         f"Создай (или обнови) файл {rel_path}. "
         "Пиши работающий, синтаксически корректный код. "
@@ -786,6 +809,166 @@ _OUTPUT_CHECK_TYPES = {
     "line_count_min", "line_count_max",
 }
 
+# P9.10: дефолтные sample-содержимые для входных фикстур по расширению.
+# Используются когда архитектор не указал sample_content в plan.inputs[].
+# Цель — дать скрипту реалистичный вход, чтобы он мог выдать осмысленный выход.
+# Текст подобран так, чтобы проходили типичные регексы/парсеры: email, URL, числа.
+_DEFAULT_INPUT_SAMPLES = {
+    ".txt": (
+        "Hello, contact us at support@example.com or sales@company.co.uk.\n"
+        "You can also reach admin@test.org for help.\n"
+        "Visit https://example.com or http://test.org for more info.\n"
+        "Phone: +1-555-0123, fax: 555-9876.\n"
+        "Order #1234 total $99.50 dated 2024-01-15.\n"
+    ),
+    ".csv": (
+        "id,name,email\n"
+        "1,Alice,alice@example.com\n"
+        "2,Bob,bob@test.org\n"
+        "3,Carol,carol@company.co.uk\n"
+    ),
+    ".tsv": (
+        "id\tname\temail\n"
+        "1\tAlice\talice@example.com\n"
+        "2\tBob\tbob@test.org\n"
+    ),
+    ".json": (
+        '{\n  "items": [\n'
+        '    {"id": 1, "name": "Alice", "email": "alice@example.com"},\n'
+        '    {"id": 2, "name": "Bob", "email": "bob@test.org"}\n'
+        '  ]\n}\n'
+    ),
+    ".log": (
+        "2024-01-15 10:00:01 INFO User alice@example.com logged in\n"
+        "2024-01-15 10:01:15 ERROR Connection failed for bob@test.org\n"
+        "2024-01-15 10:02:30 WARN Rate limit hit at https://api.example.com\n"
+    ),
+    ".xml": (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<root>\n'
+        '  <item id="1" email="alice@example.com">Alice</item>\n'
+        '  <item id="2" email="bob@test.org">Bob</item>\n'
+        '</root>\n'
+    ),
+    ".yml": (
+        "items:\n"
+        "  - id: 1\n    name: Alice\n    email: alice@example.com\n"
+        "  - id: 2\n    name: Bob\n    email: bob@test.org\n"
+    ),
+    ".yaml": (
+        "items:\n"
+        "  - id: 1\n    name: Alice\n    email: alice@example.com\n"
+        "  - id: 2\n    name: Bob\n    email: bob@test.org\n"
+    ),
+}
+
+# P9.10: regex для извлечения имен входных файлов из spec.summary/title.
+# Ловит любое слово с data-расширением (X.txt, input.csv, data.json, etc).
+_INPUT_FILE_RE = re.compile(
+    r"\b([A-Za-z][\w\-]{0,40}\.(?:txt|csv|tsv|json|log|xml|yml|yaml|html))\b",
+    re.IGNORECASE,
+)
+
+
+def _default_sample_for(rel_path: str) -> bytes:
+    """Дефолтный реалистичный sample для входа по расширению.
+    Если расширение неизвестно — возвращаем пустые байты (поведение до P9.10)."""
+    rel_norm = _norm_path(rel_path)
+    last = rel_norm.rsplit("/", 1)[-1]
+    ext = ("." + last.rsplit(".", 1)[-1].lower()) if "." in last else ""
+    text = _DEFAULT_INPUT_SAMPLES.get(ext, "")
+    return text.encode("utf-8")
+
+
+def _heuristic_input_paths(spec: dict | None) -> list[str]:
+    """Извлекает вероятные входные файлы из spec.summary/title по regex.
+    Исключает deliverables (это выходы). Детерминистически, без LLM."""
+    if not isinstance(spec, dict):
+        return []
+    text_blob = " ".join(str(spec.get(k, "")) for k in ("summary", "title"))
+    if not text_blob.strip():
+        return []
+    deliverables = {_norm_path(d) for d in (spec.get("deliverables") or [])}
+    found: list[str] = []
+    seen: set[str] = set()
+    for m in _INPUT_FILE_RE.finditer(text_blob):
+        rel = _norm_path(m.group(1))
+        if rel in seen or rel in deliverables:
+            continue
+        seen.add(rel)
+        found.append(rel)
+    return found
+
+
+def _enrich_plan_with_heuristic_inputs(plan: dict, spec: dict | None) -> dict:
+    """P9.10: если архитектор забыл plan.inputs, но в spec.summary есть имена
+    входных файлов — вписываем их в plan.inputs ПЕРЕД build-фазой, чтобы coder/aider
+    видели эти пути. Существующие plan.inputs НЕ перезаписываются.
+    Детерминистично, без LLM. Возвращает plan (модифицирует in-place)."""
+    if not isinstance(plan, dict):
+        return plan
+    existing_paths: set[str] = set()
+    inputs = list(plan.get("inputs") or [])
+    for it in inputs:
+        if isinstance(it, dict):
+            p = _norm_path(it.get("path") or "")
+            if p:
+                existing_paths.add(p)
+    deliverables = {_norm_path(d) for d in (spec.get("deliverables") or [])} if isinstance(spec, dict) else set()
+    added = 0
+    for rel in _heuristic_input_paths(spec):
+        if rel in existing_paths or rel in deliverables:
+            continue
+        sample_bytes = _default_sample_for(rel)
+        sample_text = sample_bytes.decode("utf-8", errors="replace") if sample_bytes else ""
+        inputs.append({"path": rel, "sample_content": sample_text, "_source": "heuristic"})
+        existing_paths.add(rel)
+        added += 1
+    if added:
+        plan["inputs"] = inputs
+        logger.info(f"[plan.enrich] added {added} heuristic input(s): {[i['path'] for i in inputs if i.get('_source')=='heuristic']}")
+    return plan
+
+
+def _collect_input_specs(plan: dict | None, spec: dict | None) -> list[dict]:
+    """Собирает список входов из двух источников (приоритет plan.inputs):
+    1) plan.inputs: [{path, sample_content?}] — явно указано архитектором.
+    2) Heuristic из spec.summary/title — fallback когда архитектор забыл.
+
+    Результат: список {'path': str, 'sample_content': bytes, 'source': 'plan'|'heuristic'}.
+    Пути из deliverables исключаются. Дубликаты убираются."""
+    deliverables: set[str] = set()
+    if isinstance(spec, dict):
+        deliverables = {_norm_path(d) for d in (spec.get("deliverables") or [])}
+
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    # 1) plan.inputs (явный контракт)
+    if isinstance(plan, dict):
+        for it in (plan.get("inputs") or []):
+            if not isinstance(it, dict):
+                continue
+            rel = _norm_path(it.get("path") or "")
+            if not rel or rel in seen or rel in deliverables:
+                continue
+            sample = it.get("sample_content")
+            if isinstance(sample, str) and sample:
+                content = sample.encode("utf-8")
+            else:
+                content = _default_sample_for(rel)
+            out.append({"path": rel, "sample_content": content, "source": "plan"})
+            seen.add(rel)
+
+    # 2) heuristic fallback из summary/title
+    for rel in _heuristic_input_paths(spec):
+        if rel in seen:
+            continue
+        out.append({"path": rel, "sample_content": _default_sample_for(rel), "source": "heuristic"})
+        seen.add(rel)
+
+    return out
+
 
 def _norm_path(p: str) -> str:
     """Унифицированная нормализация относительного пути для сравнения."""
@@ -851,39 +1034,71 @@ def _is_input_fixture(rel_path: str, deliverables: list[str], output_paths: set[
 
 
 def _prepare_test_fixtures(slug: str, plan: dict, spec: dict | None) -> list[str]:
-    """Перед запуском тестов: для каждого file_exists(path) check'а в plan.tests,
-    если path выглядит как ВХОДНОЙ файл (не deliverable, не выход, не исходник)
-    и его реально нет в проекте — создаём пустую заглушку. Возвращает список
-    созданных относительных путей (для логов).
+    """Создаёт входные фикстуры перед запуском тестов.
 
-    Детерминистично, без LLM, без ключевых слов.
+    P9.10: два источника:
+    1) plan.inputs (явный): {path, sample_content?} — создаёт реалистичный вход.
+    2) Heuristic из spec.summary/title — fallback для забывчивого архитектора.
 
-    P9.9: дополнительно собираем output_paths из плана и не создаём фикстуры
-    для путей, которые скрипт сам должен создать (file_min_lines/file_min_size/
-    json_valid/file_contains/build_steps:create_file)."""
+    P9.7-legacy: если file_exists(path) в plan.tests указывает на вход, которого
+    никто не описал — создаём пустую заглушку (старое поведение).
+
+    Существующие файлы НЕ перезаписываются. Детерминистично, без LLM, без ключевых слов.
+
+    Возвращает список созданных относительных путей."""
     if not isinstance(plan, dict) or not isinstance(spec, dict):
         return []
     deliverables = [str(d) for d in (spec.get("deliverables") or [])]
     output_paths = _collect_output_paths(plan)
     created: list[str] = []
+    seen_paths: set[str] = set()
+
+    # P9.10: реалистичные входы из plan.inputs + heuristic.
+    for it in _collect_input_specs(plan, spec):
+        rel = it["path"]
+        if rel in seen_paths or rel in output_paths:
+            continue
+        seen_paths.add(rel)
+        try:
+            abs_path = safe_project_path(slug, rel)
+        except Exception:
+            continue
+        if abs_path.exists():
+            continue
+        try:
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_bytes(it["sample_content"])
+            created.append(rel)
+        except Exception as e:
+            logger.debug(f"[test.fixture] cannot create input {rel}: {e}")
+
+    # P9.7-legacy: если в чеках есть file_exists на вход, которого ещё нет —
+    # создаём пустую заглушку (фильтр из P9.9 обычно убирает такие чеки, но
+    # если путь всё равно остался — даём файлу быть).
     for t in (plan.get("tests") or []):
         for ch in (t.get("checks") or []):
             if not isinstance(ch, dict):
                 continue
             if (ch.get("type") or "").strip() != "file_exists":
                 continue
-            rel = (ch.get("path") or "").strip()
+            rel = _norm_path((ch.get("path") or "").strip())
+            if not rel or rel in seen_paths:
+                continue
             if not _is_input_fixture(rel, deliverables, output_paths):
                 continue
+            seen_paths.add(rel)
             try:
                 abs_path = safe_project_path(slug, rel)
             except Exception:
                 continue
             if abs_path.exists():
                 continue
+            # Если расширение известно — создаём реалистичный sample,
+            # иначе пустой (легаси P9.7).
+            content = _default_sample_for(rel)
             try:
                 abs_path.parent.mkdir(parents=True, exist_ok=True)
-                abs_path.write_bytes(b"")
+                abs_path.write_bytes(content)
                 created.append(rel)
             except Exception as e:
                 logger.debug(f"[test.fixture] cannot create dummy {rel}: {e}")
@@ -1649,9 +1864,12 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
         if 0 >= skip_until:
             try:
                 plan = _architect(spec, budget)
+                # P9.10: обогащаем plan.inputs heuristic-входами из spec.summary,
+                # чтобы coder/aider видели реальные имена файлов, а не придумывали свои.
+                plan = _enrich_plan_with_heuristic_inputs(plan, spec)
                 m = load_manifest(slug); m.plan = plan; save_manifest(m)
                 add_phase(slug, "architect", "ok",
-                          f"files={len(plan['files'])} tests={len(plan.get('tests',[]))}")
+                          f"files={len(plan['files'])} tests={len(plan.get('tests',[]))} inputs={len(plan.get('inputs',[]))}")
                 _set_last_phase(slug, "architect")
             except BudgetExceeded as e:
                 add_phase(slug, "architect", "failed", f"budget: {e}")

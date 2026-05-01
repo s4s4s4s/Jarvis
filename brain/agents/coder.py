@@ -70,6 +70,28 @@ def _build_user_message(spec: dict, plan: dict, target: dict, feedback: str,
         for f in (plan.get("files") or [])
     ) or "  (нет других файлов)"
 
+    # P9.10: выводим plan.inputs явным блоком, чтобы coder видел точные пути
+    # входных файлов и не придумывал имена вроде example.txt.
+    inputs_block = ""
+    plan_inputs = plan.get("inputs") or []
+    if plan_inputs:
+        lines = []
+        for it in plan_inputs:
+            if not isinstance(it, dict):
+                continue
+            p = it.get("path", "")
+            if not p:
+                continue
+            sample = it.get("sample_content", "")
+            sample_preview = (sample[:200] + "...") if len(sample) > 200 else sample
+            sample_preview = sample_preview.replace("\n", "\\n")
+            lines.append(f"  - {p}  (пример содержимого: {sample_preview!r})")
+        if lines:
+            inputs_block = (
+                "\nВХОДНЫЕ ФАЙЛЫ (plan.inputs) — используй РОВНО эти пути в коде:\n"
+                + "\n".join(lines) + "\n"
+            )
+
     msg = (
         f"Проект: {spec.get('title','?')}\n"
         f"Тип: {spec.get('kind','script')}, язык: {spec.get('language','python')}\n"
@@ -77,6 +99,7 @@ def _build_user_message(spec: dict, plan: dict, target: dict, feedback: str,
         f"Требования:\n" + "\n".join(f"  - {r}" for r in (spec.get('requirements') or [])) + "\n\n"
         f"Acceptance criteria:\n" + "\n".join(f"  - {a}" for a in (spec.get('acceptance_criteria') or [])) + "\n\n"
         f"Структура проекта:\n{files_outline}\n"
+        f"{inputs_block}"
     )
     msg += _format_existing_files(existing, target.get("path", ""))
     msg += (

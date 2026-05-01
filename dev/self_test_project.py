@@ -1321,10 +1321,10 @@ class TestPlanRobustnessP97(_IsolatedJarvisRoot):
         spec = {"deliverables": ["main.py", "output.csv"]}
         created = self.project_mod._prepare_test_fixtures(m.slug, plan, spec)
         self.assertEqual(created, ["input.csv"])
-        # файл реально создан и пуст.
+        # P9.10: для .csv создаётся РЕАЛИСТИЧНЫЙ sample (не пустой).
         p = self.proj_mod.safe_project_path(m.slug, "input.csv")
         self.assertTrue(p.exists())
-        self.assertEqual(p.stat().st_size, 0)
+        self.assertGreater(p.stat().st_size, 0, "P9.10: файл должен быть непустым")
 
     def test_prepare_fixtures_skips_deliverable(self):
         m = self._make_proj(["main.py", "output.csv"])
@@ -1620,6 +1620,195 @@ class TestOutputAwareFixturesP99(_IsolatedJarvisRoot):
         self.assertEqual(created, ["input.csv"])
         self.assertTrue(self.proj_mod.safe_project_path(m.slug, "input.csv").exists())
         self.assertFalse(self.proj_mod.safe_project_path(m.slug, "output.json").exists())
+
+
+# ─── P9.10: realistic input fixtures + plan.inputs + heuristic ────────────────
+class TestInputFixturesP10(_IsolatedJarvisRoot):
+    """P9.10: реалистичные входы из plan.inputs[]/spec.summary."""
+
+    def _make_proj(self, deliverables):
+        m = self.proj_mod.create_project({"title": "t", "slug": "p10", "summary": "s",
+                                          "deliverables": deliverables, "requirements": ["r"]})
+        return m
+
+    # ─── _default_sample_for ─────────────────────────────────────────
+    def test_default_sample_for_txt_contains_email(self):
+        sample = self.project_mod._default_sample_for("text.txt")
+        self.assertIn(b"@", sample, "в .txt должен быть email для regex-тестов")
+        self.assertGreater(len(sample), 50)
+
+    def test_default_sample_for_csv_has_header_and_rows(self):
+        sample = self.project_mod._default_sample_for("data.csv").decode("utf-8")
+        lines = sample.splitlines()
+        self.assertGreaterEqual(len(lines), 2, "CSV должен иметь заголовок + данные")
+        self.assertIn(",", lines[0])
+
+    def test_default_sample_for_json_is_valid(self):
+        import json as _json
+        sample = self.project_mod._default_sample_for("input.json").decode("utf-8")
+        # реальный JSON должен парситься
+        obj = _json.loads(sample)
+        self.assertIsInstance(obj, dict)
+
+    def test_default_sample_for_unknown_ext_returns_empty(self):
+        self.assertEqual(self.project_mod._default_sample_for("unknown.xyz"), b"")
+
+    def test_default_sample_for_normalizes_path(self):
+        # backslashes и ./ префикс не ломают
+        s1 = self.project_mod._default_sample_for("./data\\input.txt")
+        self.assertGreater(len(s1), 0)
+
+    # ─── _heuristic_input_paths ───────────────────────────────────
+    def test_heuristic_finds_filename_in_summary(self):
+        spec = {"summary": "ищет email-адреса в text.txt и сохраняет их в emails.csv",
+                "deliverables": ["main.py", "emails.csv"]}
+        found = self.project_mod._heuristic_input_paths(spec)
+        self.assertIn("text.txt", found)
+        # emails.csv — deliverable, исключается
+        self.assertNotIn("emails.csv", found)
+
+    def test_heuristic_skips_when_no_input_in_summary(self):
+        spec = {"summary": "скачивает RSS и пишет в news.csv",
+                "deliverables": ["main.py", "news.csv"]}
+        found = self.project_mod._heuristic_input_paths(spec)
+        # news.csv в deliverables — исключён, больше файлов нет
+        self.assertEqual(found, [])
+
+    def test_heuristic_empty_spec(self):
+        self.assertEqual(self.project_mod._heuristic_input_paths(None), [])
+        self.assertEqual(self.project_mod._heuristic_input_paths({}), [])
+        self.assertEqual(self.project_mod._heuristic_input_paths({"summary": ""}), [])
+
+    def test_heuristic_dedup(self):
+        spec = {"summary": "читает data.csv в data.csv и data.csv", "deliverables": []}
+        found = self.project_mod._heuristic_input_paths(spec)
+        self.assertEqual(found, ["data.csv"])
+
+    # ─── _collect_input_specs ───────────────────────────────────
+    def test_collect_input_specs_plan_priority(self):
+        plan = {"inputs": [{"path": "my_data.txt", "sample_content": "hello world"}]}
+        spec = {"summary": "читает my_data.txt", "deliverables": ["main.py"]}
+        out = self.project_mod._collect_input_specs(plan, spec)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["path"], "my_data.txt")
+        self.assertEqual(out[0]["source"], "plan")
+        self.assertEqual(out[0]["sample_content"], b"hello world")
+
+    def test_collect_input_specs_heuristic_fallback(self):
+        plan = {}  # архитектор забыл inputs
+        spec = {"summary": "читает text.txt", "deliverables": ["main.py", "out.csv"]}
+        out = self.project_mod._collect_input_specs(plan, spec)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["path"], "text.txt")
+        self.assertEqual(out[0]["source"], "heuristic")
+        self.assertGreater(len(out[0]["sample_content"]), 0)
+
+    def test_collect_input_specs_dedup_plan_and_heuristic(self):
+        plan = {"inputs": [{"path": "text.txt", "sample_content": "manual"}]}
+        spec = {"summary": "читает text.txt", "deliverables": ["main.py"]}
+        out = self.project_mod._collect_input_specs(plan, spec)
+        # plan имеет приоритет, heuristic не дублирует
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["sample_content"], b"manual")
+        self.assertEqual(out[0]["source"], "plan")
+
+    def test_collect_input_specs_excludes_deliverables(self):
+        plan = {"inputs": [{"path": "main.py", "sample_content": "x"}]}  # ошибка архитектора
+        spec = {"deliverables": ["main.py"]}
+        out = self.project_mod._collect_input_specs(plan, spec)
+        self.assertEqual(out, [])
+
+    def test_collect_input_specs_default_sample_when_missing(self):
+        plan = {"inputs": [{"path": "data.json"}]}  # без sample_content
+        spec = {"deliverables": []}
+        out = self.project_mod._collect_input_specs(plan, spec)
+        self.assertEqual(len(out), 1)
+        # используется дефолтный sample для .json
+        import json as _json
+        obj = _json.loads(out[0]["sample_content"].decode("utf-8"))
+        self.assertIsInstance(obj, dict)
+
+    # ─── _prepare_test_fixtures с реалистичным входом ────────────
+    def test_prepare_fixtures_uses_plan_inputs_with_realistic_content(self):
+        """P9.10 сценарий regex_extractor: plan.inputs создаёт реалистичный text.txt."""
+        m = self._make_proj(["main.py"])
+        plan = {
+            "inputs": [{"path": "text.txt", "sample_content":
+                        "contact alice@example.com and bob@test.org"}],
+            "tests": [{"name": "smoke", "command": "python main.py", "checks": [
+                {"type": "rc_zero"},
+                {"type": "file_min_lines", "path": "emails.csv", "lines": 2},
+            ]}],
+        }
+        spec = {"deliverables": ["main.py"], "summary": "ищет email в text.txt"}
+        created = self.project_mod._prepare_test_fixtures(m.slug, plan, spec)
+        self.assertIn("text.txt", created)
+        p = self.proj_mod.safe_project_path(m.slug, "text.txt")
+        self.assertTrue(p.exists())
+        content = p.read_text(encoding="utf-8")
+        self.assertIn("@", content, "в text.txt должен быть email")
+        # emails.csv — выход, не должен создаваться
+        self.assertFalse(self.proj_mod.safe_project_path(m.slug, "emails.csv").exists())
+
+    def test_prepare_fixtures_uses_heuristic_when_plan_inputs_empty(self):
+        """P9.10 регрессия: архитектор забыл plan.inputs — heuristic из summary."""
+        m = self._make_proj(["main.py"])
+        plan = {
+            "tests": [{"name": "smoke", "command": "python main.py", "checks": [
+                {"type": "rc_zero"},
+                {"type": "file_min_lines", "path": "emails.csv", "lines": 2},
+            ]}],
+        }
+        spec = {"deliverables": ["main.py"],
+                "summary": "ищет email-адреса в text.txt и сохраняет в emails.csv"}
+        created = self.project_mod._prepare_test_fixtures(m.slug, plan, spec)
+        self.assertIn("text.txt", created)
+        p = self.proj_mod.safe_project_path(m.slug, "text.txt")
+        self.assertTrue(p.exists())
+        self.assertGreater(p.stat().st_size, 0, "дефолтный sample непустой")
+        self.assertIn("@", p.read_text(encoding="utf-8"))
+
+    def test_prepare_fixtures_no_overwrite_existing_input(self):
+        m = self._make_proj(["main.py"])
+        p = self.proj_mod.safe_project_path(m.slug, "text.txt")
+        p.write_text("пользовательский контент", encoding="utf-8")
+        plan = {"inputs": [{"path": "text.txt", "sample_content": "новый"}]}
+        spec = {"deliverables": ["main.py"]}
+        created = self.project_mod._prepare_test_fixtures(m.slug, plan, spec)
+        self.assertEqual(created, [])
+        self.assertEqual(p.read_text(encoding="utf-8"), "пользовательский контент")
+
+    # ─── _enrich_plan_with_heuristic_inputs ─────────────────────────
+    def test_enrich_adds_heuristic_inputs_when_plan_empty(self):
+        plan = {"files": [{"path": "main.py"}]}
+        spec = {"summary": "читает text.txt", "deliverables": ["main.py"]}
+        out = self.project_mod._enrich_plan_with_heuristic_inputs(plan, spec)
+        self.assertEqual(len(out["inputs"]), 1)
+        self.assertEqual(out["inputs"][0]["path"], "text.txt")
+        self.assertEqual(out["inputs"][0]["_source"], "heuristic")
+        self.assertGreater(len(out["inputs"][0]["sample_content"]), 0)
+
+    def test_enrich_does_not_override_architect_inputs(self):
+        plan = {"inputs": [{"path": "text.txt", "sample_content": "архитекторский"}]}
+        spec = {"summary": "читает text.txt", "deliverables": ["main.py"]}
+        out = self.project_mod._enrich_plan_with_heuristic_inputs(plan, spec)
+        self.assertEqual(len(out["inputs"]), 1)
+        self.assertEqual(out["inputs"][0]["sample_content"], "архитекторский")
+
+    def test_enrich_skips_deliverables(self):
+        plan = {}
+        spec = {"summary": "пишет в output.csv", "deliverables": ["main.py", "output.csv"]}
+        out = self.project_mod._enrich_plan_with_heuristic_inputs(plan, spec)
+        # output.csv — deliverable, не должен попасть в inputs
+        self.assertEqual(out.get("inputs", []), [])
+
+    def test_enrich_handles_none_or_empty(self):
+        # None plan — не падаем
+        self.assertIsNone(self.project_mod._enrich_plan_with_heuristic_inputs(None, {"summary": "x text.txt"}))
+        # пустой spec — ничего не добавляет
+        plan = {"files": []}
+        out = self.project_mod._enrich_plan_with_heuristic_inputs(plan, None)
+        self.assertNotIn("inputs", out)
 
 
 class TestNightlyE2ESmoke(unittest.TestCase):
