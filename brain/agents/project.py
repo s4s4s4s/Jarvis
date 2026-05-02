@@ -554,7 +554,8 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
         )
 
     instruction_parts.append(
-        f"Создай (или обнови) файл {rel_path}. "
+        f"Создай (или обнови) ФАЙЛ {rel_path} И ТОЛЬКО ЕГО. "
+        f"НЕ создавай никаких других .py-файлов (init_db.py, helpers.py, utils.py и т.п.) — всё нужное для работы должно лежать внутри {rel_path} или браться из уже спланированных соседей. "
         "Пиши работающий, синтаксически корректный код. "
         "Не добавляй комментариев-извинений и заглушек."
     )
@@ -2060,36 +2061,254 @@ def _heal_missing_module(slug: str, failed: dict) -> dict | None:
     }
 
 
-def _pick_heal_target(plan: dict, failed: dict) -> str | None:
-    """Выбрать файл-кандидат для хилинга без LLM-диагностики.
+# P11.4: cross-file heal — структурный разбор ошибки и выбор правильного target.
+# Регулярки распознают конкретные форматы Python-ошибок, без угадывания по словам.
 
-    Эвристика:
-    1. Если в stderr/stdout прямо встречается имя файла из plan.files — берём его.
-    2. Иначе — первый .py-файл в plan.files (entry point).
-    3. Иначе None.
+# NameError: name 'X' is not defined  (баг в файле, где имя используется)
+_HEAL_NAMEERROR_RE = re.compile(r"NameError: name ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"] is not defined")
+
+# ImportError: cannot import name 'X' from 'M'  (баг в M — должен экспортировать X)
+_HEAL_IMPORTERROR_RE = re.compile(
+    r"ImportError: cannot import name ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"] from ['\"]([A-Za-z0-9_.]+)['\"]"
+)
+
+# AttributeError: module 'M' has no attribute 'X'  (баг в M)
+_HEAL_ATTRMOD_RE = re.compile(
+    r"AttributeError: module ['\"]([A-Za-z0-9_.]+)['\"] has no attribute ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"
+)
+
+# Frame в traceback: File "...\path\to\file.py", line N, in <...>
+_HEAL_FRAME_RE = re.compile(r'File "([^"]+?\.py)", line (\d+)')
+
+
+def _last_user_frame_in_plan(stderr: str, plan_paths: list[str]) -> str | None:
+    """Найти последний frame в traceback, чей файл есть в plan.files.
+
+    Это файл, в котором фактически произошла ошибка — не stdlib, не библиотеки.
+    Возвращает rel-путь из plan или None.
     """
+    if not stderr or not plan_paths:
+        return None
+    plan_lower = {p.lower(): p for p in plan_paths}
+    plan_basenames = {p.split("/")[-1].split("\\")[-1].lower(): p for p in plan_paths}
+    last_match = None
+    for m in _HEAL_FRAME_RE.finditer(stderr):
+        frame_path = (m.group(1) or "").replace("\\", "/")
+        # Сначала пытаемся точное совпадение по rel-пути
+        for low, orig in plan_lower.items():
+            if frame_path.lower().endswith("/" + low) or frame_path.lower() == low:
+                last_match = orig
+                break
+        else:
+            # Fallback: совпадение по basename
+            base = frame_path.split("/")[-1].lower()
+            if base in plan_basenames:
+                last_match = plan_basenames[base]
+    return last_match
+
+
+def _module_to_plan_path(mod_name: str, plan_paths: list[str]) -> str | None:
+    """Перевести имя модуля ('config', 'storage') в rel-путь из plan.
+
+    Использует _module_name_from_rel — то же преобразование, что и для CONTRACT-блока.
+    """
+    if not mod_name:
+        return None
+    target = mod_name.split(".")[0]  # верхний уровень
+    for p in plan_paths:
+        if _module_name_from_rel(p) == mod_name or _module_name_from_rel(p) == target:
+            return p
+    return None
+
+
+def _classify_failure(plan: dict, failed: dict) -> dict:
+    """P11.4: структурный разбор ошибки теста → {kind, target, missing_name, source_file, reason}.
+
+    Логика выбора target (структурная, не ключевые слова):
+      • ImportError/AttributeError на имени X из модуля M → target = plan-файл, реализующий M.
+        Если plan.exports говорит что X должен быть в M — это баг M.
+      • NameError 'X' в файле F → если X объявлен как export соседа N — баг F (забыл импортировать).
+        Иначе баг F (неопределённое локальное имя).
+      • Любая другая ошибка с traceback в файле F из plan → target = F.
+      • Ничего не подошло → None (даём LLM-Healer решить).
+
+    Возвращает dict с полями:
+      kind: 'import_error' | 'attribute_error' | 'name_error' | 'traceback' | 'unknown'
+      target: str | None      — rel-путь файла, который надо чинить
+      missing_name: str | None — отсутствующее имя
+      source_file: str | None  — где обнаружилась ошибка (последний user-frame)
+      reason: str              — короткое объяснение для лога
+      hint: str                — подсказка для патчера (не для LLM-выбора, а для feedback)
+    """
+    out = {
+        "kind": "unknown",
+        "target": None,
+        "missing_name": None,
+        "source_file": None,
+        "reason": "",
+        "hint": "",
+    }
+    if not isinstance(plan, dict) or not isinstance(failed, dict):
+        return out
+
+    plan_paths = [
+        f["path"] for f in plan.get("files", [])
+        if isinstance(f, dict) and isinstance(f.get("path"), str)
+    ]
+    if not plan_paths:
+        return out
+
+    stderr = (failed.get("stderr", "") or "") + "\n" + (failed.get("stdout", "") or "")
+    if not stderr.strip():
+        return out
+
+    # Файл, где реально упало (последний кадр в traceback из плана)
+    source_file = _last_user_frame_in_plan(stderr, plan_paths)
+    out["source_file"] = source_file
+
+    # Карта exports: имя -> файл, где оно объявлено
+    exports_owner: dict[str, str] = {}
+    for f in plan.get("files", []):
+        if not isinstance(f, dict):
+            continue
+        rel = f.get("path", "")
+        for exp in (f.get("exports") or []):
+            if isinstance(exp, dict):
+                nm = (exp.get("name") or "").strip()
+                if nm:
+                    exports_owner[nm] = rel
+
+    # 1) ImportError: cannot import name 'X' from 'M'  → баг M
+    m = _HEAL_IMPORTERROR_RE.search(stderr)
+    if m:
+        missing = m.group(1)
+        mod = m.group(2)
+        out["kind"] = "import_error"
+        out["missing_name"] = missing
+        # 1a) plan.exports говорит что missing должен быть в файле X — берём его
+        owner = exports_owner.get(missing)
+        if owner:
+            out["target"] = owner
+            out["reason"] = f"plan.exports requires {missing} in {owner}"
+        else:
+            # 1b) сводим имя модуля к plan-файлу
+            mod_path = _module_to_plan_path(mod, plan_paths)
+            if mod_path:
+                out["target"] = mod_path
+                out["reason"] = f"module '{mod}' resolved to {mod_path}"
+            else:
+                out["target"] = source_file
+                out["reason"] = f"unresolved module '{mod}', falling back to source frame"
+        out["hint"] = (
+            f"В файле {out['target']} отсутствует/переименован символ '{missing}'. "
+            f"Добавь определение с тем именем, что объявлено в plan.exports."
+        )
+        return out
+
+    # 2) AttributeError: module 'M' has no attribute 'X'  → баг M
+    m = _HEAL_ATTRMOD_RE.search(stderr)
+    if m:
+        mod = m.group(1)
+        missing = m.group(2)
+        out["kind"] = "attribute_error"
+        out["missing_name"] = missing
+        owner = exports_owner.get(missing)
+        if owner:
+            out["target"] = owner
+            out["reason"] = f"plan.exports requires {missing} in {owner}"
+        else:
+            mod_path = _module_to_plan_path(mod, plan_paths)
+            out["target"] = mod_path or source_file
+            out["reason"] = f"module '{mod}' resolved to {out['target']}"
+        out["hint"] = (
+            f"Модуль '{mod}' не содержит '{missing}'. Добавь определение в {out['target']}."
+        )
+        return out
+
+    # 3) NameError: name 'X' is not defined  → почти всегда баг в source_file
+    m = _HEAL_NAMEERROR_RE.search(stderr)
+    if m:
+        missing = m.group(1)
+        out["kind"] = "name_error"
+        out["missing_name"] = missing
+        # Если имя — экспорт соседа, source_file должен его импортировать
+        owner = exports_owner.get(missing)
+        if owner and source_file and owner != source_file:
+            out["target"] = source_file
+            out["reason"] = f"'{missing}' is exported by {owner}; {source_file} must import it"
+            mod = _module_name_from_rel(owner)
+            out["hint"] = (
+                f"В файле {source_file} используется '{missing}', но нет импорта. "
+                f"Добавь: from {mod} import {missing}"
+            )
+        else:
+            # Локальная необъявленная переменная — баг там, где использовалась
+            out["target"] = source_file
+            out["reason"] = f"undefined local name '{missing}' in {source_file}"
+            out["hint"] = (
+                f"В файле {source_file} используется '{missing}' без определения. "
+                f"Объяви переменную/функцию или добавь нужный импорт."
+            )
+        return out
+
+    # 4) Любой traceback с user-frame — чиним последний кадр
+    if source_file:
+        out["kind"] = "traceback"
+        out["target"] = source_file
+        out["reason"] = f"traceback ends in user file {source_file}"
+        return out
+
+    return out
+
+
+def _pick_heal_target(plan: dict, failed: dict) -> str | None:
+    """P11.4: структурный выбор файла для хилинга на основе разбора ошибки.
+
+    Делегирует в _classify_failure (без ключевых слов). Если разбор не дал target —
+    fallback на первый .py из plan.files.
+    """
+    info = _classify_failure(plan, failed)
+    if info.get("target"):
+        logger.info(
+            f"[heal.target] kind={info['kind']} target={info['target']} "
+            f"missing={info.get('missing_name')} reason={info.get('reason','')}"
+        )
+        return info["target"]
+
+    # Fallback: первый .py-файл в plan.files (entry point)
     file_paths = [f["path"] for f in plan.get("files", []) if isinstance(f, dict) and "path" in f]
     if not file_paths:
         return None
-    blob = (failed.get("stderr", "") or "") + "\n" + (failed.get("stdout", "") or "")
-    for p in file_paths:
-        if p and p in blob:
-            return p
     py_files = [p for p in file_paths if p.lower().endswith(".py")]
-    return py_files[0] if py_files else file_paths[0]
+    fallback = py_files[0] if py_files else file_paths[0]
+    logger.info(f"[heal.target] kind=fallback target={fallback}")
+    return fallback
 
 
 def _heal_via_aider(slug: str, plan: dict, failed: dict) -> dict:
     """P9.4: попытаться починить файл через aider_heal.
 
     Результат — dict с полями ok/target/error/duration. Никогда не бросает исключение.
+
+    P11.4: в error_text включается структурный hint из _classify_failure —
+    aider видит и сырой traceback, и явный диагноз (кто виноват и почему).
     """
-    target = _pick_heal_target(plan, failed)
+    info = _classify_failure(plan, failed)
+    target = info.get("target") or _pick_heal_target(plan, failed)
     if not target:
         return {"ok": False, "target": None, "error": "no candidate file in plan"}
-    error_text = (failed.get("stderr", "") or failed.get("stdout", "") or "").strip()
-    if not error_text:
-        error_text = f"test '{failed.get('name','?')}' failed (rc={failed.get('rc','?')})"
+    raw_err = (failed.get("stderr", "") or failed.get("stdout", "") or "").strip()
+    if not raw_err:
+        raw_err = f"test '{failed.get('name','?')}' failed (rc={failed.get('rc','?')})"
+    # P11.4: добавляем структурный диагноз в error_text
+    if info.get("hint"):
+        error_text = (
+            f"ДИАГНОЗ (kind={info.get('kind')}, target={target}):\n"
+            f"{info.get('hint')}\n\n"
+            f"СЫРОЙ STDERR:\n{raw_err}"
+        )
+    else:
+        error_text = raw_err
     test_command = failed.get("command", "") or ""
     try:
         pdir = project_dir(slug)

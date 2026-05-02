@@ -1227,8 +1227,9 @@ class TestHealViaAider(_IsolatedJarvisRoot):
     """P9.4: aider-ветка в _heal_loop работает корректно."""
 
     def test_pick_heal_target_finds_file_in_stderr(self):
+        # P11.4: реальный Python traceback использует двойные кавычки в frame-строке
         plan = {"files": [{"path": "main.py"}, {"path": "helper.py"}]}
-        failed = {"stderr": "Traceback ... File 'helper.py', line 5, in <module>\nValueError"}
+        failed = {"stderr": 'Traceback ...\n  File "helper.py", line 5, in <module>\nValueError'}
         self.assertEqual(self.project_mod._pick_heal_target(plan, failed), "helper.py")
 
     def test_pick_heal_target_falls_back_to_first_py(self):
@@ -2373,3 +2374,345 @@ class TestNightlyE2ESmoke(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+
+class TestCrossFileHealP11_4(unittest.TestCase):
+    """P11.4: структурный разбор ошибки + выбор правильного target.
+
+    Тестируем _classify_failure на реальных traceback-форматах, без LLM.
+    Все решения должны идти из формата ошибки + plan.exports — без угадывания по словам.
+    """
+
+    # ─── _classify_failure: ImportError ──────────────────────────────────
+
+    def test_import_error_picks_owner_file(self):
+        """ImportError 'X' from M → target = файл, где X объявлен в plan.exports."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "config.py", "exports": [{"name": "DB_PATH", "kind": "const"}]},
+            {"path": "main.py",   "exports": []},
+        ]}
+        failed = {"stderr": (
+            'Traceback (most recent call last):\n'
+            '  File "C:\\j\\main.py", line 5, in <module>\n'
+            '    from config import DB_PATH\n'
+            "ImportError: cannot import name 'DB_PATH' from 'config'\n"
+        )}
+        info = _classify_failure(plan, failed)
+        self.assertEqual(info["kind"], "import_error")
+        self.assertEqual(info["target"], "config.py")
+        self.assertEqual(info["missing_name"], "DB_PATH")
+        self.assertIn("DB_PATH", info["hint"])
+
+    def test_import_error_unknown_name_falls_to_module(self):
+        """ImportError 'X' from M, но X нет в exports — target = файл модуля M."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "config.py", "exports": []},
+            {"path": "main.py",   "exports": []},
+        ]}
+        failed = {"stderr": (
+            'File "main.py", line 1, in <module>\n'
+            '    from config import UNKNOWN\n'
+            "ImportError: cannot import name 'UNKNOWN' from 'config'\n"
+        )}
+        info = _classify_failure(plan, failed)
+        self.assertEqual(info["kind"], "import_error")
+        self.assertEqual(info["target"], "config.py")
+
+    def test_import_error_unresolved_module_uses_source_frame(self):
+        """ImportError 'X' from M, M не в плане — target = source_file."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "main.py", "exports": []},
+        ]}
+        failed = {"stderr": (
+            'File "main.py", line 1, in <module>\n'
+            '    from external_lib import Thing\n'
+            "ImportError: cannot import name 'Thing' from 'external_lib'\n"
+        )}
+        info = _classify_failure(plan, failed)
+        self.assertEqual(info["kind"], "import_error")
+        # owner нет, mod_path нет — fallback на source_file
+        self.assertEqual(info["target"], "main.py")
+
+    # ─── _classify_failure: AttributeError ──────────────────────────────
+
+    def test_attribute_error_module_missing_attr(self):
+        """AttributeError: module M has no attribute X → target = файл X (если X в plan.exports)."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "storage.py", "exports": [{"name": "Storage", "kind": "class"}]},
+            {"path": "main.py",    "exports": []},
+        ]}
+        failed = {"stderr": (
+            'File "main.py", line 5, in <module>\n'
+            '    s = storage.Storage()\n'
+            "AttributeError: module 'storage' has no attribute 'Storage'\n"
+        )}
+        info = _classify_failure(plan, failed)
+        self.assertEqual(info["kind"], "attribute_error")
+        self.assertEqual(info["target"], "storage.py")
+        self.assertEqual(info["missing_name"], "Storage")
+
+    def test_attribute_error_unknown_owner_falls_to_module(self):
+        """AttributeError, имя нет в exports — target = файл модуля."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "storage.py", "exports": []},
+            {"path": "main.py",    "exports": []},
+        ]}
+        failed = {"stderr": (
+            'File "main.py", line 5, in <module>\n'
+            '    storage.unknown()\n'
+            "AttributeError: module 'storage' has no attribute 'unknown'\n"
+        )}
+        info = _classify_failure(plan, failed)
+        self.assertEqual(info["target"], "storage.py")
+
+    # ─── _classify_failure: NameError ────────────────────────────────────
+
+    def test_name_error_local_var_targets_source_file(self):
+        """NameError 'args' в main.py → target = main.py (баг там, где использовалось)."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "main.py", "exports": []},
+        ]}
+        failed = {"stderr": (
+            'File "main.py", line 28, in <module>\n'
+            '    elif args.command == "list":\n'
+            "NameError: name 'args' is not defined\n"
+        )}
+        info = _classify_failure(plan, failed)
+        self.assertEqual(info["kind"], "name_error")
+        self.assertEqual(info["target"], "main.py")
+        self.assertEqual(info["missing_name"], "args")
+
+    def test_name_error_neighbor_export_suggests_import(self):
+        """NameError 'Storage' в main.py, Storage — экспорт соседа → target = main.py + hint про import."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "storage.py", "exports": [{"name": "Storage", "kind": "class"}]},
+            {"path": "main.py",    "exports": []},
+        ]}
+        failed = {"stderr": (
+            'File "main.py", line 3, in <module>\n'
+            '    s = Storage()\n'
+            "NameError: name 'Storage' is not defined\n"
+        )}
+        info = _classify_failure(plan, failed)
+        self.assertEqual(info["target"], "main.py")
+        self.assertIn("from storage import", info["hint"])
+        self.assertIn("Storage", info["hint"])
+
+    def test_name_error_owner_same_as_source_uses_local_path(self):
+        """NameError 'X', X в exports того же source_file — берём локальную ветку (баг там же)."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "storage.py", "exports": [{"name": "Storage", "kind": "class"}]},
+        ]}
+        failed = {"stderr": (
+            'File "storage.py", line 5, in <module>\n'
+            '    Storage()\n'
+            "NameError: name 'Storage' is not defined\n"
+        )}
+        info = _classify_failure(plan, failed)
+        self.assertEqual(info["target"], "storage.py")
+
+    # ─── _last_user_frame_in_plan ────────────────────────────────────────
+
+    def test_last_user_frame_picks_last_in_plan(self):
+        """Из traceback с несколькими user-frames берём последний (где упало)."""
+        from brain.agents.project import _last_user_frame_in_plan
+        stderr = (
+            'File "main.py", line 1, in <module>\n'
+            '    bot.run()\n'
+            'File "bot.py", line 10, in run\n'
+            '    storage.add()\n'
+            'File "storage.py", line 5, in add\n'
+            "    raise ValueError('boom')\n"
+        )
+        result = _last_user_frame_in_plan(stderr, ["main.py", "bot.py", "storage.py"])
+        self.assertEqual(result, "storage.py")
+
+    def test_last_user_frame_skips_stdlib(self):
+        """Frames вне plan.files игнорируются (stdlib, библиотеки)."""
+        from brain.agents.project import _last_user_frame_in_plan
+        stderr = (
+            'File "main.py", line 1, in <module>\n'
+            '    json.loads(s)\n'
+            'File "C:\\Python\\Lib\\json\\__init__.py", line 357, in loads\n'
+            '    return _default_decoder.decode(s)\n'
+        )
+        result = _last_user_frame_in_plan(stderr, ["main.py"])
+        # последний frame вне плана — берём предыдущий из плана
+        self.assertEqual(result, "main.py")
+
+    def test_last_user_frame_handles_windows_paths(self):
+        """Windows backslash-пути из реального запуска нормально матчатся."""
+        from brain.agents.project import _last_user_frame_in_plan
+        stderr = 'File "C:\\jarvis\\data\\projects\\xyz\\bot.py", line 10, in run\n'
+        result = _last_user_frame_in_plan(stderr, ["bot.py"])
+        self.assertEqual(result, "bot.py")
+
+    def test_last_user_frame_none_when_no_match(self):
+        from brain.agents.project import _last_user_frame_in_plan
+        stderr = 'File "external.py", line 1, in <module>\n'
+        result = _last_user_frame_in_plan(stderr, ["main.py"])
+        self.assertIsNone(result)
+
+    # ─── _module_to_plan_path ────────────────────────────────────────────
+
+    def test_module_to_plan_path_simple(self):
+        from brain.agents.project import _module_to_plan_path
+        self.assertEqual(_module_to_plan_path("config", ["config.py", "main.py"]), "config.py")
+
+    def test_module_to_plan_path_nested(self):
+        from brain.agents.project import _module_to_plan_path
+        self.assertEqual(_module_to_plan_path("src.utils", ["src/utils.py", "main.py"]), "src/utils.py")
+
+    def test_module_to_plan_path_unknown(self):
+        from brain.agents.project import _module_to_plan_path
+        self.assertIsNone(_module_to_plan_path("unknown_pkg", ["main.py"]))
+
+    # ─── _pick_heal_target — интеграция ──────────────────────────────────
+
+    def test_pick_heal_target_uses_classification(self):
+        """Если _classify_failure нашёл target — используем его, а не первый файл."""
+        from brain.agents.project import _pick_heal_target
+        plan = {"files": [
+            {"path": "main.py",    "exports": []},
+            {"path": "config.py",  "exports": [{"name": "DB_PATH", "kind": "const"}]},
+        ]}
+        failed = {"stderr": (
+            'File "main.py", line 1, in <module>\n'
+            "    from config import DB_PATH\n"
+            "ImportError: cannot import name 'DB_PATH' from 'config'\n"
+        )}
+        # main.py — первый файл, но classify_failure должен вернуть config.py
+        target = _pick_heal_target(plan, failed)
+        self.assertEqual(target, "config.py")
+
+    def test_pick_heal_target_fallback_when_no_clue(self):
+        """Если ошибка не разобрана — fallback на первый .py."""
+        from brain.agents.project import _pick_heal_target
+        plan = {"files": [
+            {"path": "main.py",    "exports": []},
+            {"path": "config.py",  "exports": []},
+        ]}
+        failed = {"stderr": "some opaque error without traceback"}
+        target = _pick_heal_target(plan, failed)
+        self.assertEqual(target, "main.py")
+
+    def test_pick_heal_target_no_files_returns_none(self):
+        from brain.agents.project import _pick_heal_target
+        self.assertIsNone(_pick_heal_target({"files": []}, {}))
+
+    # ─── Регрессия P11.2: reminder-bot DB_PATH должен попасть в config.py ─
+
+    def test_regression_reminder_bot_db_path_targets_config(self):
+        """Реальный кейс P11.2: heal должен выбрать config.py, а не main.py.
+
+        До P11.4: _pick_heal_target выбирал config.py, потому что 'config.py' в stderr —
+        случайное совпадение. С P11.4: тот же выбор, но обоснованно через plan.exports.
+        А для NameError 'args' выбирается main.py (раньше тоже мог пойти не туда).
+        """
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "config.py",  "exports": [{"name": "DB_PATH", "kind": "const"}]},
+            {"path": "storage.py", "exports": [
+                {"name": "Storage", "kind": "class"},
+                {"name": "add_reminder", "kind": "function"},
+                {"name": "list_reminders", "kind": "function"},
+            ]},
+            {"path": "bot.py",     "exports": [{"name": "process_command", "kind": "function"}]},
+            {"path": "main.py",    "exports": []},
+        ]}
+        # ImportError: должен идти в config.py
+        f1 = {"stderr": (
+            'File "main.py", line 5, in <module>\n'
+            '    from config import DB_PATH\n'
+            "ImportError: cannot import name 'DB_PATH' from 'config'\n"
+        )}
+        self.assertEqual(_classify_failure(plan, f1)["target"], "config.py")
+
+        # NameError на Storage (не импортирован в bot.py): должен идти в bot.py + hint про import
+        f2 = {"stderr": (
+            'File "bot.py", line 10, in process_command\n'
+            '    s = Storage()\n'
+            "NameError: name 'Storage' is not defined\n"
+        )}
+        info = _classify_failure(plan, f2)
+        self.assertEqual(info["target"], "bot.py")
+        self.assertIn("from storage import", info["hint"])
+
+    # ─── Регрессия P11.2: NameError args в main.py ───────────────────────
+
+    def test_regression_todo_args_undefined_targets_main(self):
+        """Реальный кейс P11.2: NameError 'args' в main.py."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "storage.py", "exports": [{"name": "load_todos"}, {"name": "save_todos"}]},
+            {"path": "cli.py",     "exports": [{"name": "add_todo"}, {"name": "list_todos"}]},
+            {"path": "main.py",    "exports": []},
+        ]}
+        failed = {"stderr": (
+            'File "main.py", line 28, in <module>\n'
+            '    elif args.command == "list":\n'
+            "NameError: name 'args' is not defined\n"
+        )}
+        info = _classify_failure(plan, failed)
+        self.assertEqual(info["target"], "main.py")
+        self.assertEqual(info["missing_name"], "args")
+        # 'args' не в exports никого — просто локально не определена
+        self.assertNotIn("from", info["hint"].split("\n")[0])
+
+    # ─── Защита: пустой/ломаный input ────────────────────────────────────
+
+    def test_classify_empty_plan(self):
+        from brain.agents.project import _classify_failure
+        info = _classify_failure({"files": []}, {"stderr": "anything"})
+        self.assertEqual(info["kind"], "unknown")
+        self.assertIsNone(info["target"])
+
+    def test_classify_empty_stderr(self):
+        from brain.agents.project import _classify_failure
+        plan = {"files": [{"path": "main.py", "exports": []}]}
+        info = _classify_failure(plan, {"stderr": "", "stdout": ""})
+        self.assertIsNone(info["target"])
+
+    def test_classify_non_dict_args(self):
+        from brain.agents.project import _classify_failure
+        # не падать
+        info = _classify_failure(None, None)
+        self.assertEqual(info["kind"], "unknown")
+        info2 = _classify_failure([], "stderr")
+        self.assertEqual(info2["kind"], "unknown")
+
+    # ─── traceback без специфической ошибки ──────────────────────────────
+
+    def test_generic_traceback_targets_last_frame(self):
+        """ValueError или другая ошибка с user-frame — target = последний frame."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "main.py",    "exports": []},
+            {"path": "storage.py", "exports": []},
+        ]}
+        failed = {"stderr": (
+            'File "main.py", line 1, in <module>\n'
+            '    save()\n'
+            'File "storage.py", line 5, in save\n'
+            "    raise ValueError('disk full')\n"
+            "ValueError: disk full\n"
+        )}
+        info = _classify_failure(plan, failed)
+        self.assertEqual(info["kind"], "traceback")
+        self.assertEqual(info["target"], "storage.py")
+
+    # ─── Quick-win A: detail обрезка в jsonl увеличена ───────────────────
+
+    def test_phase_detail_jsonl_limit_is_large(self):
+        """detail в jsonl должен теперь сохранять минимум 4000 символов (P11.4)."""
+        from tools.projects import _PHASE_DETAIL_JSONL_LIMIT
+        self.assertGreaterEqual(_PHASE_DETAIL_JSONL_LIMIT, 4000)

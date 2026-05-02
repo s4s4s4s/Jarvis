@@ -237,11 +237,19 @@ def read_project_file(slug: str, rel_path: str) -> str:
     return full.read_text(encoding="utf-8")
 
 
+# P11.4: поднята обрезка с 300 до 4000 — иначе в jsonl теряются поля вроде contract.missing,
+# и удалённая диагностика не видит результаты пост-билд линтера.
+_PHASE_DETAIL_JSONL_LIMIT = 4000
+
+
 def add_phase(slug: str, name: str, status: str, detail: str = "") -> None:
     m = load_manifest(slug)
     m.phases.append(asdict(PhaseRecord(name=name, status=status, detail=detail)))
     save_manifest(m)
-    _journal({"event": "phase", "slug": slug, "name": name, "status": status, "detail": detail[:300]})
+    _journal({
+        "event": "phase", "slug": slug, "name": name, "status": status,
+        "detail": detail[:_PHASE_DETAIL_JSONL_LIMIT],
+    })
 
 
 def set_status(slug: str, status: str) -> None:
