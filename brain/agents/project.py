@@ -595,7 +595,8 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
 
     # P11.2.d: пост-билд линтер контракта.
     # Сверяем реальные top-level имена файла с plan.files[*].exports для этого файла.
-    # Не блокируем билд (lossless): логируем и пишем в результат — сигнал для P11.4 cross-file heal.
+    # P11.5.C: блокирующий линтер — contract.ok=False делает build phase failed,
+    # чтобы heal-loop сразу подхватил этот файл в target с missing-экспортами.
     contract_check = {"checked": False}
     try:
         target_in_plan = next(
@@ -622,15 +623,36 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
         logger.warning(f"[contract.lint] {rel_path}: failed: {e}")
         contract_check = {"checked": False, "error": str(e)}
 
+    # P11.5.C: блокада. Если линтер проверил и не ОК — фаза билда считается провальной.
+    # Это сигнал для heal-loop: вызвать aider на этом файле с хинтом «восстанови missing exports»,
+    # вместо того чтобы пускать smoke-тест который всё равно упадёт на ImportError.
+    contract_failed = bool(
+        contract_check.get("checked")
+        and contract_check.get("ok") is False
+    )
+    if contract_failed:
+        missing = contract_check.get("missing") or []
+        kind_mm = contract_check.get("kind_mismatch") or []
+        logger.warning(
+            f"[contract.block] {rel_path} → build failed (P11.5): "
+            f"missing={missing} kind_mismatch={kind_mm}"
+        )
+
     return {
         "path":    rel_path,
-        "ok":      True,
-        "verdict": "approve",
+        "ok":      not contract_failed,
+        "verdict": "revise" if contract_failed else "approve",
         "issues":  len(static_summary["errors"]) + len(static_summary["warnings"]),
-        "summary": f"aider built {rel_path} in {res.duration_s}s",
+        "summary": (
+            f"aider built {rel_path} in {res.duration_s}s but contract violated: "
+            f"missing={contract_check.get('missing') or []}"
+            if contract_failed
+            else f"aider built {rel_path} in {res.duration_s}s"
+        ),
         "iters":   res.attempts,
         "static":  static_summary,
         "contract": contract_check,  # P11.2.d
+        "contract_failure": contract_failed,  # P11.5.C: явный флаг для heal-loop
         "_via":    "aider",
         "aider":   {
             "duration_s": res.duration_s,
@@ -2158,6 +2180,46 @@ def _classify_failure(plan: dict, failed: dict) -> dict:
     if not plan_paths:
         return out
 
+    # P11.5.C: contract_failure — приоритетный сигнал из build phase, не из stderr теста.
+    # Если _build_one_file_aider пометил результат как contract_failure=True и передал
+    # contract.missing/path — берём этот файл в target без парсинга traceback'ов.
+    if failed.get("contract_failure"):
+        contract = failed.get("contract") or {}
+        target_path = failed.get("path") or failed.get("target")
+        missing = contract.get("missing") or []
+        kind_mm = contract.get("kind_mismatch") or []
+        if target_path and target_path in plan_paths:
+            out["kind"] = "contract_violation"
+            out["target"] = target_path
+            out["source_file"] = target_path
+            out["missing_name"] = (missing[0] if missing else None)
+            out["reason"] = (
+                f"contract.lint: {target_path} missing={missing} kind_mismatch={kind_mm}"
+            )
+            # Собираем хинт из plan.exports для этого файла — чтобы aider восстановил
+            # именно те сигнатуры, что были в плане.
+            file_node = next(
+                (f for f in plan.get("files", [])
+                 if isinstance(f, dict) and f.get("path") == target_path),
+                None,
+            )
+            sigs = []
+            for exp in ((file_node or {}).get("exports") or []):
+                if not isinstance(exp, dict):
+                    continue
+                nm = (exp.get("name") or "").strip()
+                if nm and nm in missing:
+                    sig = (exp.get("signature") or nm).strip()
+                    kind = (exp.get("kind") or "").strip()
+                    sigs.append(f"{kind} {sig}".strip() if kind else sig)
+            sigs_block = ("\n  - " + "\n  - ".join(sigs)) if sigs else ""
+            out["hint"] = (
+                f"Файл {target_path} не экспортирует символы, заявленные в plan.exports: "
+                f"missing={missing}. Восстанови эти экспорты на top-level файла "
+                f"с их оригинальными сигнатурами:{sigs_block}"
+            )
+            return out
+
     stderr = (failed.get("stderr", "") or "") + "\n" + (failed.get("stdout", "") or "")
     if not stderr.strip():
         return out
@@ -2734,6 +2796,47 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
                 # и resume(slug) мог корректно продолжить с build.
                 add_phase(slug, "build", "failed", "no successful files")
                 return _abort_partial("build had no successful files")
+
+        # P11.5.C: PHASE 4.5 — блокирующий контракт-линтер между BUILD и TEST.
+        # Если любой файл провалил линт экспортов — синтезируем failed-test-record
+        # и сразу пускаем через _heal_loop. Это даёт heal-loop'у точный target
+        # (файл с missing exports) до того как smoke упадёт на ImportError.
+        contract_failed_files: list[dict] = []
+        if 3 >= skip_until and build_results:
+            for br in build_results:
+                if br.get("contract_failure"):
+                    contract_failed_files.append(br)
+            if contract_failed_files:
+                synthetic_results: list[dict] = []
+                for br in contract_failed_files:
+                    contract = br.get("contract") or {}
+                    missing = contract.get("missing") or []
+                    synthetic_results.append({
+                        "name":    f"contract_lint:{br.get('path','?')}",
+                        "command": "",
+                        "ok":      False,
+                        "rc":      None,
+                        "stdout":  "",
+                        "stderr":  (
+                            f"contract.lint blocked build (P11.5): "
+                            f"file={br.get('path')} missing={missing}"
+                        ),
+                        "expects": "plan.exports satisfied",
+                        # P11.5.C: эти поля читаются _classify_failure'ом
+                        "contract_failure": True,
+                        "contract": contract,
+                        "path":     br.get("path"),
+                    })
+                add_phase(
+                    slug, "contract.block", "failed",
+                    f"files={[r.get('path') for r in contract_failed_files]} "
+                    f"→ heal-loop без smoke (P11.5)"
+                )
+                try:
+                    synthetic_results = _heal_loop(slug, spec, plan, synthetic_results, budget)
+                except BudgetExceeded as e:
+                    add_phase(slug, "contract.block", "failed", f"budget: {e}")
+                # После heal'а всё равно пойдёт PHASE 5 — реальный smoke решит ок/не ок.
 
         # PHASE 5: TEST
         if 3 >= skip_until:

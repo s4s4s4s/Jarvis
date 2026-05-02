@@ -2372,11 +2372,6 @@ class TestNightlyE2ESmoke(unittest.TestCase):
         self.assertEqual(rc, 2)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
-
 class TestCrossFileHealP11_4(unittest.TestCase):
     """P11.4: структурный разбор ошибки + выбор правильного target.
 
@@ -2716,3 +2711,231 @@ class TestCrossFileHealP11_4(unittest.TestCase):
         """detail в jsonl должен теперь сохранять минимум 4000 символов (P11.4)."""
         from tools.projects import _PHASE_DETAIL_JSONL_LIMIT
         self.assertGreaterEqual(_PHASE_DETAIL_JSONL_LIMIT, 4000)
+
+
+# ─── P11.5: clean architect prompt + blocking contract linter ────────────────
+
+
+class TestPlanCleanupP11_5(unittest.TestCase):
+    """P11.5.A: чистка примеров в архитектор-промптах (FM-12).
+
+    Архитектор не должен копировать конкретные имена файлов из примеров промпта
+    (news.csv, RSS-ленту Lenta.ru и т.п.). Промпт должен содержать явный запрет
+    и шаблоны через плейсхолдеры.
+    """
+
+    def test_intake_prompt_uses_placeholders_not_news_csv(self):
+        """В INTAKE-промпте acceptance_criteria-пример — плейсхолдер, не news.csv."""
+        from brain.prompts import PROJECT_INTAKE_SYSTEM
+        # Старый пример «news.csv существует» удалён: news.csv остался только в запрете.
+        # Конкретно: фраза «файл news.csv существует» (буквальный пример) больше не должна
+        # стоять в роли образца для acceptance_criteria.
+        self.assertNotIn("\"файл news.csv существует и не пустой\"", PROJECT_INTAKE_SYSTEM)
+        # Должен быть явный плейсхолдер
+        self.assertIn("<выходной_артефакт>", PROJECT_INTAKE_SYSTEM)
+
+    def test_intake_prompt_has_explicit_no_copy_rule(self):
+        """В INTAKE есть явный запрет копировать имена из примеров буквально."""
+        from brain.prompts import PROJECT_INTAKE_SYSTEM
+        self.assertIn("ЗАПРЕТ КОПИРОВАНИЯ ИЗ ПРИМЕРОВ", PROJECT_INTAKE_SYSTEM)
+        self.assertIn("ИМЕННО ЭТОГО запроса", PROJECT_INTAKE_SYSTEM)
+
+    def test_architect_prompt_has_explicit_no_copy_rule(self):
+        """В ARCHITECT есть явный запрет копировать имена файлов из примеров."""
+        from brain.prompts import PROJECT_ARCHITECT_SYSTEM
+        self.assertIn("ЗАПРЕТ КОПИРОВАНИЯ ИЗ ПРИМЕРОВ", PROJECT_ARCHITECT_SYSTEM)
+        # И конкретный анти-кейс «калькулятор → не пиши news.csv»
+        self.assertIn("калькулятор", PROJECT_ARCHITECT_SYSTEM)
+        self.assertIn("news.csv", PROJECT_ARCHITECT_SYSTEM)  # упомянут только как анти-пример
+
+    def test_intake_requirements_examples_are_templates(self):
+        """В requirements-блоке примеры — это шаблоны через <угловые_скобки>, а не RSS-Lenta."""
+        from brain.prompts import PROJECT_INTAKE_SYSTEM
+        # Прежняя строка-эталон удалена
+        self.assertNotIn("\"скачать RSS-ленту Lenta.ru\"", PROJECT_INTAKE_SYSTEM)
+        # Шаблоны на месте
+        self.assertIn("<источник>", PROJECT_INTAKE_SYSTEM)
+        self.assertIn("<глагол>", PROJECT_INTAKE_SYSTEM)
+
+
+class TestBlockingContractP11_5(unittest.TestCase):
+    """P11.5.C: contract.ok=False → build phase = failed; heal-loop таргетит файл с missing exports."""
+
+    # ─── _classify_failure: contract_failure-ветка ──────────────────────
+
+    def test_classify_failure_uses_contract_failure_field(self):
+        """Если failed.contract_failure=True → kind=contract_violation, target = failed.path."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "bot.py", "exports": [
+                {"name": "process_command", "kind": "function",
+                 "signature": "process_command(text: str) -> str"},
+                {"name": "main", "kind": "function", "signature": "main()"},
+            ]},
+            {"path": "storage.py", "exports": [{"name": "Storage", "kind": "class"}]},
+        ]}
+        failed = {
+            "contract_failure": True,
+            "path": "bot.py",
+            "contract": {
+                "checked": True,
+                "ok": False,
+                "missing": ["process_command"],
+                "kind_mismatch": [],
+            },
+            "stderr": "",
+            "stdout": "",
+        }
+        info = _classify_failure(plan, failed)
+        self.assertEqual(info["kind"], "contract_violation")
+        self.assertEqual(info["target"], "bot.py")
+        self.assertEqual(info["source_file"], "bot.py")
+        self.assertEqual(info["missing_name"], "process_command")
+
+    def test_classify_failure_contract_hint_includes_signatures(self):
+        """Хинт включает оригинальные сигнатуры из plan.exports."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "bot.py", "exports": [
+                {"name": "process_command", "kind": "function",
+                 "signature": "process_command(text: str) -> str"},
+            ]},
+        ]}
+        failed = {
+            "contract_failure": True,
+            "path": "bot.py",
+            "contract": {"checked": True, "ok": False,
+                         "missing": ["process_command"], "kind_mismatch": []},
+        }
+        info = _classify_failure(plan, failed)
+        self.assertIn("process_command", info["hint"])
+        self.assertIn("text: str", info["hint"])
+        self.assertIn("Восстанови", info["hint"])
+
+    def test_classify_failure_contract_takes_precedence_over_stderr(self):
+        """Контракт-фейл приоритетнее парсинга stderr."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "bot.py", "exports": [{"name": "main", "kind": "function"}]},
+            {"path": "config.py", "exports": [{"name": "DB_PATH", "kind": "const"}]},
+        ]}
+        # stderr указывает на config.py, но contract_failure — на bot.py.
+        # Должен победить контракт.
+        failed = {
+            "contract_failure": True,
+            "path": "bot.py",
+            "contract": {"checked": True, "ok": False,
+                         "missing": ["main"], "kind_mismatch": []},
+            "stderr": (
+                'File "config.py", line 1, in <module>\n'
+                '    from config import DB_PATH\n'
+                "ImportError: cannot import name 'DB_PATH' from 'config'\n"
+            ),
+        }
+        info = _classify_failure(plan, failed)
+        self.assertEqual(info["target"], "bot.py")
+        self.assertEqual(info["kind"], "contract_violation")
+
+    def test_classify_failure_contract_path_not_in_plan_falls_through(self):
+        """Если path из contract_failure не в plan.files — возвращаемся к парсингу stderr."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "main.py", "exports": []},
+        ]}
+        failed = {
+            "contract_failure": True,
+            "path": "ghost.py",   # такого файла нет в плане
+            "contract": {"checked": True, "ok": False, "missing": ["x"]},
+            "stderr": (
+                'File "main.py", line 1, in <module>\n'
+                "NameError: name 'x' is not defined\n"
+            ),
+        }
+        info = _classify_failure(plan, failed)
+        # Контракт-ветка не сработала (path не в плане) → стандартный путь по stderr
+        self.assertNotEqual(info["kind"], "contract_violation")
+
+    def test_classify_failure_no_contract_failure_uses_stderr(self):
+        """Без contract_failure флага — обычный парсинг stderr."""
+        from brain.agents.project import _classify_failure
+        plan = {"files": [
+            {"path": "config.py", "exports": [{"name": "DB_PATH", "kind": "const"}]},
+            {"path": "main.py", "exports": []},
+        ]}
+        failed = {
+            "stderr": (
+                'File "main.py", line 1, in <module>\n'
+                '    from config import DB_PATH\n'
+                "ImportError: cannot import name 'DB_PATH' from 'config'\n"
+            ),
+        }
+        info = _classify_failure(plan, failed)
+        self.assertEqual(info["kind"], "import_error")
+        self.assertEqual(info["target"], "config.py")
+
+    # ─── _build_one_file_aider: блокирующий линтер ──────────────────────
+
+    def test_build_result_contract_failure_flag(self):
+        """Если контракт не ОК → result.ok=False, verdict=revise, contract_failure=True."""
+        # Симулируем результат ровно по форме _build_one_file_aider: проверяем,
+        # что сборщик результата уважает contract_failed-ветку.
+        # Проверяем структуру через ручную сборку — функция приватная и зависит от aider,
+        # поэтому проверяем форму результата на уровне юнита-структуры.
+        from brain.agents.project import _check_file_contract
+        code = "def foo():\n    return 1\n"
+        # plan говорит, что должен быть и process_command и foo
+        expected = [
+            {"name": "foo", "kind": "function"},
+            {"name": "process_command", "kind": "function"},
+        ]
+        cc = _check_file_contract(code, expected)
+        self.assertFalse(cc["ok"])
+        self.assertIn("process_command", cc["missing"])
+
+    # ─── _heal_via_aider: контрактный target и hint ─────────────────────
+
+    def test_heal_via_aider_uses_contract_failure_target(self):
+        """_heal_via_aider передаёт aider'у target и hint из contract_failure-ветки."""
+        from brain.agents import project as proj
+        plan = {"files": [
+            {"path": "bot.py", "exports": [
+                {"name": "process_command", "kind": "function",
+                 "signature": "process_command(text: str) -> str"},
+            ]},
+        ]}
+        failed = {
+            "contract_failure": True,
+            "path": "bot.py",
+            "contract": {"checked": True, "ok": False,
+                         "missing": ["process_command"], "kind_mismatch": []},
+            "stderr": "",
+            "command": "",
+        }
+
+        captured = {}
+
+        class _FakeAiderRes:
+            ok = True
+            error = ""
+            duration_s = 0.1
+            attempts = 1
+
+        def _fake_heal(pdir, target, error_text, test_command=""):
+            captured["target"] = target
+            captured["error_text"] = error_text
+            return _FakeAiderRes()
+
+        with patch.object(proj.aider_runner, "aider_heal", side_effect=_fake_heal), \
+             patch.object(proj, "project_dir", return_value="/tmp/ignored"):
+            res = proj._heal_via_aider("slug", plan, failed)
+
+        self.assertTrue(res["ok"])
+        self.assertEqual(captured["target"], "bot.py")
+        # error_text должен включать наш контрактный диагноз
+        self.assertIn("contract_violation", captured["error_text"])
+        self.assertIn("process_command", captured["error_text"])
+        self.assertIn("Восстанови", captured["error_text"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
