@@ -2030,6 +2030,323 @@ class TestPlanContractsP11(unittest.TestCase):
         self.assertEqual(m["depends_unmatched"], [])
 
 
+class TestCoderNeighborApiP11_2(unittest.TestCase):
+    """P11.2: coder получает API соседей (read-only stubs + CONTRACT-блок + post-lint)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import brain.agents.project as project_mod
+        cls.pm = project_mod
+
+    # --- _module_name_from_rel ---
+
+    def test_module_name_simple(self):
+        self.assertEqual(self.pm._module_name_from_rel("main.py"), "main")
+
+    def test_module_name_subdir(self):
+        self.assertEqual(self.pm._module_name_from_rel("src/utils.py"), "src.utils")
+
+    def test_module_name_backslash(self):
+        self.assertEqual(self.pm._module_name_from_rel("src\\utils.py"), "src.utils")
+
+    def test_module_name_empty(self):
+        self.assertEqual(self.pm._module_name_from_rel(""), "")
+        self.assertEqual(self.pm._module_name_from_rel(None), "")
+
+    # --- _render_export_signature ---
+
+    def test_render_signature_function_with_paren_sig(self):
+        s = self.pm._render_export_signature({"name": "add", "kind": "function", "signature": "(a, b)"})
+        self.assertEqual(s, "add(a, b)")
+
+    def test_render_signature_function_with_full_sig(self):
+        s = self.pm._render_export_signature({"name": "add", "kind": "function",
+                                              "signature": "add(a: int, b: int) -> int"})
+        self.assertEqual(s, "add(a: int, b: int) -> int")
+
+    def test_render_signature_function_no_sig(self):
+        s = self.pm._render_export_signature({"name": "main", "kind": "function"})
+        self.assertEqual(s, "main()")
+
+    def test_render_signature_class_with_init_sig(self):
+        s = self.pm._render_export_signature({"name": "Storage", "kind": "class", "signature": "(db_path: str)"})
+        self.assertEqual(s, "class Storage(db_path: str)")
+
+    def test_render_signature_class_no_sig(self):
+        s = self.pm._render_export_signature({"name": "User", "kind": "class"})
+        self.assertEqual(s, "class User")
+
+    def test_render_signature_const_with_type(self):
+        s = self.pm._render_export_signature({"name": "DB_PATH", "kind": "const", "signature": "str"})
+        self.assertEqual(s, "DB_PATH: str")
+
+    def test_render_signature_const_bare(self):
+        s = self.pm._render_export_signature({"name": "MAX", "kind": "const"})
+        self.assertEqual(s, "MAX")
+
+    def test_render_signature_garbage(self):
+        self.assertEqual(self.pm._render_export_signature(None), "")
+        self.assertEqual(self.pm._render_export_signature({}), "")
+
+    # --- _render_neighbor_stub ---
+
+    def test_neighbor_stub_function_is_valid_python(self):
+        import ast
+        stub = self.pm._render_neighbor_stub("storage.py", {
+            "purpose": "Работа с SQLite",
+            "exports": [
+                {"name": "add_user", "kind": "function", "signature": "(name: str) -> int", "doc": "Добавить."},
+            ],
+        })
+        # Должен парситься как Python
+        ast.parse(stub)
+        self.assertIn("def add_user", stub)
+        self.assertIn("NotImplementedError", stub)
+
+    def test_neighbor_stub_class_is_valid_python(self):
+        import ast
+        stub = self.pm._render_neighbor_stub("storage.py", {
+            "exports": [
+                {"name": "Storage", "kind": "class", "signature": "(db_path: str)"},
+            ],
+        })
+        ast.parse(stub)  # обязан быть валидным Python
+        self.assertIn("class Storage:", stub)
+        # Сигнатуру показываем в комментарии
+        self.assertIn("db_path: str", stub)
+
+    def test_neighbor_stub_const_is_valid_python(self):
+        import ast
+        stub = self.pm._render_neighbor_stub("config.py", {
+            "exports": [
+                {"name": "DB_PATH", "kind": "const", "signature": "str"},
+            ],
+        })
+        ast.parse(stub)
+        self.assertIn("DB_PATH = None", stub)
+
+    def test_neighbor_stub_empty_exports(self):
+        import ast
+        stub = self.pm._render_neighbor_stub("empty.py", {"exports": []})
+        ast.parse(stub)  # всё равно валидный Python
+
+    # --- _build_neighbor_context ---
+
+    def test_build_neighbor_context_uses_real_file_when_built(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "storage.py").write_text("def real_fn(): return 1\n", encoding="utf-8")
+            plan = {
+                "files": [
+                    {"path": "main.py", "depends_on": ["storage.py"], "exports": []},
+                    {"path": "storage.py", "depends_on": [],
+                     "exports": [{"name": "real_fn", "kind": "function"}]},
+                ]
+            }
+            paths, descs = self.pm._build_neighbor_context(root, plan, "main.py")
+            self.assertEqual(len(paths), 1)
+            self.assertTrue(paths[0].endswith("storage.py"))
+            self.assertTrue(any("экспортирует" in d for d in descs))
+
+    def test_build_neighbor_context_generates_stub_when_not_built(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plan = {
+                "files": [
+                    {"path": "main.py", "depends_on": ["storage.py"], "exports": []},
+                    {"path": "storage.py", "depends_on": [],
+                     "exports": [{"name": "add_user", "kind": "function"}]},
+                ]
+            }
+            paths, descs = self.pm._build_neighbor_context(root, plan, "main.py")
+            self.assertEqual(len(paths), 1)
+            stub_path = Path(paths[0])
+            self.assertTrue(stub_path.exists())
+            self.assertIn("def add_user", stub_path.read_text(encoding="utf-8"))
+
+    def test_build_neighbor_context_skips_stdlib(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            plan = {
+                "files": [
+                    {"path": "main.py", "depends_on": ["stdlib"], "exports": []},
+                ]
+            }
+            paths, descs = self.pm._build_neighbor_context(Path(td), plan, "main.py")
+            self.assertEqual(paths, [])
+            self.assertEqual(descs, [])
+
+    def test_build_neighbor_context_skips_unknown_dep(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            plan = {
+                "files": [
+                    {"path": "main.py", "depends_on": ["missing_module.py"], "exports": []},
+                ]
+            }
+            paths, descs = self.pm._build_neighbor_context(Path(td), plan, "main.py")
+            self.assertEqual(paths, [])
+
+    def test_build_neighbor_context_garbage_plan(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            paths, descs = self.pm._build_neighbor_context(Path(td), None, "main.py")
+            self.assertEqual(paths, [])
+            self.assertEqual(descs, [])
+
+    # --- _build_contract_prompt_block ---
+
+    def test_contract_block_must_export_section(self):
+        plan = {"files": [
+            {"path": "storage.py", "depends_on": ["stdlib"],
+             "exports": [{"name": "add_user", "kind": "function", "signature": "(name: str)"}]}
+        ]}
+        block = self.pm._build_contract_prompt_block(plan, "storage.py")
+        self.assertIn("КОНТРАКТ ЭТОГО ФАЙЛА", block)
+        self.assertIn("add_user(name: str)", block)
+
+    def test_contract_block_required_imports_section(self):
+        plan = {"files": [
+            {"path": "main.py", "depends_on": ["storage.py", "stdlib"], "exports": []},
+            {"path": "storage.py", "depends_on": [],
+             "exports": [{"name": "add_user", "kind": "function"},
+                         {"name": "list_users", "kind": "function"}]},
+        ]}
+        block = self.pm._build_contract_prompt_block(plan, "main.py")
+        self.assertIn("ОБЯЗАТЕЛЬНЫЕ ИМПОРТЫ", block)
+        self.assertIn("from storage import add_user, list_users", block)
+
+    def test_contract_block_empty_when_no_exports(self):
+        plan = {"files": [
+            {"path": "main.py", "depends_on": ["stdlib"], "exports": []},
+        ]}
+        block = self.pm._build_contract_prompt_block(plan, "main.py")
+        self.assertEqual(block, "")
+
+    def test_contract_block_garbage_plan(self):
+        self.assertEqual(self.pm._build_contract_prompt_block(None, "main.py"), "")
+        self.assertEqual(self.pm._build_contract_prompt_block({}, "main.py"), "")
+
+    # --- _check_file_contract ---
+
+    def test_check_file_contract_ok(self):
+        text = "def add_user(name): pass\nDB_PATH = 'x'\n"
+        cc = self.pm._check_file_contract(text, [
+            {"name": "add_user", "kind": "function"},
+            {"name": "DB_PATH", "kind": "const"},
+        ])
+        self.assertTrue(cc["ok"])
+        self.assertEqual(cc["missing"], [])
+        self.assertEqual(cc["kind_mismatch"], [])
+
+    def test_check_file_contract_missing(self):
+        text = "def add_user(name): pass\n"
+        cc = self.pm._check_file_contract(text, [
+            {"name": "add_user", "kind": "function"},
+            {"name": "DB_PATH", "kind": "const"},
+        ])
+        self.assertFalse(cc["ok"])
+        self.assertIn("DB_PATH", cc["missing"])
+
+    def test_check_file_contract_kind_mismatch(self):
+        text = "def Storage(): pass\n"
+        cc = self.pm._check_file_contract(text, [
+            {"name": "Storage", "kind": "class"},
+        ])
+        self.assertFalse(cc["ok"])
+        self.assertEqual(cc["kind_mismatch"], [
+            {"name": "Storage", "expected": "class", "actual": "function"}
+        ])
+
+    def test_check_file_contract_renamed_const(self):
+        # Реальный сценарий из reminder-bot: plan ждёт DB_PATH, coder выдал DATABASE_PATH.
+        text = "DATABASE_PATH = 'reminders.sqlite'\n"
+        cc = self.pm._check_file_contract(text, [
+            {"name": "DB_PATH", "kind": "const"},
+        ])
+        self.assertFalse(cc["ok"])
+        self.assertEqual(cc["missing"], ["DB_PATH"])
+        self.assertIn("DATABASE_PATH", cc["found_top_level"])
+
+    def test_check_file_contract_syntax_error(self):
+        cc = self.pm._check_file_contract("def x(:", [{"name": "x", "kind": "function"}])
+        self.assertFalse(cc["ok"])
+        self.assertFalse(cc["ast_ok"])
+
+    def test_check_file_contract_empty_text(self):
+        cc = self.pm._check_file_contract("", [{"name": "foo", "kind": "function"}])
+        self.assertFalse(cc["ok"])
+        self.assertEqual(cc["missing"], ["foo"])
+
+    def test_check_file_contract_no_expected(self):
+        cc = self.pm._check_file_contract("x = 1\n", [])
+        self.assertTrue(cc["ok"])
+
+    # --- _dedupe_files_vs_inputs (FM-10) ---
+
+    def test_dedupe_removes_input_from_files(self):
+        plan = {
+            "files": [
+                {"path": "storage.py", "depends_on": []},
+                {"path": "todos.json", "depends_on": []},
+            ],
+            "inputs": [{"path": "todos.json", "sample_content": "[]"}],
+        }
+        out = self.pm._dedupe_files_vs_inputs(plan)
+        paths = [f["path"] for f in out["files"]]
+        self.assertEqual(paths, ["storage.py"])
+
+    def test_dedupe_keeps_python_overlap(self):
+        # Если в inputs оживает .py-файл (баг плана) — не режем, пусть строится.
+        plan = {
+            "files": [{"path": "main.py"}],
+            "inputs": [{"path": "main.py"}],
+        }
+        out = self.pm._dedupe_files_vs_inputs(plan)
+        self.assertEqual([f["path"] for f in out["files"]], ["main.py"])
+
+    def test_dedupe_empty_inputs_no_change(self):
+        plan = {"files": [{"path": "main.py"}], "inputs": []}
+        out = self.pm._dedupe_files_vs_inputs(plan)
+        self.assertEqual([f["path"] for f in out["files"]], ["main.py"])
+
+    def test_dedupe_garbage_plan(self):
+        self.assertEqual(self.pm._dedupe_files_vs_inputs(None), None)
+        out = self.pm._dedupe_files_vs_inputs({})
+        self.assertIsInstance(out, dict)
+
+    # --- aider_runner _build_argv read-only ---
+
+    def test_aider_argv_includes_read_flag(self):
+        from pathlib import Path
+        from brain.agents import aider_runner
+        argv = aider_runner._build_argv(
+            Path("/tmp/x"), "main.py", "do thing",
+            model="ollama/x", api_base="http://localhost:11434",
+            read_only_files=["/abs/storage.py", "/abs/config.py"],
+        )
+        # Должны быть две пары --read <path>
+        self.assertEqual(argv.count("--read"), 2)
+        idx1 = argv.index("--read")
+        self.assertEqual(argv[idx1 + 1], "/abs/storage.py")
+
+    def test_aider_argv_no_read_when_empty(self):
+        from pathlib import Path
+        from brain.agents import aider_runner
+        argv = aider_runner._build_argv(
+            Path("/tmp/x"), "main.py", "do thing",
+            model="ollama/x", api_base="http://localhost:11434",
+        )
+        self.assertNotIn("--read", argv)
+
+
 class TestNightlyE2ESmoke(unittest.TestCase):
     """P7: проверяем что nightly_e2e импортируется и корректно SKIPит при отсутствии ollama."""
 

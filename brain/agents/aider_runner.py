@@ -61,6 +61,7 @@ def _build_argv(
     model: str,
     api_base: str,
     extra_files: list[str] | None = None,
+    read_only_files: list[str] | None = None,
 ) -> list[str]:
     """Собрать аргументы для aider CLI.
 
@@ -89,6 +90,10 @@ def _build_argv(
     ]
     for f in (extra_files or []):
         argv.append(f)
+    # P11.2: read-only файлы соседей (depends_on stubs / уже собранных модулей).
+    # aider получает их в контекст но НЕ редактирует — это контракт API.
+    for f in (read_only_files or []):
+        argv.extend(["--read", f])
     return argv
 
 
@@ -160,14 +165,16 @@ def aider_build(
     max_retries: Optional[int] = None,
     api_base: Optional[str] = None,
     extra_files: list[str] | None = None,
+    read_only_files: list[str] | None = None,
 ) -> AiderResult:
     """Сгенерировать или дописать файл через aider.
 
     Args:
-      project_dir   — корень проекта (data/projects/<slug>)
-      target_file   — относительный путь файла (например "main.py")
-      instruction   — что нужно сделать (промпт для aider)
-      extra_files   — дополнительные файлы которые aider должен видеть как контекст
+      project_dir       — корень проекта (data/projects/<slug>)
+      target_file       — относительный путь файла (например "main.py")
+      instruction       — что нужно сделать (промпт для aider)
+      extra_files       — дополнительные редактируемые файлы
+      read_only_files   — P11.2: файлы-соседи в read-only контексте (--read)
 
     Returns:
       AiderResult с ok=True если файл существует и непустой после прогона.
@@ -181,7 +188,8 @@ def aider_build(
     project_dir.mkdir(parents=True, exist_ok=True)
 
     argv = _build_argv(project_dir, target_file, instruction,
-                       model=model, api_base=api_base, extra_files=extra_files)
+                       model=model, api_base=api_base, extra_files=extra_files,
+                       read_only_files=read_only_files)
     env = _aider_env(api_base)
 
     last_stdout, last_stderr = "", ""

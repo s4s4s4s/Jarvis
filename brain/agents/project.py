@@ -541,6 +541,18 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
                 + "\nФайлы будут созданы с реалистичным содержимым перед запуском теста."
             )
 
+    # P11.2: CONTRACT-блок (must_export + required_imports) и read-only контекст соседей.
+    # Строится ИСКЛЮЧИТЕЛЬНО из plan.files — никаких keyword-эвристик.
+    contract_block = _build_contract_prompt_block(plan, rel_path)
+    if contract_block:
+        instruction_parts.append(contract_block)
+    read_only_files, neighbor_descs = _build_neighbor_context(pdir, plan, rel_path)
+    if neighbor_descs:
+        instruction_parts.append(
+            "СОСЕДНИЕ МОДУЛИ (их контракты переданы read-only в контекст aider):\n"
+            + "\n".join(neighbor_descs)
+        )
+
     instruction_parts.append(
         f"Создай (или обнови) файл {rel_path}. "
         "Пиши работающий, синтаксически корректный код. "
@@ -549,7 +561,7 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
     instruction = "\n\n".join(instruction_parts)
 
     budget.check(f"build:{rel_path}:aider")
-    res = aider_runner.aider_build(pdir, rel_path, instruction)
+    res = aider_runner.aider_build(pdir, rel_path, instruction, read_only_files=read_only_files or None)
     budget.spend(1)
 
     # Пост-проверка: даже если aider сказал ok, прогоним static_check для метрик манифеста.
@@ -580,6 +592,35 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
             },
         }
 
+    # P11.2.d: пост-билд линтер контракта.
+    # Сверяем реальные top-level имена файла с plan.files[*].exports для этого файла.
+    # Не блокируем билд (lossless): логируем и пишем в результат — сигнал для P11.4 cross-file heal.
+    contract_check = {"checked": False}
+    try:
+        target_in_plan = next(
+            (f for f in (plan.get("files") or []) if isinstance(f, dict) and f.get("path") == rel_path),
+            None,
+        )
+        expected_exports = (target_in_plan or {}).get("exports") or []
+        # Сверка имеет смысл только для питон-файлов с заявленными экспортами
+        if _is_python_path(rel_path) and expected_exports:
+            cc = _check_file_contract(res.content or "", expected_exports)
+            contract_check = {
+                "checked":     True,
+                "ok":          cc["ok"],
+                "missing":     cc["missing"],
+                "kind_mismatch": cc["kind_mismatch"],
+                "found_top_level": cc["found_top_level"],
+            }
+            if not cc["ok"]:
+                logger.warning(
+                    f"[contract.lint] {rel_path}: missing={cc['missing']} "
+                    f"kind_mismatch={cc['kind_mismatch']}"
+                )
+    except Exception as e:
+        logger.warning(f"[contract.lint] {rel_path}: failed: {e}")
+        contract_check = {"checked": False, "error": str(e)}
+
     return {
         "path":    rel_path,
         "ok":      True,
@@ -588,6 +629,7 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
         "summary": f"aider built {rel_path} in {res.duration_s}s",
         "iters":   res.attempts,
         "static":  static_summary,
+        "contract": contract_check,  # P11.2.d
         "_via":    "aider",
         "aider":   {
             "duration_s": res.duration_s,
@@ -1095,6 +1137,393 @@ def _normalize_plan_contracts(plan: dict, spec: dict | None) -> dict:
         logger.warning(f"[plan.contracts] depends_on вне plan.files: {metrics['depends_outside_plan']}")
 
     return plan
+
+
+def _dedupe_files_vs_inputs(plan: dict | None) -> dict:
+    """P11.2.e (FM-10): если файл объявлен в plan.inputs (входная фикстура)
+    и в plan.files одновременно — убираем из plan.files. Иначе сборщик
+    пытается "собрать" todos.json через aider — бесполезно и расходует бюджет.
+    Lossless: ничего не режется кроме дубликатов input→files."""
+    if not isinstance(plan, dict):
+        return plan
+    files = plan.get("files") or []
+    inputs = plan.get("inputs") or []
+    if not isinstance(files, list) or not isinstance(inputs, list):
+        return plan
+    input_paths: set[str] = set()
+    for it in inputs:
+        if isinstance(it, dict):
+            p = (it.get("path") or "").strip().replace("\\", "/")
+            if p:
+                input_paths.add(p)
+    if not input_paths:
+        return plan
+    new_files = []
+    removed: list[str] = []
+    for f in files:
+        if not isinstance(f, dict):
+            new_files.append(f)
+            continue
+        p = (f.get("path") or "").strip().replace("\\", "/")
+        # Режем только не-питон-файлы: если inputs совпадает с .py-файлом, оставляем
+        # files (редкий случай, видимо ошибка в plan, пусть heal разбирается).
+        if p and p in input_paths and not p.lower().endswith(".py"):
+            removed.append(p)
+            continue
+        new_files.append(f)
+    if removed:
+        plan["files"] = new_files
+        logger.info(f"[plan.dedupe] removed {len(removed)} input(s) from plan.files: {removed}")
+    return plan
+
+
+# =============================================================================
+# P11.2: coder получает API соседей
+# =============================================================================
+# Идея: когда aider строит файл F, он должен видеть КОНТРАКТЫ всех F.depends_on:
+#   - если соседний файл уже собран на диске — передаём его как --read (реальный код);
+#   - если не собран — генерим stub из plan exports (сигнатуры с NotImplementedError),
+#     пишем в .jarvis/contracts/<dep> и тоже передаём как --read.
+# Структурно — никаких keyword-эвристик, решения из plan.
+
+_CONTRACT_DIR_NAME = ".jarvis_contracts"
+
+
+def _module_name_from_rel(rel: str) -> str:
+    """main.py -> main, src/utils.py -> src.utils. None -> ''."""
+    if not rel or not isinstance(rel, str):
+        return ""
+    p = rel.replace("\\", "/").strip("./")
+    if p.endswith(".py"):
+        p = p[:-3]
+    return p.replace("/", ".")
+
+
+def _render_export_signature(exp: dict) -> str:
+    """По exports-элементу сформировать короткую сигнатуру для промпта.
+
+    Формат:
+      function: "add(a, b) -> int"
+      class:    "class Storage(db_path: str)"
+      const:    "DB_PATH: str"
+    Если signature в plan уже выглядит правильно — берём её as-is."""
+    if not isinstance(exp, dict):
+        return ""
+    name = (exp.get("name") or "").strip()
+    if not name:
+        return ""
+    kind = (exp.get("kind") or "function").strip().lower()
+    sig = (exp.get("signature") or "").strip()
+    if kind == "const":
+        # signature может быть типом ("str") или видом "DB_PATH: str".
+        if sig.startswith(name):
+            return sig
+        if sig:
+            # попробуем проинтерпретировать сигнатуру как тип
+            return f"{name}: {sig}"
+        return name
+    if kind == "class":
+        if sig.startswith("class "):
+            return sig
+        if sig.startswith(name):
+            return f"class {sig}"
+        if sig.startswith("("):
+            return f"class {name}{sig}"
+        return f"class {name}" + (f"({sig})" if sig else "")
+    # function (default)
+    if sig.startswith(name):
+        return sig
+    if sig.startswith("("):
+        return f"{name}{sig}"
+    return f"{name}({sig})" if sig else f"{name}()"
+
+
+def _render_neighbor_stub(dep_rel: str, dep_file: dict) -> str:
+    """Собрать содержимое stub-файла для соседа по exports.
+
+    Вывод — синтаксически валидный Python: импорты, функции с сигнатурами и raise NotImplementedError,
+    классы с pass-телом, константы с placeholder-значениями. Нужен исключительно как
+    READ-ONLY контекст для aider — чтобы coder видел имена и сигнатуры API."""
+    if not isinstance(dep_file, dict):
+        return ""
+    exports = dep_file.get("exports") or []
+    purpose = (dep_file.get("purpose") or "").strip()
+    lines: list[str] = []
+    lines.append(f'"""P11.2 contract stub for {dep_rel}.')
+    if purpose:
+        lines.append(f"Purpose: {purpose}")
+    lines.append("This file is READ-ONLY context. The real implementation lives elsewhere.")
+    lines.append("Do not modify; just import these names from this module path.\"\"\"")
+    lines.append("")
+    has_any = False
+    for exp in exports:
+        if not isinstance(exp, dict):
+            continue
+        name = (exp.get("name") or "").strip()
+        if not name:
+            continue
+        kind = (exp.get("kind") or "function").strip().lower()
+        doc = (exp.get("doc") or "").strip().replace('"""', "'''")
+        sig = _render_export_signature(exp)
+        has_any = True
+        if kind == "const":
+            # Плейсхолдер-значение (используем None — реальное значение в настоящем модуле).
+            if doc:
+                lines.append(f"# {doc}")
+            lines.append(f"{name} = None  # contract: {sig}")
+            lines.append("")
+        elif kind == "class":
+            # Для stub не выводим base-classes или параметры __init__ — это невалидный Python.
+            # Сигнатуру покажем в комментарии и в docstring — этого достаточно для read-only context.
+            lines.append(f"# contract: {sig}")
+            lines.append(f"class {name}:")
+            ds = doc or sig
+            if ds:
+                lines.append(f'    """{ds}"""')
+            lines.append("    pass")
+            lines.append("")
+        else:
+            lines.append(f"def {sig}:")
+            if doc:
+                lines.append(f'    """{doc}"""')
+            lines.append(f'    raise NotImplementedError("contract stub: see real {dep_rel}")')
+            lines.append("")
+    if not has_any:
+        lines.append("# (no exports declared in plan)")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _build_neighbor_context(
+    project_root,
+    plan: dict | None,
+    target_rel: str,
+    *,
+    contracts_subdir: str = _CONTRACT_DIR_NAME,
+) -> tuple[list[str], list[str]]:
+    """Собрать read-only контекст для aider при сборке target_rel.
+
+    Возвращает (read_only_paths_str, neighbor_module_descriptions):
+      • read_only_paths_str — абсолютные str-пути для aider --read
+      • neighbor_module_descriptions — список строк для включения в промпты coder-а
+        (имя модуля и список имен, которые он экспортирует).
+
+    Никогда не бросает: при любой ошибке возвращает то что удалось собрать."""
+    from pathlib import Path as _Path
+    if not isinstance(plan, dict):
+        return ([], [])
+    files = plan.get("files") or []
+    if not isinstance(files, list):
+        return ([], [])
+
+    # Индекс по пути и найдем целевой
+    by_path: dict[str, dict] = {}
+    for f in files:
+        if isinstance(f, dict):
+            p = (f.get("path") or "").strip()
+            if p:
+                by_path[p] = f
+    target = by_path.get(target_rel) or {}
+    deps = target.get("depends_on") or []
+    if not isinstance(deps, list):
+        return ([], [])
+
+    project_root = _Path(project_root)
+    contracts_dir = project_root / contracts_subdir
+    read_only_paths: list[str] = []
+    neighbor_descs: list[str] = []
+    seen: set[str] = set()
+    for dep in deps:
+        if not isinstance(dep, str):
+            continue
+        dep_norm = dep.strip()
+        if not dep_norm or dep_norm in seen:
+            continue
+        seen.add(dep_norm)
+        # Игнорируем stdlib-маркер и внешние pip-пакеты (их нет в plan.files).
+        if dep_norm.lower() == "stdlib":
+            continue
+        dep_file = by_path.get(dep_norm)
+        if dep_file is None:
+            # Зависимость вне плана — не можем помочь
+            continue
+        # Не-питон (напр. data.json) — без stubа. Если файл уже есть на диске,
+        # передадим как --read для контекста.
+        real_path = project_root / dep_norm
+        if not _is_python_path(dep_norm):
+            if real_path.is_file():
+                read_only_paths.append(str(real_path))
+            continue
+
+        # Питон-сосед:
+        if real_path.is_file() and real_path.stat().st_size > 0:
+            # Реальный код — лучше стаба
+            read_only_paths.append(str(real_path))
+        else:
+            # Генерим stub из exports
+            try:
+                contracts_dir.mkdir(parents=True, exist_ok=True)
+                stub_name = dep_norm.replace("\\", "/").replace("/", "__")
+                stub_path = contracts_dir / stub_name
+                stub_text = _render_neighbor_stub(dep_norm, dep_file)
+                stub_path.write_text(stub_text, encoding="utf-8")
+                read_only_paths.append(str(stub_path))
+            except Exception as e:
+                logger.warning(f"[neighbor.stub] failed for {dep_norm}: {e}")
+        # Описание для промпта
+        mod = _module_name_from_rel(dep_norm)
+        names = []
+        for exp in (dep_file.get("exports") or []):
+            if isinstance(exp, dict):
+                nm = (exp.get("name") or "").strip()
+                if nm:
+                    names.append(_render_export_signature(exp))
+        if names:
+            neighbor_descs.append(
+                f"• Модуль {mod} (файл {dep_norm}) экспортирует: " + ", ".join(names)
+            )
+        else:
+            neighbor_descs.append(
+                f"• Модуль {mod} (файл {dep_norm}) — без задекларированных exports"
+            )
+    return (read_only_paths, neighbor_descs)
+
+
+def _build_contract_prompt_block(plan: dict | None, target_rel: str) -> str:
+    """Сформировать CONTRACT-блок для промпта coder-а.
+
+    Вывод — многострочная секция, включающая:
+      • must_export — имена и сигнатуры, которые ОБЯЗАН реализовать файл
+      • required_imports — импорты из соседей (вычислены из depends_on ∩ plan.exports)
+    Пустая строка — если ничего не объявлено в плане."""
+    if not isinstance(plan, dict):
+        return ""
+    files = plan.get("files") or []
+    if not isinstance(files, list):
+        return ""
+    by_path = {(f.get("path") or ""): f for f in files if isinstance(f, dict)}
+    target = by_path.get(target_rel) or {}
+
+    parts: list[str] = []
+
+    # 1) Что этот файл должен экспортировать
+    own_exports = target.get("exports") or []
+    own_lines = []
+    for exp in own_exports:
+        if isinstance(exp, dict):
+            sig = _render_export_signature(exp)
+            if sig:
+                own_lines.append(f"  - {sig}")
+    if own_lines and _is_python_path(target_rel):
+        parts.append(
+            "КОНТРАКТ ЭТОГО ФАЙЛА (ты ОБЯЗАН реализовать ИМЕННО эти имена с точными сигнатурами):\n"
+            + "\n".join(own_lines)
+            + "\nНЕ переименовывай (DB_PATH ≠ DATABASE_PATH). НЕ добавляй лишних public-имен."
+        )
+
+    # 2) Что этот файл ОБЯЗАН импортировать из соседей
+    deps = target.get("depends_on") or []
+    import_lines = []
+    for dep in deps:
+        if not isinstance(dep, str):
+            continue
+        dep = dep.strip()
+        if not dep or dep.lower() == "stdlib":
+            continue
+        dep_file = by_path.get(dep)
+        if not isinstance(dep_file, dict):
+            continue
+        if not _is_python_path(dep):
+            continue
+        names = []
+        for exp in (dep_file.get("exports") or []):
+            if isinstance(exp, dict):
+                nm = (exp.get("name") or "").strip()
+                if nm:
+                    names.append(nm)
+        if not names:
+            continue
+        mod = _module_name_from_rel(dep)
+        import_lines.append(f"  from {mod} import {', '.join(names)}")
+    if import_lines:
+        parts.append(
+            "ОБЯЗАТЕЛЬНЫЕ ИМПОРТЫ (используй ровно эти имена, не дублируй функции соседей):\n"
+            + "\n".join(import_lines)
+            + "\nНЕ переписывай логику соседей в своём файле — вызывай их функции через импорт."
+        )
+
+    return "\n\n".join(parts)
+
+
+def _check_file_contract(
+    file_text: str,
+    expected_exports: list,
+) -> dict:
+    """P11.2.d: статическая сверка реальных top-level имён с ожидаемыми exports.
+
+    Возвращает dict:
+      ok: bool                    — все expected найдены
+      missing: list[str]          — ожидались но не найдены
+      kind_mismatch: list[dict]   — найдены с другим kind
+      found_top_level: list[str]  — что реально объявлено
+      ast_ok: bool                — файл парсится
+    Не падает ни на чём."""
+    import ast as _ast
+    out = {
+        "ok": True,
+        "missing": [],
+        "kind_mismatch": [],
+        "found_top_level": [],
+        "ast_ok": True,
+    }
+    if not isinstance(file_text, str) or not file_text.strip():
+        if expected_exports:
+            out["ok"] = False
+            out["missing"] = [
+                (e.get("name") or "") for e in (expected_exports or [])
+                if isinstance(e, dict) and e.get("name")
+            ]
+            out["ast_ok"] = False
+        return out
+    try:
+        tree = _ast.parse(file_text)
+    except SyntaxError:
+        out["ast_ok"] = False
+        out["ok"] = False
+        return out
+    found_kinds: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, _ast.FunctionDef) or isinstance(node, _ast.AsyncFunctionDef):
+            found_kinds[node.name] = "function"
+        elif isinstance(node, _ast.ClassDef):
+            found_kinds[node.name] = "class"
+        elif isinstance(node, _ast.Assign):
+            for t in node.targets:
+                if isinstance(t, _ast.Name):
+                    found_kinds.setdefault(t.id, "const")
+        elif isinstance(node, _ast.AnnAssign) and isinstance(node.target, _ast.Name):
+            found_kinds.setdefault(node.target.id, "const")
+    out["found_top_level"] = sorted(found_kinds.keys())
+
+    for exp in (expected_exports or []):
+        if not isinstance(exp, dict):
+            continue
+        name = (exp.get("name") or "").strip()
+        if not name:
+            continue
+        if name not in found_kinds:
+            out["missing"].append(name)
+            continue
+        expected_kind = (exp.get("kind") or "").strip().lower()
+        actual_kind = found_kinds[name]
+        if expected_kind and expected_kind != actual_kind:
+            out["kind_mismatch"].append({
+                "name": name,
+                "expected": expected_kind,
+                "actual": actual_kind,
+            })
+    out["ok"] = not out["missing"] and not out["kind_mismatch"]
+    return out
 
 
 def _collect_input_specs(plan: dict | None, spec: dict | None) -> list[dict]:
@@ -2043,6 +2472,8 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
                 # P11.1: нормализуем контракты (exports per file, depends_on consistency).
                 # Lossless: ничего не отбрасывает, только заполняет/исправляет поля.
                 plan = _normalize_plan_contracts(plan, spec)
+                # P11.2.e (FM-10): убираем из plan.files файлы, которые уже в plan.inputs.
+                plan = _dedupe_files_vs_inputs(plan)
                 m = load_manifest(slug); m.plan = plan; save_manifest(m)
                 _cm = plan.get("_contract_metrics", {}) or {}
                 add_phase(slug, "architect", "ok",
