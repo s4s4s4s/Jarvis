@@ -932,6 +932,171 @@ def _enrich_plan_with_heuristic_inputs(plan: dict, spec: dict | None) -> dict:
     return plan
 
 
+# ─── P11.1: контракты plan.files и валидация архитектуры ───────────────────────
+# Не-питон-расширения для которых exports логически пусты (данные/доки/конфиги).
+_NON_PYTHON_EXTS = {
+    ".json", ".txt", ".md", ".csv", ".tsv", ".yaml", ".yml", ".ini",
+    ".cfg", ".toml", ".html", ".css", ".sql", ".log", ".env",
+}
+
+# Имена которые обычно являются точкой входа — их никто не импортирует,
+# поэтому exports может быть пустым. Детектим структурно (базовое имя файла),
+# не ключевыми словами в задаче: среди .py-файлов проекта файл с абсолютно
+# никакими depends_on (кроме stdlib) — это кандидат на entry-point.
+_LIKELY_ENTRY_BASENAMES = {"main.py", "__main__.py", "app.py", "run.py", "cli.py"}
+
+
+def _is_python_path(rel: str) -> bool:
+    return rel.lower().endswith(".py")
+
+
+def _is_non_python_path(rel: str) -> bool:
+    """True для файлов-данных/доки/конфигив (не .py)."""
+    rl = rel.lower()
+    if rl.endswith(".py"):
+        return False
+    for ext in _NON_PYTHON_EXTS:
+        if rl.endswith(ext):
+            return True
+    # файлы без расширения (LICENSE, Makefile) — тоже не-питон
+    if "." not in rl.rsplit("/", 1)[-1]:
+        return True
+    return False
+
+
+def _normalize_export_entry(e: dict | None) -> dict | None:
+    """Нормализует один элемент exports. Режектит мусор и получает одинаковую
+    схему предсказуемо: {name, kind, signature, doc}."""
+    if not isinstance(e, dict):
+        return None
+    name = str(e.get("name") or "").strip()
+    if not name or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+        return None
+    kind = str(e.get("kind") or "").strip().lower()
+    if kind not in ("function", "class", "const"):
+        # Ставим эвристику по виду: всё в UPPER_SNAKE — константа,
+        # всё с большой буквы — класс, остальное — функция.
+        if name.isupper():
+            kind = "const"
+        elif name[0].isupper():
+            kind = "class"
+        else:
+            kind = "function"
+    sig = str(e.get("signature") or "").strip()
+    doc = str(e.get("doc") or "").strip()
+    return {"name": name, "kind": kind, "signature": sig, "doc": doc}
+
+
+def _file_likely_entry_point(file_entry: dict) -> bool:
+    """Файл выглядит как entry point: базовое имя main.py/__main__.py/app.py/run.py/cli.py.
+    Не использует ключевые слова из задачи — только имя файла."""
+    if not isinstance(file_entry, dict):
+        return False
+    rel = _norm_path(file_entry.get("path") or "")
+    base = rel.rsplit("/", 1)[-1].lower()
+    return base in _LIKELY_ENTRY_BASENAMES
+
+
+def _normalize_plan_contracts(plan: dict, spec: dict | None) -> dict:
+    """P11.1: валидирует и нормализует plan.files после архитектора:
+      1) Нормализует exports каждого файла (отбрасывает мусор, выбирает kind эвристически).
+      2) Проверяет согласованность depends_on ↔ exports: если B зависит от A,
+         а A.exports пуст — флаг _exports_warning. План НЕ режектит (lossless).
+      3) Считает _contract_metrics для телеметрии.
+
+    Принцип: валидатор НИКОГДА не рубит план — только нормализует и списывает
+    warnings. fallback всегда — пустые exports допускаются в этой версии. P11.2 использует
+    exports при наличии; если пусты — fall back на старый путь (код соседних файлов).
+
+    Модифицирует plan in-place и возвращает его же.
+    """
+    if not isinstance(plan, dict):
+        return plan
+    files = plan.get("files") or []
+    if not isinstance(files, list):
+        return plan
+
+    paths_in_plan: set[str] = set()
+    for f in files:
+        if isinstance(f, dict):
+            p = _norm_path(f.get("path") or "")
+            if p:
+                paths_in_plan.add(p)
+
+    metrics = {
+        "files_total": 0,
+        "py_files": 0,
+        "files_with_exports": 0,
+        "files_missing_exports": [],   # list[str] of paths where exports пуст но должны быть
+        "depends_unmatched": [],       # list[str] "B->A" где A.exports пуст
+        "depends_outside_plan": [],    # list[str] "B->X" где X не в plan.files и не stdlib
+    }
+
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        rel = _norm_path(f.get("path") or "")
+        if not rel:
+            continue
+        metrics["files_total"] += 1
+
+        # Нормализуем exports
+        raw_exports = f.get("exports")
+        norm_exports: list[dict] = []
+        if isinstance(raw_exports, list):
+            for e in raw_exports:
+                norm = _normalize_export_entry(e)
+                if norm is not None:
+                    norm_exports.append(norm)
+        f["exports"] = norm_exports
+
+        if _is_python_path(rel):
+            metrics["py_files"] += 1
+            if norm_exports:
+                metrics["files_with_exports"] += 1
+            else:
+                # Пустые exports оказываются легитимными только для entry-point
+                # файлов (main.py/app.py/...) — их никто не импортирует.
+                if not _file_likely_entry_point(f):
+                    metrics["files_missing_exports"].append(rel)
+
+        # depends_on валидация
+        deps = f.get("depends_on") or []
+        if isinstance(deps, list):
+            for d in deps:
+                ds = str(d or "").strip()
+                if not ds:
+                    continue
+                if ds.lower() == "stdlib":
+                    continue
+                dep_path = _norm_path(ds)
+                if dep_path not in paths_in_plan:
+                    metrics["depends_outside_plan"].append(f"{rel}->{ds}")
+                    continue
+                # Проверяем: у файла-зависимости есть exports?
+                dep_entry = next((x for x in files
+                                   if isinstance(x, dict)
+                                   and _norm_path(x.get("path") or "") == dep_path), None)
+                if isinstance(dep_entry, dict):
+                    dep_exports = dep_entry.get("exports") or []
+                    # для не-питона пустые exports ок; для .py файлов от которых
+                    # зависят — пустые exports = нарушение контракта
+                    if _is_python_path(dep_path) and not dep_exports:
+                        metrics["depends_unmatched"].append(f"{rel}->{dep_path}")
+
+    plan["_contract_metrics"] = metrics
+
+    # Логим предупреждения (не ошибки) для видимости
+    if metrics["files_missing_exports"]:
+        logger.info(f"[plan.contracts] py-files без exports но не entry-point: {metrics['files_missing_exports']}")
+    if metrics["depends_unmatched"]:
+        logger.info(f"[plan.contracts] depends_on без exports-контракта: {metrics['depends_unmatched']}")
+    if metrics["depends_outside_plan"]:
+        logger.warning(f"[plan.contracts] depends_on вне plan.files: {metrics['depends_outside_plan']}")
+
+    return plan
+
+
 def _collect_input_specs(plan: dict | None, spec: dict | None) -> list[dict]:
     """Собирает список входов из двух источников (приоритет plan.inputs):
     1) plan.inputs: [{path, sample_content?}] — явно указано архитектором.
@@ -1875,9 +2040,16 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
                 # P9.10: обогащаем plan.inputs heuristic-входами из spec.summary,
                 # чтобы coder/aider видели реальные имена файлов, а не придумывали свои.
                 plan = _enrich_plan_with_heuristic_inputs(plan, spec)
+                # P11.1: нормализуем контракты (exports per file, depends_on consistency).
+                # Lossless: ничего не отбрасывает, только заполняет/исправляет поля.
+                plan = _normalize_plan_contracts(plan, spec)
                 m = load_manifest(slug); m.plan = plan; save_manifest(m)
+                _cm = plan.get("_contract_metrics", {}) or {}
                 add_phase(slug, "architect", "ok",
-                          f"files={len(plan['files'])} tests={len(plan.get('tests',[]))} inputs={len(plan.get('inputs',[]))}")
+                          f"files={len(plan['files'])} tests={len(plan.get('tests',[]))} "
+                          f"inputs={len(plan.get('inputs',[]))} "
+                          f"exports={_cm.get('files_with_exports', 0)}/{_cm.get('py_files', 0)} "
+                          f"dep_unmatched={len(_cm.get('depends_unmatched', []) or [])}")
                 _set_last_phase(slug, "architect")
             except BudgetExceeded as e:
                 add_phase(slug, "architect", "failed", f"budget: {e}")

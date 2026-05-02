@@ -259,9 +259,11 @@ def _analyze_plan(plan: dict | None) -> dict:
         "files_with_exports": 0,
         "files_with_purpose": 0,
         "depends_on_map": {},
+        "exports_per_file": {},   # P11.1: path -> list of export names
         "inputs_count": len(plan.get("inputs") or []),
         "tests_count": len(plan.get("tests") or []),
         "build_steps_count": len(plan.get("build_steps") or []),
+        "contract_metrics": plan.get("_contract_metrics") or {},  # P11.1
     }
     for f in files:
         if not isinstance(f, dict):
@@ -270,8 +272,20 @@ def _analyze_plan(plan: dict | None) -> dict:
         if f.get("depends_on"):
             out["files_with_depends_on"] += 1
             out["depends_on_map"][path] = f.get("depends_on")
-        if f.get("exports"):
+        exports = f.get("exports") or []
+        if exports:
             out["files_with_exports"] += 1
+            # P11.1: вытаскиваем имена из dict-элементов или строк
+            names = []
+            for e in exports:
+                if isinstance(e, dict):
+                    nm = e.get("name")
+                    if nm:
+                        names.append(str(nm))
+                elif isinstance(e, str):
+                    names.append(e)
+            if names:
+                out["exports_per_file"][path] = names
         if f.get("purpose"):
             out["files_with_purpose"] += 1
     return out
@@ -430,6 +444,27 @@ def _write_human_report(record: dict) -> Path | None:
             lines.append("  depends_on_map:")
             for k, v in depmap.items():
                 lines.append(f"    {k}: {v}")
+        # P11.1: exports per file + contract metrics
+        exp_map = pa.get("exports_per_file") or {}
+        if exp_map:
+            lines.append("  exports_per_file:")
+            for k, names in exp_map.items():
+                lines.append(f"    {k}: {names}")
+        cm = pa.get("contract_metrics") or {}
+        if cm:
+            lines.append("  contract_metrics:")
+            lines.append(f"    files_total:           {cm.get('files_total')}")
+            lines.append(f"    py_files:              {cm.get('py_files')}")
+            lines.append(f"    files_with_exports:    {cm.get('files_with_exports')}")
+            mis = cm.get("files_missing_exports") or []
+            if mis:
+                lines.append(f"    files_missing_exports: {mis}")
+            unmatched = cm.get("depends_unmatched") or []
+            if unmatched:
+                lines.append(f"    depends_unmatched:     {unmatched}")
+            outside = cm.get("depends_outside_plan") or []
+            if outside:
+                lines.append(f"    depends_outside_plan:  {outside}")
     else:
         lines.append("  (plan отсутствует в manifest)")
     lines.append("")

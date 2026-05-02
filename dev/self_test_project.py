@@ -1861,6 +1861,175 @@ class TestInputFixturesP10(_IsolatedJarvisRoot):
         self.assertNotIn("inputs", out)
 
 
+class TestPlanContractsP11(unittest.TestCase):
+    """P11.1: валидация и нормализация exports/depends_on в plan.files."""
+
+    @classmethod
+    def setUpClass(cls):
+        import brain.agents.project as project_mod
+        cls.pm = project_mod
+
+    # --- _normalize_export_entry ---
+
+    def test_normalize_export_rejects_non_dict(self):
+        self.assertIsNone(self.pm._normalize_export_entry(None))
+        self.assertIsNone(self.pm._normalize_export_entry("name"))
+        self.assertIsNone(self.pm._normalize_export_entry([]))
+
+    def test_normalize_export_rejects_invalid_name(self):
+        # пустое имя
+        self.assertIsNone(self.pm._normalize_export_entry({"name": ""}))
+        # имя с пробелом
+        self.assertIsNone(self.pm._normalize_export_entry({"name": "bad name"}))
+        # имя начинающееся с цифры
+        self.assertIsNone(self.pm._normalize_export_entry({"name": "1foo"}))
+
+    def test_normalize_export_kind_heuristic_const(self):
+        out = self.pm._normalize_export_entry({"name": "MAX_LIMIT"})
+        self.assertEqual(out["kind"], "const")
+
+    def test_normalize_export_kind_heuristic_class(self):
+        out = self.pm._normalize_export_entry({"name": "UserService"})
+        self.assertEqual(out["kind"], "class")
+
+    def test_normalize_export_kind_heuristic_function(self):
+        out = self.pm._normalize_export_entry({"name": "add_user"})
+        self.assertEqual(out["kind"], "function")
+
+    def test_normalize_export_kind_explicit_wins(self):
+        # Архитектор явно указал kind — мы не переопределяем эвристикой.
+        out = self.pm._normalize_export_entry({"name": "User", "kind": "function"})
+        self.assertEqual(out["kind"], "function")
+
+    def test_normalize_export_invalid_kind_falls_back(self):
+        out = self.pm._normalize_export_entry({"name": "add_user", "kind": "мусор"})
+        # неизвестный kind → эвристика по виду имени
+        self.assertEqual(out["kind"], "function")
+
+    def test_normalize_export_keeps_signature_and_doc(self):
+        out = self.pm._normalize_export_entry({
+            "name": "add", "signature": "(a: int, b: int) -> int", "doc": "Sum."
+        })
+        self.assertEqual(out["signature"], "(a: int, b: int) -> int")
+        self.assertEqual(out["doc"], "Sum.")
+
+    # --- _file_likely_entry_point ---
+
+    def test_entry_point_main_py(self):
+        self.assertTrue(self.pm._file_likely_entry_point({"path": "main.py"}))
+
+    def test_entry_point_app_py(self):
+        self.assertTrue(self.pm._file_likely_entry_point({"path": "src/app.py"}))
+
+    def test_entry_point_storage_is_not(self):
+        self.assertFalse(self.pm._file_likely_entry_point({"path": "storage.py"}))
+
+    def test_entry_point_non_dict(self):
+        self.assertFalse(self.pm._file_likely_entry_point(None))
+        self.assertFalse(self.pm._file_likely_entry_point("main.py"))
+
+    # --- _is_python_path / _is_non_python_path ---
+
+    def test_is_python_path(self):
+        self.assertTrue(self.pm._is_python_path("foo.py"))
+        self.assertTrue(self.pm._is_python_path("src/utils.py"))
+        self.assertFalse(self.pm._is_python_path("data.json"))
+        self.assertFalse(self.pm._is_python_path("README.md"))
+
+    # --- _normalize_plan_contracts ---
+
+    def test_normalize_plan_contracts_lossless_on_garbage(self):
+        # Не падает на мусорных входах
+        self.assertEqual(self.pm._normalize_plan_contracts(None, None), None)
+        out = self.pm._normalize_plan_contracts({}, None)
+        self.assertIsInstance(out, dict)
+
+    def test_normalize_plan_contracts_fills_metrics(self):
+        plan = {
+            "files": [
+                {"path": "main.py", "role": "entry", "depends_on": ["storage.py"], "exports": []},
+                {"path": "storage.py", "role": "data", "depends_on": [],
+                 "exports": [{"name": "add_user", "signature": "(name: str)"}]},
+            ]
+        }
+        out = self.pm._normalize_plan_contracts(plan, None)
+        m = out["_contract_metrics"]
+        self.assertEqual(m["files_total"], 2)
+        self.assertEqual(m["py_files"], 2)
+        self.assertEqual(m["files_with_exports"], 1)
+        # main.py — entry-point, отсутствие exports допустимо
+        self.assertEqual(m["files_missing_exports"], [])
+        # depends_on storage.py имеет exports → нет unmatched
+        self.assertEqual(m["depends_unmatched"], [])
+        self.assertEqual(m["depends_outside_plan"], [])
+
+    def test_normalize_plan_contracts_flags_missing_exports_for_non_entry(self):
+        plan = {
+            "files": [
+                {"path": "main.py", "depends_on": ["storage.py"], "exports": []},
+                {"path": "storage.py", "depends_on": [], "exports": []},
+            ]
+        }
+        out = self.pm._normalize_plan_contracts(plan, None)
+        m = out["_contract_metrics"]
+        # storage.py — не entry-point, exports пуст → попадает в missing
+        self.assertIn("storage.py", m["files_missing_exports"])
+        # main.py зависит от storage.py, у которого exports пуст → unmatched
+        self.assertEqual(m["depends_unmatched"], ["main.py->storage.py"])
+
+    def test_normalize_plan_contracts_depends_outside_plan(self):
+        plan = {
+            "files": [
+                {"path": "main.py", "depends_on": ["missing_module.py"], "exports": []},
+            ]
+        }
+        out = self.pm._normalize_plan_contracts(plan, None)
+        self.assertEqual(
+            out["_contract_metrics"]["depends_outside_plan"],
+            ["main.py->missing_module.py"],
+        )
+
+    def test_normalize_plan_contracts_stdlib_not_outside(self):
+        plan = {
+            "files": [
+                {"path": "main.py", "depends_on": ["stdlib", "STDLIB"], "exports": []},
+            ]
+        }
+        out = self.pm._normalize_plan_contracts(plan, None)
+        self.assertEqual(out["_contract_metrics"]["depends_outside_plan"], [])
+
+    def test_normalize_plan_contracts_drops_garbage_exports(self):
+        plan = {
+            "files": [
+                {"path": "util.py", "depends_on": [],
+                 "exports": [
+                     {"name": "good_fn"},
+                     None,
+                     {"name": "bad name"},
+                     {"name": ""},
+                     "not a dict",
+                 ]},
+            ]
+        }
+        out = self.pm._normalize_plan_contracts(plan, None)
+        names = [e["name"] for e in out["files"][0]["exports"]]
+        self.assertEqual(names, ["good_fn"])
+
+    def test_normalize_plan_contracts_non_python_no_export_required(self):
+        # data.json без exports — не учитывается в py_files и не считается missing
+        plan = {
+            "files": [
+                {"path": "main.py", "depends_on": ["data.json"], "exports": []},
+                {"path": "data.json", "depends_on": []},
+            ]
+        }
+        out = self.pm._normalize_plan_contracts(plan, None)
+        m = out["_contract_metrics"]
+        self.assertEqual(m["py_files"], 1)
+        # main.py зависит от data.json (не-питон) → не unmatched
+        self.assertEqual(m["depends_unmatched"], [])
+
+
 class TestNightlyE2ESmoke(unittest.TestCase):
     """P7: проверяем что nightly_e2e импортируется и корректно SKIPит при отсутствии ollama."""
 
