@@ -77,6 +77,8 @@ from tools.projects import (
     load_manifest,
     list_projects,
     run_in_project,
+    run_shell_in_project,
+    _has_shell_metachars,
     run_with_project_python,
     python_smoke,
     ensure_venv,
@@ -1144,8 +1146,14 @@ def _run_one_test(slug: str, t: dict) -> dict:
     if not parts:
         return {"name": t.get("name", "test"), "command": cmd, "ok": False,
                 "rc": -1, "stdout": "", "stderr": "empty command", "checks": []}
+    # P11.0.1: если в команде есть pipe/redirect/chain — нужен shell.
+    # Иначе subprocess с shell=False ищет 'echo'/'cat'/'|' как .exe и падает
+    # с WinError 2 на Windows. _has_shell_metachars смотрит только на сами
+    # символы (|, <, >, &&, ||), это не решение по ключевым словам.
+    if _has_shell_metachars(cmd):
+        res = run_shell_in_project(slug, cmd, timeout=PHASE_TEST_TIMEOUT)
     # Запускаем через venv-python если первая часть — python/python3 или pytest
-    if parts[0].lower() in ("python", "python3"):
+    elif parts[0].lower() in ("python", "python3"):
         res = run_with_project_python(slug, parts[1:], timeout=PHASE_TEST_TIMEOUT)
     elif parts[0].lower() == "pytest":
         res = run_with_project_python(slug, ["-m", "pytest", *parts[1:]], timeout=PHASE_TEST_TIMEOUT)

@@ -221,8 +221,19 @@ def _analyze_phases(phases: list[dict]) -> dict:
             stats["test_phases"].append({"name": nm, "status": p.get("status")})
         elif nm.startswith("heal"):
             stats["heal_iters"] += 1
-        # парсим details на наличие cross-file проблем
-        det = str(p.get("details") or p.get("detail") or "")
+        # Парсим все известные места где может лежать stderr/traceback:
+        # details и detail — свободный текст; stderr — отдельное поле фазы;
+        # result — вложенный dict от _run_one_test с stdout/stderr/checks.
+        det_parts = [
+            str(p.get("details") or ""),
+            str(p.get("detail") or ""),
+            str(p.get("stderr") or ""),
+        ]
+        result = p.get("result")
+        if isinstance(result, dict):
+            det_parts.append(str(result.get("stderr") or ""))
+            det_parts.append(str(result.get("stdout") or ""))
+        det = "\n".join(s for s in det_parts if s)
         if not det:
             continue
         if "ImportError" in det or "ModuleNotFoundError" in det:
@@ -333,7 +344,16 @@ def _run_one(task: MultiFileTask) -> dict:
                     m = {}
                 record["manifest_status"] = m.get("status")
                 phases = m.get("phases") or []
-                record["files_count"] = len(m.get("files") or [])
+                # P11.0 fix (FM-8): files_count — реально созданные кодовые файлы на диске,
+                # без README.md/dotfiles/logs. Раньше брали длину списка из manifest —
+                # там хранится план архитектора, но факт может отличаться.
+                _disk_files = _read_project_files(latest)
+                _code_files = [n for n in _disk_files.keys()
+                               if not n.startswith(".")
+                               and n.lower() != "readme.md"
+                               and not n.startswith("logs/")
+                               and not n.startswith(".venv/")]
+                record["files_count"] = len(_code_files)
                 record["tests_total"] = len([p for p in phases
                                               if str(p.get("name", "")).startswith("test:")])
                 record["tests_ok"] = sum(1 for p in phases
@@ -344,7 +364,7 @@ def _run_one(task: MultiFileTask) -> dict:
                 # P11.0 расширенная диагностика:
                 record["plan_analysis"] = _analyze_plan(m.get("plan"))
                 record["phase_stats"] = _analyze_phases(phases)
-                files = _read_project_files(latest)
+                files = _disk_files
                 record["files_on_disk"] = sorted(files.keys())
                 record["file_sizes"] = {n: len(c) for n, c in files.items()}
                 record["imports_per_file"] = _collect_imports(files)
@@ -363,7 +383,7 @@ def _run_one(task: MultiFileTask) -> dict:
         if record["files_count"] < task.expected_min_files and record["status"] == "passed":
             record["status"] = "structural_fail"
             record["error"] = (
-                f"expected ≥{task.expected_min_files} files, got {record['files_count']}"
+                f"expected >={task.expected_min_files} files, got {record['files_count']}"
             )
     except Exception as e:
         record["status"] = "exception"
@@ -487,9 +507,19 @@ def _print_summary(records: list[dict]) -> int:
     passed = sum(1 for r in records if r["status"] == "passed")
     total = len(records)
     print()
-    print("=" * 72)
-    print(f"P11.0 MULTI-FILE DIAG: {passed}/{total} passed")
-    print("=" * 72)
+    # FM-6 safe print: на Windows stdout = cp1251, любой юникод символ
+    # выходящий за рамки cp1251 вырубит весь summary. Изолируем.
+    def _safe(s: str) -> str:
+        try:
+            enc = (sys.stdout.encoding or "utf-8").lower()
+            return s.encode(enc, errors="replace").decode(enc, errors="replace")
+        except Exception:
+            return s
+    def _p(s: str) -> None:
+        print(_safe(s))
+    _p("=" * 72)
+    _p(f"P11.0 MULTI-FILE DIAG: {passed}/{total} passed")
+    _p("=" * 72)
     for r in records:
         icon = {
             "passed": "OK", "skipped": "SK", "partial": "PR",
@@ -512,13 +542,13 @@ def _print_summary(records: list[dict]) -> int:
             miss_str += f" import_errs={len(ps['import_errors'])}"
         if ps.get("attribute_errors"):
             miss_str += f" attr_errs={len(ps['attribute_errors'])}"
-        err = (" — " + (r.get("error") or "")[:80]) if r.get("error") else ""
-        print(f"  [{icon}] {r['task']:<22} wall={wall}s files={files} "
-              f"tests={tests} manifest={ms}{miss_str}{err}")
+        err = (" -- " + (r.get("error") or "")[:80]) if r.get("error") else ""
+        _p(f"  [{icon}] {r['task']:<22} wall={wall}s files={files} "
+           f"tests={tests} manifest={ms}{miss_str}{err}")
         rep = r.get("_report_path")
         if rep:
-            print(f"          report: {rep}")
-    print()
+            _p(f"          report: {rep}")
+    _p("")
     return 0  # P11.0: НИКОГДА не падаем — это диагностика, не CI-гейт
 
 

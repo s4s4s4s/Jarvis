@@ -250,6 +250,92 @@ def set_status(slug: str, status: str) -> None:
     save_manifest(m)
 
 
+# Shell-метасимволы которые требуют запуска через shell (pipe, redirect, chain).
+# Если они присутствуют в команде — нужен shell=True, иначе subprocess не разберёт их
+# и попытается найти 'echo'/'cat' как .exe (WinError 2 на Windows).
+_SHELL_METACHARS_RE = re.compile(r"[|<>]|&&|\|\|")
+
+
+def _has_shell_metachars(cmd: str) -> bool:
+    """True если строка содержит pipe, redirect или command-chain.
+    Не делает решений по ключевым словам — только по фактическим метасимволам shell.
+    """
+    return bool(_SHELL_METACHARS_RE.search(cmd or ""))
+
+
+def _normalize_python_in_shell_cmd(cmd: str) -> str:
+    """Подменяем 'python ' / 'python3 ' / 'python.exe ' на полный путь к sys.executable.
+    Это детерминированный rewrite интерпретатора, не интерпретация смысла команды:
+    цель — гарантировать что shell найдёт правильный python даже если PATH не настроен.
+    Не трогаем строки внутри кавычек — упрощённо: нормализация работает только в начале
+    команды и после shell-разделителей (|, &&, ||, ;).
+    """
+    if not cmd:
+        return cmd
+    py = sys.executable
+    # Кавычим путь если в нём пробелы (типичный кейс на Windows: C:\Program Files\Python\...)
+    py_quoted = f'"{py}"' if (" " in py and not (py.startswith('"') and py.endswith('"'))) else py
+    # Маркеры начала команды: старт строки или shell-разделитель
+    pattern = re.compile(
+        r"(^|[|;]|&&|\|\|)(\s*)(python(?:3)?(?:\.exe)?)(\s+|$)",
+        flags=re.IGNORECASE,
+    )
+    def _sub(m: re.Match) -> str:
+        return f"{m.group(1)}{m.group(2)}{py_quoted}{m.group(4)}"
+    return pattern.sub(_sub, cmd)
+
+
+def run_shell_in_project(slug: str, cmd: str, timeout: int = SUBPROCESS_TIMEOUT) -> dict:
+    """
+    Запускает строку-команду через shell внутри папки проекта. Используется когда команда
+    содержит pipe/redirect/chain (|, <, >, &&, ||). Подменяет 'python' на sys.executable,
+    чтобы команды вида 'echo X | python main.py' работали независимо от PATH.
+
+    Поведение и контракт результата идентичны run_in_project.
+    """
+    if not isinstance(cmd, str) or not cmd.strip():
+        raise ValueError("cmd must be non-empty str")
+    pdir = _project_dir(slug)
+    log_path = pdir / "logs" / f"run-{int(time.time())}.log"
+    timed_out = False
+    norm_cmd = _normalize_python_in_shell_cmd(cmd)
+    try:
+        proc = subprocess.run(
+            norm_cmd,
+            cwd=str(pdir),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            shell=True,
+            check=False,
+        )
+        out = proc.stdout or ""
+        err = proc.stderr or ""
+        rc  = proc.returncode
+    except subprocess.TimeoutExpired as e:
+        timed_out = True
+        out = (e.stdout or "") if isinstance(e.stdout, str) else ""
+        err = (e.stderr or "") if isinstance(e.stderr, str) else ""
+        rc  = -1
+    except FileNotFoundError as e:
+        out, err, rc = "", f"executable not found: {e}", -1
+
+    log_path.write_text(
+        f"$ {norm_cmd}\n--- stdout ---\n{out}\n--- stderr ---\n{err}\n--- rc={rc} timed_out={timed_out} shell=1 ---\n",
+        encoding="utf-8",
+    )
+    return {
+        "ok": (rc == 0 and not timed_out),
+        "returncode": rc,
+        "stdout": out[-4000:],
+        "stderr": err[-4000:],
+        "timed_out": timed_out,
+        "log": str(log_path),
+        "shell": True,
+        "normalized_cmd": norm_cmd,
+    }
+
+
 def run_in_project(slug: str, cmd: list[str], timeout: int = SUBPROCESS_TIMEOUT) -> dict:
     """
     Run a shell command WITH cwd inside project dir, NEVER shell=True.

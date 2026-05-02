@@ -375,6 +375,56 @@ class TestProjectStoreSafety(_IsolatedJarvisRoot):
         self.assertTrue(res["ok"])
         self.assertIn("1", res["stdout"])
 
+    # ─── P11.0.1: shell-команды и pipe в тестах проекта ───────────────────
+    def test_has_shell_metachars_detects_pipe_redirect_chain(self):
+        """Детектор не реагирует на обычные команды, ловит |, <, >, &&, ||."""
+        h = self.proj_mod._has_shell_metachars
+        self.assertFalse(h("python main.py"))
+        self.assertFalse(h("pytest tests/"))
+        self.assertFalse(h(""))
+        self.assertTrue(h("echo /list | python main.py"))
+        self.assertTrue(h("python main.py < input.txt"))
+        self.assertTrue(h("python main.py > output.txt"))
+        self.assertTrue(h("python a.py && python b.py"))
+        self.assertTrue(h("python a.py || echo failed"))
+
+    def test_normalize_python_in_shell_cmd_replaces_python_token(self):
+        """'python ...' в начале и после разделителей заменяется на sys.executable."""
+        norm = self.proj_mod._normalize_python_in_shell_cmd
+        out = norm("echo X | python main.py")
+        # python должен быть заменён на полный путь
+        self.assertIn(sys.executable.replace("\\", "\\"), out.replace('"', ''))
+        self.assertNotIn(" python ", " " + out + " ")  # голого python не осталось
+        # python3.exe тоже хватается
+        out2 = norm("python3 main.py")
+        self.assertNotIn("python3 ", out2)
+        # Но слово внутри аргумента (в середине) не трогается
+        out3 = norm("echo 'use python carefully'")
+        self.assertIn("python", out3)  # оставили как было
+
+    def test_run_shell_in_project_pipes_stdin_to_python(self):
+        """Пайп входа в python -c — это ровно тот кейс который ломался в P11.0."""
+        m = self.proj_mod.create_project({"title": "PIPE", "slug": "pipe-test"})
+        # Пишем мини-скрипт который читает stdin
+        self.proj_mod.write_project_file(
+            m.slug, "reader.py",
+            "import sys\ndata = sys.stdin.read().strip()\nprint(f'GOT:{data}')\n"
+        )
+        # На Windows echo встраивает в cmd.exe; на POSIX — встроенная shell builtin.
+        # В обоих случаях работает через shell=True.
+        res = self.proj_mod.run_shell_in_project(m.slug, "echo hello | python reader.py")
+        self.assertEqual(res["returncode"], 0, msg=f"rc={res['returncode']} stderr={res.get('stderr')!r}")
+        self.assertIn("GOT:hello", res["stdout"])
+        # в нормализованной команде должен быть sys.executable
+        self.assertNotIn(" python ", " " + res["normalized_cmd"] + " ")
+
+    def test_run_shell_rejects_empty_cmd(self):
+        m = self.proj_mod.create_project({"title": "E0", "slug": "empty-shell"})
+        with self.assertRaises(ValueError):
+            self.proj_mod.run_shell_in_project(m.slug, "")
+        with self.assertRaises(ValueError):
+            self.proj_mod.run_shell_in_project(m.slug, "   ")
+
     def test_pkg_spec_validation(self):
         # _validate_pkg_spec — внутренний, проверяем через pip_install dry checks
         m = self.proj_mod.create_project({"title": "P", "slug": "p"})
