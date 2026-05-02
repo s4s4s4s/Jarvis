@@ -597,31 +597,54 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
     # Сверяем реальные top-level имена файла с plan.files[*].exports для этого файла.
     # P11.5.C: блокирующий линтер — contract.ok=False делает build phase failed,
     # чтобы heal-loop сразу подхватил этот файл в target с missing-экспортами.
+    # P11.6.D (FM-18): пустой py-файл (<20 байт после strip) — тоже contract_failure,
+    # даже если expected_exports пусты: aider мог молча записать 0 байт.
     contract_check = {"checked": False}
-    try:
-        target_in_plan = next(
-            (f for f in (plan.get("files") or []) if isinstance(f, dict) and f.get("path") == rel_path),
-            None,
+    target_in_plan = next(
+        (f for f in (plan.get("files") or []) if isinstance(f, dict) and f.get("path") == rel_path),
+        None,
+    )
+    expected_exports = (target_in_plan or {}).get("exports") or []
+    file_text_for_lint = res.content or ""
+
+    # P11.6.D: проверка на фактически пустой py-файл (FM-18). Срабатывает
+    # даже когда expected_exports пуст (e.g. main.py без функций).
+    if _is_python_path(rel_path) and len(file_text_for_lint.strip()) < 20:
+        synthetic_missing = [
+            (e.get("name") or "")
+            for e in expected_exports if isinstance(e, dict) and e.get("name")
+        ] or ["<любое осмысленное содержимое>"]
+        contract_check = {
+            "checked":     True,
+            "ok":          False,
+            "missing":     synthetic_missing,
+            "kind_mismatch": [],
+            "found_top_level": [],
+            "reason":      "empty_file",
+        }
+        logger.warning(
+            f"[contract.lint] {rel_path}: empty file (<20 chars) — трактуем как contract_failure (P11.6.D)"
         )
-        expected_exports = (target_in_plan or {}).get("exports") or []
-        # Сверка имеет смысл только для питон-файлов с заявленными экспортами
-        if _is_python_path(rel_path) and expected_exports:
-            cc = _check_file_contract(res.content or "", expected_exports)
-            contract_check = {
-                "checked":     True,
-                "ok":          cc["ok"],
-                "missing":     cc["missing"],
-                "kind_mismatch": cc["kind_mismatch"],
-                "found_top_level": cc["found_top_level"],
-            }
-            if not cc["ok"]:
-                logger.warning(
-                    f"[contract.lint] {rel_path}: missing={cc['missing']} "
-                    f"kind_mismatch={cc['kind_mismatch']}"
-                )
-    except Exception as e:
-        logger.warning(f"[contract.lint] {rel_path}: failed: {e}")
-        contract_check = {"checked": False, "error": str(e)}
+    else:
+        try:
+            # Сверка имеет смысл только для питон-файлов с заявленными экспортами
+            if _is_python_path(rel_path) and expected_exports:
+                cc = _check_file_contract(file_text_for_lint, expected_exports)
+                contract_check = {
+                    "checked":     True,
+                    "ok":          cc["ok"],
+                    "missing":     cc["missing"],
+                    "kind_mismatch": cc["kind_mismatch"],
+                    "found_top_level": cc["found_top_level"],
+                }
+                if not cc["ok"]:
+                    logger.warning(
+                        f"[contract.lint] {rel_path}: missing={cc['missing']} "
+                        f"kind_mismatch={cc['kind_mismatch']}"
+                    )
+        except Exception as e:
+            logger.warning(f"[contract.lint] {rel_path}: failed: {e}")
+            contract_check = {"checked": False, "error": str(e)}
 
     # P11.5.C: блокада. Если линтер проверил и не ОК — фаза билда считается провальной.
     # Это сигнал для heal-loop: вызвать aider на этом файле с хинтом «восстанови missing exports»,
@@ -1198,6 +1221,249 @@ def _dedupe_files_vs_inputs(plan: dict | None) -> dict:
         plan["files"] = new_files
         logger.info(f"[plan.dedupe] removed {len(removed)} input(s) from plan.files: {removed}")
     return plan
+
+
+# =============================================================================
+# P11.6: блокирующий план-валидатор + structural fallback
+# =============================================================================
+# Принцип: всё решается по структуре (AST, форма name(args), plan-поля),
+# без ключевых слов. Цели:
+#   FM-16: имена user-requirements (add(a,b)) = plan.exports.name (не subtract).
+#   FM-17: каждый .py-файл имеет непустой exports (или это entry-point).
+#   FM-18: билд пустого py-файла (<20 байт) → contract_failure.
+#   FM-14: rc=0 + missing calls → структурный target через AST.
+# =============================================================================
+
+# Форма "<имя>(<args>)" в spec — это функциональный контракт от пользователя.
+# Имя — валидный Python-идентификатор (без точек, без кириллицы),
+# сразу за ним «(». Примеры: add(a,b), divide(x: float), Storage().add_reminder(text).
+# Нам интересны только top-level имена (не после точки), чтобы не ловить
+# методы в выражениях вроде "obj.method()".
+_REQ_NAME_RE = re.compile(r"(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+# Служебные идентификаторы, которые тоже ловит регекс (но это НЕ экспорты).
+_REQ_NAME_NOISE = {
+    "if", "for", "while", "return", "print", "input", "int", "str", "float",
+    "bool", "list", "dict", "tuple", "set", "len", "range", "enumerate",
+    "open", "with", "try", "except", "raise", "and", "or", "not", "in",
+    "is", "None", "True", "False", "lambda", "yield", "def", "class",
+    "import", "from", "as", "pass", "continue", "break", "global",
+    "nonlocal", "async", "await", "sqlite3", "json", "sys", "os", "re",
+}
+
+
+def _extract_required_symbols(spec: dict | None) -> list[str]:
+    """Извлекает top-level Python-имена из spec.requirements/spec.summary,
+    появляющиеся в форме «<имя>(…)».
+    Структурно: регекс по форме + служебный noise-фильтр (языковые конструкции +
+    стандартные модули), НИКАКИХ ключевых слов предметной области."""
+    if not isinstance(spec, dict):
+        return []
+    chunks: list[str] = []
+    s = spec.get("summary")
+    if isinstance(s, str):
+        chunks.append(s)
+    for r in (spec.get("requirements") or []):
+        if isinstance(r, str):
+            chunks.append(r)
+    text = "\n".join(chunks)
+    seen: list[str] = []
+    seen_set: set[str] = set()
+    for m in _REQ_NAME_RE.finditer(text):
+        name = m.group(1)
+        if not name or name in _REQ_NAME_NOISE:
+            continue
+        if name in seen_set:
+            continue
+        seen.append(name)
+        seen_set.add(name)
+    return seen
+
+
+def _autofill_exports_from_tests(plan: dict) -> dict:
+    """P11.6.B-fallback: если у .py-файла пустые exports — пытаемся вывести их
+    из plan.tests[*].checks[*].imports (форма "from <module> import x, y").
+    Структурно: парсим импорт как Python-выражение, сопоставляем с path файла."""
+    if not isinstance(plan, dict):
+        return plan
+    files = plan.get("files") or []
+    if not isinstance(files, list):
+        return plan
+
+    # Собираем все import-списки из тестов: {module: set(names)}
+    import_map: dict[str, set[str]] = {}
+    for t in (plan.get("tests") or []):
+        if not isinstance(t, dict):
+            continue
+        for ck in (t.get("checks") or []):
+            if not isinstance(ck, dict):
+                continue
+            imps = ck.get("imports") or []
+            if isinstance(imps, str):
+                imps = [imps]
+            for line in imps:
+                if not isinstance(line, str):
+                    continue
+                # Форма "from M import a, b"
+                m = re.match(
+                    r"^\s*from\s+([\w.]+)\s+import\s+(.+)$", line.strip()
+                )
+                if not m:
+                    continue
+                module = m.group(1).split(".")[-1]
+                names = [n.strip().split(" as ")[0].strip()
+                         for n in m.group(2).split(",")]
+                names = [n for n in names if n and n != "*"]
+                import_map.setdefault(module, set()).update(names)
+
+    if not import_map:
+        return plan
+
+    autofilled: list[str] = []
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        path = (f.get("path") or "").replace("\\", "/")
+        if not path.lower().endswith(".py"):
+            continue
+        if f.get("exports"):
+            continue
+        module = path.rsplit("/", 1)[-1][:-3]  # foo/bar.py -> bar
+        wanted = sorted(import_map.get(module) or [])
+        if not wanted:
+            continue
+        f["exports"] = [
+            {"name": n, "kind": "function", "signature": f"{n}(...)"}
+            for n in wanted
+        ]
+        autofilled.append(f"{path}:{wanted}")
+
+    if autofilled:
+        logger.info(f"[plan.autofill_exports] {autofilled}")
+    return plan
+
+
+def _validate_plan_p11_6(plan: dict, spec: dict | None) -> list[dict]:
+    """P11.6 блокирующий валидатор плана. Возвращает список violations:
+      [{kind, file?, missing?, message}, …]
+    Пустой список = план ОК.
+
+    Проверяет:
+      V1 (FM-17): каждый .py-файл либо имеет exports, либо является entry-point.
+      V2 (FM-16): каждое имя из spec.requirements (форма name(…)) присутствует
+            как exports[*].name хотя бы в одном из plan.files."""
+    violations: list[dict] = []
+    if not isinstance(plan, dict):
+        return [{"kind": "plan_not_dict", "message": "plan is not a dict"}]
+
+    files = plan.get("files") or []
+
+    # V1: exports per .py file
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        path = (f.get("path") or "").replace("\\", "/")
+        if not path.lower().endswith(".py"):
+            continue
+        if _file_likely_entry_point(f):
+            # entry-points (main.py/cli.py/run.py) могут не экспортировать ничего
+            continue
+        exports = f.get("exports") or []
+        valid = [e for e in exports if isinstance(e, dict) and (e.get("name") or "").strip()]
+        if not valid:
+            violations.append({
+                "kind": "missing_exports",
+                "file": path,
+                "message": f"{path}: это не entry-point, но exports пуст",
+            })
+
+    # V2: spec-symbols ⊆ union(exports.name)
+    required = _extract_required_symbols(spec)
+    if required:
+        all_export_names: set[str] = set()
+        for f in files:
+            if not isinstance(f, dict):
+                continue
+            for e in (f.get("exports") or []):
+                if isinstance(e, dict):
+                    nm = (e.get("name") or "").strip()
+                    if nm:
+                        all_export_names.add(nm)
+        # Имена из spec'а, не попавшие ни в одни exports — явно переименованы архитектором.
+        missing_in_plan = [n for n in required if n not in all_export_names]
+        if missing_in_plan:
+            violations.append({
+                "kind": "requirement_symbols_renamed",
+                "missing": missing_in_plan,
+                "message": (
+                    f"в spec.requirements фигурируют {missing_in_plan}, "
+                    f"но их нет в plan.exports[*].name"
+                ),
+            })
+    return violations
+
+
+def _format_violations_for_revise(violations: list[dict]) -> str:
+    """Читаемый хинт для архитектора чтобы перевыдать план."""
+    lines: list[str] = []
+    for v in violations:
+        kind = v.get("kind")
+        if kind == "missing_exports":
+            lines.append(
+                f"— файл {v.get('file')}: добавь непустой список exports "
+                f"({{name, kind, signature}}) — это не entry-point"
+            )
+        elif kind == "requirement_symbols_renamed":
+            miss = v.get("missing") or []
+            lines.append(
+                f"— имена из запроса {miss} ДОЛЖНЫ появиться в plan.files[*].exports[*].name "
+                f"дословно (не переименовывай add→addition, sub→subtract и т.п.)"
+            )
+        else:
+            lines.append(f"— {v.get('message') or kind}")
+    return "\n".join(lines)
+
+
+def _enforce_plan_validity(
+    plan: dict, spec: dict, budget: "Budget", max_revise: int = 2
+) -> tuple[dict, list[dict], int]:
+    """Пытается исправить план:
+      1) Autofill exports из tests.checks.imports (без LLM).
+      2) Если остались violations — просим архитектора перевыдать (max_revise раз).
+    Возвращает: (plan, final_violations, revise_count)."""
+    plan = _autofill_exports_from_tests(plan)
+    violations = _validate_plan_p11_6(plan, spec)
+    revises = 0
+    while violations and revises < max_revise:
+        revises += 1
+        hint = _format_violations_for_revise(violations)
+        logger.info(
+            f"[plan.validate] revise {revises}/{max_revise}, violations={[v['kind'] for v in violations]}"
+        )
+        revise_user = (
+            "Спецификация проекта:\n"
+            + json.dumps(spec, ensure_ascii=False, indent=2)
+            + "\n\nПРЕДЫДУЩИЙ ПЛАН (имеет нарушения):\n"
+            + json.dumps(plan, ensure_ascii=False, indent=2)
+            + "\n\nНАРУШЕНИЯ КОНТРАКТА:\n"
+            + hint
+            + "\n\nИсправь ПОЛНЫЙ plan, верни один JSON-объект с теми же ключами."
+        )
+        try:
+            raw = _llm(budget, MODEL_ARCHITECT, PROJECT_ARCHITECT_SYSTEM, revise_user,
+                       temperature=0.05, num_ctx=8192, where="architect.revise")
+            new_plan = _safe_parse(raw)
+            if isinstance(new_plan, dict) and (new_plan.get("files") or []):
+                new_plan["files"] = (new_plan.get("files") or [])[:MAX_FILES]
+                new_plan.setdefault("build_steps", plan.get("build_steps", []))
+                new_plan.setdefault("tests", plan.get("tests", []))
+                new_plan.setdefault("inputs", plan.get("inputs", []))
+                plan = new_plan
+                plan = _autofill_exports_from_tests(plan)
+        except Exception as e:
+            logger.warning(f"[plan.validate] revise {revises} LLM failed: {e}")
+            break
+        violations = _validate_plan_p11_6(plan, spec)
+    return plan, violations, revises
 
 
 # =============================================================================
@@ -2143,8 +2409,87 @@ def _module_to_plan_path(mod_name: str, plan_paths: list[str]) -> str | None:
     return None
 
 
-def _classify_failure(plan: dict, failed: dict) -> dict:
-    """P11.4: структурный разбор ошибки теста → {kind, target, missing_name, source_file, reason}.
+# ──────────────────────────────────────────────────────────────────────────
+# P11.6: structural fallback helpers (FM-14)
+# ──────────────────────────────────────────────────────────────────────────
+
+_TRACEBACK_MARKERS = ("Traceback (", "Error:", "error:", "Exception:")
+
+
+def _walk_project_top_level_defs(slug: str) -> dict[str, list[str]]:
+    """P11.6: AST-walk всех .py-файлов проекта → {rel_path: [top_level_names]}.
+
+    Возвращает только top-level def/class — без вложенных. Имена с лидирующим
+    подчёркиванием отбрасываем (приватные). На любую ошибку парсинга — пустой
+    список для этого файла, но не падаем.
+    """
+    import ast as _ast
+    out: dict[str, list[str]] = {}
+    if not slug:
+        return out
+    try:
+        files = get_project_files(slug)
+    except Exception:
+        return out
+    if not isinstance(files, dict):
+        return out
+    for rel, text in files.items():
+        if not isinstance(rel, str) or not _is_python_path(rel):
+            continue
+        if not isinstance(text, str) or not text.strip():
+            out[rel] = []
+            continue
+        try:
+            tree = _ast.parse(text)
+        except Exception:
+            out[rel] = []
+            continue
+        names: list[str] = []
+        for node in tree.body:
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                nm = node.name
+                if nm and not nm.startswith("_"):
+                    names.append(nm)
+        out[rel] = names
+    return out
+
+
+def _find_structural_owner(
+    required_name: str,
+    project_defs: dict[str, list[str]],
+) -> tuple[str | None, str | None]:
+    """P11.6: для требуемого символа найти файл, где определено похожее имя.
+
+    Стратегия (структурная, без ключевых слов):
+      1) Точное совпадение → (rel, name)
+      2) Case-fold совпадение → (rel, name)  (add ↔ Add)
+      3) Не найдено → (None, None)
+
+    Возвращаем кортеж (owner_file, actual_name). actual_name — то имя, что
+    реально объявлено в коде (может отличаться регистром).
+    """
+    if not required_name:
+        return None, None
+    req_cf = required_name.casefold()
+    # 1) Точное
+    for rel, names in project_defs.items():
+        if required_name in names:
+            return rel, required_name
+    # 2) Case-fold
+    for rel, names in project_defs.items():
+        for nm in names:
+            if nm.casefold() == req_cf:
+                return rel, nm
+    return None, None
+
+
+def _classify_failure(
+    plan: dict,
+    failed: dict,
+    spec: dict | None = None,
+    slug: str | None = None,
+) -> dict:
+    """P11.4/P11.6: структурный разбор ошибки теста → {kind, target, missing_name, source_file, reason}.
 
     Логика выбора target (структурная, не ключевые слова):
       • ImportError/AttributeError на имени X из модуля M → target = plan-файл, реализующий M.
@@ -2219,6 +2564,98 @@ def _classify_failure(plan: dict, failed: dict) -> dict:
                 f"с их оригинальными сигнатурами:{sigs_block}"
             )
             return out
+
+    # P11.6 (FM-14): structural fallback — тест "прошёл" (rc=0) но smoke ничего
+    # не проверил, ожидаемые user'ом символы отсутствуют в проекте.
+    # Срабатывает ДО разбора stderr (требует spec+slug). Берём имена из spec вида
+    # "name(args)", сравниваем с union(plan.exports.name) и с фактическими top-level
+    # def/class в коде (AST-walk). Если имя ожидается, но в коде есть case-fold
+    # вариант — баг этого файла (переименуй). Чисто структурно, без ключевых слов.
+    if (
+        spec is not None
+        and slug
+        and failed.get("rc") in (0, None)
+        and not failed.get("contract_failure")
+    ):
+        _stderr_p116 = (failed.get("stderr", "") or "") + "\n" + (failed.get("stdout", "") or "")
+        _has_traceback = any(m in _stderr_p116 for m in _TRACEBACK_MARKERS)
+        if not _has_traceback:
+            try:
+                required = _extract_required_symbols(spec)
+            except Exception:
+                required = []
+            if required:
+                # union всех plan.exports.name
+                plan_export_names: set[str] = set()
+                for f in plan.get("files", []):
+                    if not isinstance(f, dict):
+                        continue
+                    for exp in (f.get("exports") or []):
+                        if isinstance(exp, dict):
+                            nm = (exp.get("name") or "").strip()
+                            if nm:
+                                plan_export_names.add(nm)
+                project_defs = _walk_project_top_level_defs(slug)
+                # все top-level имена в коде
+                code_names: set[str] = set()
+                for _names in project_defs.values():
+                    code_names.update(_names)
+                # required, которых нет ни в plan.exports, ни в фактическом коде
+                missing_calls = [
+                    r for r in required
+                    if r not in plan_export_names and r not in code_names
+                ]
+                if missing_calls:
+                    # Для каждого missing ищем structural owner (case-fold).
+                    # Берём первый missing, для которого нашли owner — это наиболее точный сигнал.
+                    chosen_target: str | None = None
+                    chosen_required: str | None = None
+                    chosen_actual: str | None = None
+                    for req in missing_calls:
+                        owner, actual = _find_structural_owner(req, project_defs)
+                        if owner and actual:
+                            chosen_target = owner
+                            chosen_required = req
+                            chosen_actual = actual
+                            break
+                    if chosen_target:
+                        out["kind"] = "structural_mismatch"
+                        out["target"] = chosen_target
+                        out["source_file"] = chosen_target
+                        out["missing_name"] = chosen_required
+                        out["reason"] = (
+                            f"P11.6 structural fallback: spec requires {chosen_required!r}, "
+                            f"but file {chosen_target} defines {chosen_actual!r} instead "
+                            f"(missing_in_code={missing_calls})"
+                        )
+                        out["hint"] = (
+                            f"В файле {chosen_target} определена функция `{chosen_actual}`, "
+                            f"но спецификация требует `{chosen_required}`. "
+                            f"Переименуй `{chosen_actual}` в `{chosen_required}` или добавь экспорт под именем "
+                            f"`{chosen_required}` (def {chosen_required}(...): … или "
+                            f"`{chosen_required} = {chosen_actual}`)."
+                        )
+                        return out
+                    # owner не найден — функция просто отсутствует. Target = первый
+                    # py-файл в plan, который объявлен в plan.files (обычно entry-point).
+                    py_in_plan = [p for p in plan_paths if _is_python_path(p)]
+                    if py_in_plan:
+                        target_fb = py_in_plan[0]
+                        out["kind"] = "structural_missing"
+                        out["target"] = target_fb
+                        out["source_file"] = target_fb
+                        out["missing_name"] = missing_calls[0]
+                        out["reason"] = (
+                            f"P11.6 structural fallback: spec requires {missing_calls}, "
+                            f"ни один из этих символов не определён в проекте; "
+                            f"target = первый py-файл plan ({target_fb})"
+                        )
+                        out["hint"] = (
+                            f"В проекте не определены функции, требуемые спецификацией: "
+                            f"{missing_calls}. Добавь их в {target_fb} как top-level def "
+                            f"с ожидаемыми именами."
+                        )
+                        return out
 
     stderr = (failed.get("stderr", "") or "") + "\n" + (failed.get("stdout", "") or "")
     if not stderr.strip():
@@ -2323,13 +2760,19 @@ def _classify_failure(plan: dict, failed: dict) -> dict:
     return out
 
 
-def _pick_heal_target(plan: dict, failed: dict) -> str | None:
-    """P11.4: структурный выбор файла для хилинга на основе разбора ошибки.
+def _pick_heal_target(
+    plan: dict,
+    failed: dict,
+    spec: dict | None = None,
+    slug: str | None = None,
+) -> str | None:
+    """P11.4/P11.6: структурный выбор файла для хилинга на основе разбора ошибки.
 
     Делегирует в _classify_failure (без ключевых слов). Если разбор не дал target —
-    fallback на первый .py из plan.files.
+    fallback на первый .py из plan.files. P11.6: spec/slug позволяют structural
+    fallback в _classify_failure определить файл по AST-walkу.
     """
-    info = _classify_failure(plan, failed)
+    info = _classify_failure(plan, failed, spec=spec, slug=slug)
     if info.get("target"):
         logger.info(
             f"[heal.target] kind={info['kind']} target={info['target']} "
@@ -2347,16 +2790,17 @@ def _pick_heal_target(plan: dict, failed: dict) -> str | None:
     return fallback
 
 
-def _heal_via_aider(slug: str, plan: dict, failed: dict) -> dict:
-    """P9.4: попытаться починить файл через aider_heal.
+def _heal_via_aider(slug: str, plan: dict, failed: dict, spec: dict | None = None) -> dict:
+    """P9.4/P11.6: попытаться починить файл через aider_heal.
 
     Результат — dict с полями ok/target/error/duration. Никогда не бросает исключение.
 
     P11.4: в error_text включается структурный hint из _classify_failure —
     aider видит и сырой traceback, и явный диагноз (кто виноват и почему).
+    P11.6: spec пробрасывается в _classify_failure для structural fallback при rc=0.
     """
-    info = _classify_failure(plan, failed)
-    target = info.get("target") or _pick_heal_target(plan, failed)
+    info = _classify_failure(plan, failed, spec=spec, slug=slug)
+    target = info.get("target") or _pick_heal_target(plan, failed, spec=spec, slug=slug)
     if not target:
         return {"ok": False, "target": None, "error": "no candidate file in plan"}
     raw_err = (failed.get("stderr", "") or failed.get("stdout", "") or "").strip()
@@ -2449,7 +2893,7 @@ def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budg
         if diag is None and AIDER_ENABLED and aider_runner.is_aider_available(AIDER_BIN):
             try:
                 budget.check(f"heal:aider:iter{heal_iter}")
-                ah = _heal_via_aider(slug, plan, failed)
+                ah = _heal_via_aider(slug, plan, failed, spec=spec)
                 budget.spend(1)
             except BudgetExceeded as e:
                 add_phase(slug, f"heal:iter{heal_iter}", "failed", f"budget: {e}")
@@ -2755,13 +3199,33 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
                 plan = _normalize_plan_contracts(plan, spec)
                 # P11.2.e (FM-10): убираем из plan.files файлы, которые уже в plan.inputs.
                 plan = _dedupe_files_vs_inputs(plan)
+                # P11.6: блокирующий валидатор плана — autofill exports из tests +
+                # revise-loop если остались нарушения (FM-16/FM-17).
+                # Ренормализуем контракт-метрики после валидатора.
+                plan, p11_6_violations, p11_6_revises = _enforce_plan_validity(
+                    plan, spec, budget, max_revise=2
+                )
+                if p11_6_violations:
+                    add_phase(
+                        slug, "plan.validate", "failed",
+                        f"violations={[v['kind'] for v in p11_6_violations]} "
+                        f"revises={p11_6_revises} (P11.6)"
+                    )
+                elif p11_6_revises:
+                    add_phase(
+                        slug, "plan.validate", "ok",
+                        f"revises={p11_6_revises} (P11.6)"
+                    )
+                # Пересчитываем метрики, т.к. autofill мог добавить exports.
+                plan = _normalize_plan_contracts(plan, spec)
                 m = load_manifest(slug); m.plan = plan; save_manifest(m)
                 _cm = plan.get("_contract_metrics", {}) or {}
                 add_phase(slug, "architect", "ok",
                           f"files={len(plan['files'])} tests={len(plan.get('tests',[]))} "
                           f"inputs={len(plan.get('inputs',[]))} "
                           f"exports={_cm.get('files_with_exports', 0)}/{_cm.get('py_files', 0)} "
-                          f"dep_unmatched={len(_cm.get('depends_unmatched', []) or [])}")
+                          f"dep_unmatched={len(_cm.get('depends_unmatched', []) or [])} "
+                          f"p11_6_revises={p11_6_revises}")
                 _set_last_phase(slug, "architect")
             except BudgetExceeded as e:
                 add_phase(slug, "architect", "failed", f"budget: {e}")

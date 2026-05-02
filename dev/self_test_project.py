@@ -2937,5 +2937,365 @@ class TestBlockingContractP11_5(unittest.TestCase):
         self.assertIn("Восстанови", captured["error_text"])
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# P11.6: блокирующий план-валидатор (FM-16/17) + structural fallback (FM-14)
+# + empty-file contract failure (FM-18)
+# ═════════════════════════════════════════════════════════════════════════
+class TestPlanValidatorP11_6(unittest.TestCase):
+    """P11.6: validator + autofill — _extract_required_symbols, _autofill_exports_from_tests,
+    _validate_plan_p11_6, _format_violations_for_revise."""
+
+    # ─── _extract_required_symbols ────────────────────────────
+
+    def test_extract_required_symbols_basic(self):
+        """Имена вида name(args) из spec.summary + spec.requirements."""
+        from brain.agents.project import _extract_required_symbols
+        spec = {
+            "summary": "Калькулятор с функциями add(a,b) и sub(a,b).",
+            "requirements": ["Реализовать mul(x,y) и div(x,y)."],
+        }
+        out = _extract_required_symbols(spec)
+        self.assertEqual(set(out), {"add", "sub", "mul", "div"})
+
+    def test_extract_required_symbols_filters_noise(self):
+        """Языковые ключевые слова и стдлиб-имена отфильтровываются."""
+        from brain.agents.project import _extract_required_symbols
+        spec = {
+            "summary": "Используй print(x), int(x), open(path), json.dumps(d).",
+            "requirements": ["Добавь функцию calculate(a, b)."],
+        }
+        out = _extract_required_symbols(spec)
+        self.assertIn("calculate", out)
+        self.assertNotIn("print", out)
+        self.assertNotIn("int", out)
+        self.assertNotIn("open", out)
+        self.assertNotIn("json", out)
+
+    def test_extract_required_symbols_skips_method_calls(self):
+        """obj.method() — это метод, не top-level имя."""
+        from brain.agents.project import _extract_required_symbols
+        spec = {
+            "summary": "storage.save(item) и user.login(token). Нужна process(data).",
+        }
+        out = _extract_required_symbols(spec)
+        self.assertIn("process", out)
+        # save и login видны как obj.save — не должны пасть в out
+        self.assertNotIn("save", out)
+        self.assertNotIn("login", out)
+
+    def test_extract_required_symbols_empty_spec(self):
+        """Пустой / None spec → []."""
+        from brain.agents.project import _extract_required_symbols
+        self.assertEqual(_extract_required_symbols(None), [])
+        self.assertEqual(_extract_required_symbols({}), [])
+        self.assertEqual(_extract_required_symbols({"summary": "Нет функций."}), [])
+
+    # ─── _autofill_exports_from_tests ────────────────────────
+
+    def test_autofill_exports_from_test_imports(self):
+        """Если plan.tests имеют 'from calc import add, sub' — заполняем calc.py.еxports."""
+        from brain.agents.project import _autofill_exports_from_tests
+        plan = {
+            "files": [{"path": "calc.py", "exports": []}],
+            "tests": [{
+                "checks": [{"imports": ["from calc import add, sub"]}]
+            }],
+        }
+        out = _autofill_exports_from_tests(plan)
+        names = [e["name"] for e in out["files"][0]["exports"]]
+        self.assertEqual(set(names), {"add", "sub"})
+        # Сигнатуры — плейсхолдеры вида 'add(...)'
+        for e in out["files"][0]["exports"]:
+            self.assertEqual(e["kind"], "function")
+            self.assertIn("(", e["signature"])
+
+    def test_autofill_exports_keeps_existing(self):
+        """Если exports уже непусты — автофилл их НЕ трогает."""
+        from brain.agents.project import _autofill_exports_from_tests
+        plan = {
+            "files": [{
+                "path": "calc.py",
+                "exports": [{"name": "original", "kind": "function", "signature": "original()"}]
+            }],
+            "tests": [{"checks": [{"imports": ["from calc import other"]}]}],
+        }
+        out = _autofill_exports_from_tests(plan)
+        names = [e["name"] for e in out["files"][0]["exports"]]
+        self.assertEqual(names, ["original"])  # не затёрто
+
+    # ─── _validate_plan_p11_6 ──────────────────────────────
+
+    def test_validate_plan_v1_missing_exports_for_non_entry_py(self):
+        """V1: .py-файл без exports и не entry-point → violation missing_exports."""
+        from brain.agents.project import _validate_plan_p11_6
+        plan = {"files": [
+            {"path": "main.py", "exports": []},          # entry-point, OK
+            {"path": "helpers.py", "exports": []},       # НЕ entry-point → violation
+        ]}
+        violations = _validate_plan_p11_6(plan, spec={})
+        kinds = [v["kind"] for v in violations]
+        self.assertIn("missing_exports", kinds)
+        # именно про helpers.py
+        v_missing = next(v for v in violations if v["kind"] == "missing_exports")
+        self.assertEqual(v_missing["file"], "helpers.py")
+
+    def test_validate_plan_v2_requirement_renamed(self):
+        """V2: spec требует add() но plan.exports всегда 'addition' → violation."""
+        from brain.agents.project import _validate_plan_p11_6
+        plan = {"files": [
+            {"path": "calc.py", "exports": [
+                {"name": "addition", "kind": "function", "signature": "addition(a,b)"}
+            ]}
+        ]}
+        spec = {"summary": "Нужна функция add(a,b)."}
+        violations = _validate_plan_p11_6(plan, spec=spec)
+        kinds = [v["kind"] for v in violations]
+        self.assertIn("requirement_symbols_renamed", kinds)
+        v_ren = next(v for v in violations if v["kind"] == "requirement_symbols_renamed")
+        self.assertIn("add", v_ren["missing"])
+
+    def test_validate_plan_clean(self):
+        """Корректный план → [] (нет violations)."""
+        from brain.agents.project import _validate_plan_p11_6
+        plan = {"files": [
+            {"path": "main.py", "exports": []},  # entry-point, OK
+            {"path": "calc.py", "exports": [
+                {"name": "add", "kind": "function", "signature": "add(a,b)"}
+            ]},
+        ]}
+        spec = {"summary": "Нужна add(a,b)."}
+        violations = _validate_plan_p11_6(plan, spec=spec)
+        self.assertEqual(violations, [])
+
+    # ─── _format_violations_for_revise ────────────────────────
+
+    def test_format_violations_human_readable(self):
+        """Хинт включает и имя файла, и имена missing-символов."""
+        from brain.agents.project import _format_violations_for_revise
+        violations = [
+            {"kind": "missing_exports", "file": "helpers.py",
+             "message": "helpers.py: это не entry-point, но exports пуст"},
+            {"kind": "requirement_symbols_renamed", "missing": ["add", "sub"],
+             "message": "…"},
+        ]
+        text = _format_violations_for_revise(violations)
+        self.assertIn("helpers.py", text)
+        self.assertIn("add", text)
+        self.assertIn("sub", text)
+
+
+class TestEmptyFileContractP11_6(unittest.TestCase):
+    """P11.6.D (FM-18): пустой .py-файл (<20 байт) → contract_failure=True даже без экспортов."""
+
+    def test_empty_file_triggers_contract_failure_via_aider_build(self):
+        """Мокаем aider_build с res.content='' → _build_one_file_aider должен вернуть contract_failure=True."""
+        from brain.agents import project as proj
+        from brain.agents.project import Budget
+
+        class _FakeBuildRes:
+            ok = True
+            content = ""
+            error = ""
+            duration_s = 0.1
+            attempts = 1
+            exit_code = 0
+
+        plan = {
+            "files": [{"path": "main.py", "exports": []}],
+            "inputs": [],
+            "tests": [],
+        }
+        spec = {"title": "X", "slug": "x", "summary": "Тест"}
+        target = {"path": "main.py", "purpose": "entry-point"}
+        budget = Budget(wall_s=600, llm=20)
+
+        with patch.object(proj, "project_dir", return_value="/tmp/p11_6_empty"), \
+             patch.object(proj.aider_runner, "aider_build", return_value=_FakeBuildRes()), \
+             patch.object(proj, "safe_project_path") as mock_safe, \
+             patch.object(proj, "static_check",
+                          return_value={"applicable": True, "errors": [], "warnings": [], "tools": [], "final_ast_ok": True}):
+            # safe_project_path не используется в этой ветке (main.py не runtime deliverable)
+            mock_safe.return_value = Path("/tmp/ignored")
+            res = proj._build_one_file_aider("slug", spec, plan, target, budget)
+
+        self.assertTrue(res.get("contract_failure"))
+        self.assertFalse(res["ok"])
+        contract = res.get("contract") or {}
+        self.assertEqual(contract.get("reason"), "empty_file")
+
+    def test_non_empty_file_does_not_trigger_empty_file_branch(self):
+        """Не пустой (>=20 байт) файл без expected_exports → линтер не выдаёт contract_failure."""
+        from brain.agents import project as proj
+        from brain.agents.project import Budget
+
+        class _FakeBuildRes:
+            ok = True
+            content = "def main():\n    print('ok')\n"  # >20 байт
+            error = ""
+            duration_s = 0.1
+            attempts = 1
+            exit_code = 0
+
+        plan = {
+            "files": [{"path": "main.py", "exports": []}],
+            "inputs": [],
+            "tests": [],
+        }
+        spec = {"title": "X", "slug": "x", "summary": "Тест"}
+        target = {"path": "main.py", "purpose": "entry-point"}
+        budget = Budget(wall_s=600, llm=20)
+
+        with patch.object(proj, "project_dir", return_value="/tmp/p11_6_nonempty"), \
+             patch.object(proj.aider_runner, "aider_build", return_value=_FakeBuildRes()), \
+             patch.object(proj, "safe_project_path", return_value=Path("/tmp/ignored")), \
+             patch.object(proj, "static_check",
+                          return_value={"applicable": True, "errors": [], "warnings": [], "tools": [], "final_ast_ok": True}):
+            res = proj._build_one_file_aider("slug", spec, plan, target, budget)
+
+        self.assertFalse(res.get("contract_failure", False))
+        self.assertTrue(res["ok"])
+
+
+class TestStructuralFallbackP11_6(unittest.TestCase):
+    """P11.6 (FM-14): rc=0 + missing calls + AST-walk → structural target."""
+
+    def test_walk_project_top_level_defs_collects_def_and_class(self):
+        """AST-walk выдаёт top-level def/class, пропускает приватные (_)."""
+        from brain.agents import project as proj
+        files = {
+            "calc.py": (
+                "def add(a, b):\n    return a + b\n\n"
+                "class Calc:\n    pass\n\n"
+                "def _private():\n    pass\n"
+            ),
+            "main.py": "def main():\n    pass\n",
+            "README.md": "# readme",  # не .py — пропустить
+        }
+        with patch.object(proj, "get_project_files", return_value=files):
+            defs = proj._walk_project_top_level_defs("slug")
+        self.assertEqual(set(defs["calc.py"]), {"add", "Calc"})
+        self.assertEqual(defs["main.py"], ["main"])
+        self.assertNotIn("README.md", defs)
+
+    def test_walk_project_handles_syntax_errors(self):
+        """Файл с брокенным синтаксисом даёт [], но не падаем."""
+        from brain.agents import project as proj
+        files = {
+            "good.py": "def ok():\n    pass\n",
+            "bad.py": "def broken( :\n    pass\n",
+        }
+        with patch.object(proj, "get_project_files", return_value=files):
+            defs = proj._walk_project_top_level_defs("slug")
+        self.assertEqual(defs["good.py"], ["ok"])
+        self.assertEqual(defs["bad.py"], [])
+
+    def test_find_structural_owner_exact_match(self):
+        """Точное имя в проекте → (file, name)."""
+        from brain.agents.project import _find_structural_owner
+        defs = {"calc.py": ["add", "sub"], "main.py": ["main"]}
+        owner, actual = _find_structural_owner("add", defs)
+        self.assertEqual(owner, "calc.py")
+        self.assertEqual(actual, "add")
+
+    def test_find_structural_owner_case_fold(self):
+        """Регистр-независимое совпадение → (file, actual_name)."""
+        from brain.agents.project import _find_structural_owner
+        defs = {"calc.py": ["Add", "Subtract"]}
+        owner, actual = _find_structural_owner("add", defs)
+        self.assertEqual(owner, "calc.py")
+        self.assertEqual(actual, "Add")  # вернулось реальное имя из кода
+
+    def test_find_structural_owner_not_found(self):
+        """Ни exact, ни case-fold — (None, None)."""
+        from brain.agents.project import _find_structural_owner
+        defs = {"calc.py": ["foo", "bar"]}
+        owner, actual = _find_structural_owner("add", defs)
+        self.assertIsNone(owner)
+        self.assertIsNone(actual)
+
+    def test_classify_failure_structural_fallback_renamed(self):
+        """FM-14 ed-case calculator: rc=0, smoke-pass, но add() переименован в subtract().
+        Структурный fallback обязан найти calc.py и дать хинт переименования."""
+        from brain.agents import project as proj
+        plan = {"files": [
+            {"path": "main.py", "exports": []},
+            {"path": "calc.py", "exports": [
+                {"name": "subtract", "kind": "function", "signature": "subtract(a,b)"}
+            ]},
+        ]}
+        spec = {"summary": "Калькулятор с функциями add(a,b) и div(a,b)."}
+        failed = {"rc": 0, "stderr": "", "stdout": "", "name": "smoke"}
+        files_on_disk = {
+            "main.py": "from calc import subtract\nprint(subtract(2,1))\n",
+            "calc.py": "def subtract(a, b):\n    return a - b\n",
+        }
+        with patch.object(proj, "get_project_files", return_value=files_on_disk):
+            info = proj._classify_failure(plan, failed, spec=spec, slug="slug")
+        # add ожидается но в коде есть subtract — case-fold не совпадёт, падём на structural_missing
+        # Но есть и div — тоже отсутствует. owner не найдён ни для add, ни для div
+        # → fallback target = первый py-файл plan = main.py
+        self.assertEqual(info["kind"], "structural_missing")
+        self.assertEqual(info["target"], "main.py")
+        self.assertIn("add", info["missing_name"])
+
+    def test_classify_failure_structural_fallback_case_fold_rename(self):
+        """required='add', в коде есть 'Add' → owner найден в calc.py через case-fold."""
+        from brain.agents import project as proj
+        plan = {"files": [
+            {"path": "main.py", "exports": []},
+            {"path": "calc.py", "exports": [
+                {"name": "Add", "kind": "function", "signature": "Add(a,b)"}
+            ]},
+        ]}
+        spec = {"summary": "Нужна функция add(a, b)."}
+        failed = {"rc": 0, "stderr": "", "stdout": "", "name": "smoke"}
+        files_on_disk = {
+            "main.py": "from calc import Add\n",
+            "calc.py": "def Add(a, b):\n    return a + b\n",
+        }
+        with patch.object(proj, "get_project_files", return_value=files_on_disk):
+            info = proj._classify_failure(plan, failed, spec=spec, slug="slug")
+        self.assertEqual(info["kind"], "structural_mismatch")
+        self.assertEqual(info["target"], "calc.py")
+        self.assertEqual(info["missing_name"], "add")
+        # хинт должен упоминать оба имени
+        self.assertIn("Add", info["hint"])
+        self.assertIn("add", info["hint"])
+
+    def test_classify_failure_structural_fallback_skipped_with_traceback(self):
+        """Если в stderr есть Traceback — fallback НЕ срабатывает, идём в обычный парсинг."""
+        from brain.agents import project as proj
+        plan = {"files": [
+            {"path": "main.py", "exports": []},
+            {"path": "calc.py", "exports": [
+                {"name": "add", "kind": "function"}
+            ]},
+        ]}
+        spec = {"summary": "Нужна add(a,b)."}
+        # rc=1 + traceback — structural fallback не сработает (даже без rc=0).
+        failed = {
+            "rc": 1,
+            "stderr": (
+                'Traceback (most recent call last):\n'
+                '  File "main.py", line 1, in <module>\n'
+                'NameError: name \'add\' is not defined\n'
+            ),
+        }
+        with patch.object(proj, "get_project_files", return_value={"main.py": "", "calc.py": ""}):
+            info = proj._classify_failure(plan, failed, spec=spec, slug="slug")
+        # Не structural-* (rc!=0). Обычный NameError-парсер отработал.
+        self.assertNotIn(info["kind"], ("structural_mismatch", "structural_missing"))
+
+    def test_classify_failure_structural_fallback_no_spec_skipped(self):
+        """Без spec — fallback НЕ срабатывает (обратная совместимость)."""
+        from brain.agents import project as proj
+        plan = {"files": [{"path": "main.py", "exports": []}]}
+        failed = {"rc": 0, "stderr": "", "stdout": ""}
+        info = proj._classify_failure(plan, failed)  # spec=None, slug=None
+        # Не должен быть structural-*; out остаётся unknown
+        self.assertEqual(info["kind"], "unknown")
+        self.assertIsNone(info["target"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
