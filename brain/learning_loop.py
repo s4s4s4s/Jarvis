@@ -12,6 +12,11 @@
 fix N7/N1: весь цикл load→modify→save выполняется атомарно под _lock
 через _run_with_lock(). Устраняет race condition между run_learning_cycle()
 и remove_failed_example() при параллельных вызовах из ThreadPoolExecutor.
+
+fix BUG-4: remove_failed_example теперь делает load_all() и поиск записи
+ВНУТРИ _run_with_lock, полностью устраняя TOCTOU race condition, при котором
+archive_processed() мог удалить запись между load_all() и _run_with_lock(),
+что приводило к удалению ВСЕХ auto_success/learned_success примеров.
 """
 from __future__ import annotations
 
@@ -176,15 +181,28 @@ def remove_failed_example(record_id: str) -> None:
     """
     Immediately removes auto-success example that was confirmed as failure.
     Called directly from explicit_feedback (no wait for nightly cycle).
+
+    fix BUG-4: всё (load_all + поиск записи + удаление примера) выполняется
+    ВНУТРИ одного _run_with_lock вызова. Это устраняет TOCTOU race condition:
+    если archive_processed() удалил запись между load_all() и _run_with_lock(),
+    в старой версии text_lower становился пустой строкой ("".lower() == ""),
+    что приводило к удалению ВСЕХ auto_success/learned_success примеров.
+    Теперь при не найденной записи _apply возвращает список без изменений.
     """
     from brain.feedback_store import load_all
-    records = load_all()
-    rec = next((r for r in records if r["id"] == record_id), None)
-    if not rec:
-        return
-    text_lower = rec["text"].lower()
 
     def _apply(examples: list[dict]) -> list[dict]:
+        # Читаем feedback внутри лока, чтобы избежать TOCTOU
+        records = load_all()
+        rec = next((r for r in records if r["id"] == record_id), None)
+        if not rec:
+            # Запись уже архивирована или не существует — ничего не трогаем
+            return examples
+        text_lower = rec["text"].lower()
+        if not text_lower:
+            # Защита: никогда не удаляем примеры с пустым текстом
+            logger.warning(f"[learning] remove_failed_example: пустой text для record_id={record_id!r}")
+            return examples
         return [
             e for e in examples
             if not (
@@ -196,7 +214,7 @@ def remove_failed_example(record_id: str) -> None:
     diff = _run_with_lock(_apply)
     if diff < 0:
         _invalidate_embed_cache()
-        logger.info(f"[learning] Removed failed example: '{rec['text'][:60]}'")
+        logger.info(f"[learning] Removed failed example: record_id={record_id!r}")
 
 
 # ─── legacy public API (для совместимости с router_embed.invalidate_cache) ──
