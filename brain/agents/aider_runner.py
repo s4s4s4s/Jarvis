@@ -10,6 +10,12 @@ BuildResult — единый dict, который ProjectAgent уже умеет
 fix #5: is_aider_available() теперь:
   - Возвращает False без subprocess если AIDER_ENABLED=False
   - Кеширует результат проверки чтобы не запускать subprocess при каждом проекте
+
+fix BUG-1: кэш теперь dict[str, bool] с ключом bin_path, а не глобальный bool.
+  - Хранение по bin_path устраняет баг: если is_aider_available('aider') вернула False,
+    а потом is_aider_available('/path/to/aider') не возвращала устаревший кэш.
+  - invalidate_aider_cache(bin_path=None) добавлен для принудительной перепроверки
+    (например, после установки aider в время работы сессии).
 """
 from __future__ import annotations
 
@@ -32,13 +38,15 @@ from core.config import (
 
 logger = logging.getLogger(__name__)
 
-# fix #5: кэш результата is_aider_available(). None = ещё не проверяли.
-_aider_available_cache: bool | None = None
+# fix BUG-1: кэш теперь dict[bin_path, bool], а не один bool.
+# При первом вызове с bin_path='aider' и потом с '/opt/venv/bin/aider'
+# каждый проверяется и кэшируется независимо.
+_aider_available_cache: dict[str, bool] = {}
 
 
 @dataclass
 class AiderResult:
-    """\u0420\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442 \u0432\u044b\u0437\u043e\u0432\u0430 aider. \u0415\u0434\u0438\u043d\u0430\u044f \u0441\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u0430 \u0434\u043b\u044f build \u0438 heal."""
+    """Результат вызова aider. Единая структура для build и heal."""
     ok: bool
     file_path: str
     content: str
@@ -60,7 +68,7 @@ def _build_argv(
     extra_files: list[str] | None = None,
     read_only_files: list[str] | None = None,
 ) -> list[str]:
-    """\u0421\u043e\u0431\u0440\u0430\u0442\u044c \u0430\u0440\u0433\u0443\u043c\u0435\u043d\u0442\u044b \u0434\u043b\u044f aider CLI."""
+    """Собрать аргументы для aider CLI."""
     argv = [
         AIDER_BIN,
         "--model", model,
@@ -227,29 +235,48 @@ def aider_heal(
 
 
 def is_aider_available(bin_path: str = AIDER_BIN) -> bool:
-    """\u0411\u044b\u0441\u0442\u0440\u0430\u044f \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430: \u0435\u0441\u0442\u044c \u043b\u0438 aider \u0432 PATH.
+    """Быстрая проверка: есть ли aider в PATH.
 
     fix #5:
-      - Е\u0441\u043b\u0438 AIDER_ENABLED=False \u2014 \u0441\u0440\u0430\u0437\u0443 False \u0431\u0435\u0437 subprocess (\u044d\u043a\u043e\u043d\u043e\u043c\u0438\u044f ~10\u0441 \u043d\u0430 \u043f\u0440\u043e\u0435\u043a\u0442).
-      - \u041a\u0435\u0448\u0438\u0440\u0443\u0435\u0442 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438 \u043d\u0430 \u0432\u0440\u0435\u043c\u044f \u0436\u0438\u0437\u043d\u0438 \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u0430 \u2014 subprocess \u0432\u044b\u0437\u044b\u0432\u0430\u0435\u0442\u0441\u044f \u0432\u0441\u0435\u0433\u043e \u043e\u0434\u0438\u043d \u0440\u0430\u0437.
-    """
-    global _aider_available_cache
+      - Если AIDER_ENABLED=False — сразу False без subprocess (экономия ~10с на проект).
+      - Кеширует результат проверки на время жизни процесса — subprocess вызывается всего один раз.
 
-    # Б\u044b\u0441\u0442\u0440\u044b\u0439 \u043f\u0443\u0442\u044c: \u0435\u0441\u043b\u0438 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d \u0432 config \u2014 \u043d\u0435 \u0442\u0440\u0430\u0442\u0438\u043c \u0432\u0440\u0435\u043c\u044f \u043d\u0430 subprocess
+    fix BUG-1:
+      - Кэш теперь dict[bin_path → bool], а не один глобальный bool.
+      - При разных bin_path (имя + PATH vs абсолютный путь) каждый проверяется верно.
+      - invalidate_aider_cache() позволяет перепроверить после доустановки aider.
+    """
+    # Быстрый путь: если выключен в config — не тратим время на subprocess
     if not AIDER_ENABLED:
         return False
 
-    # \u041a\u0435\u0448 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u0430 \u0434\u043b\u044f \u0442\u0435\u043a\u0443\u0449\u0435\u0433\u043e \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u0430
-    if _aider_available_cache is not None:
-        return _aider_available_cache
+    # fix BUG-1: кэш по bin_path
+    if bin_path in _aider_available_cache:
+        return _aider_available_cache[bin_path]
 
     try:
         result = subprocess.run(
             [bin_path, "--version"],
             capture_output=True, text=True, timeout=10, check=False,
         )
-        _aider_available_cache = (result.returncode == 0)
+        _aider_available_cache[bin_path] = (result.returncode == 0)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        _aider_available_cache = False
+        _aider_available_cache[bin_path] = False
 
-    return _aider_available_cache
+    return _aider_available_cache[bin_path]
+
+
+def invalidate_aider_cache(bin_path: str | None = None) -> None:
+    """Принудительно сбросить кэш is_aider_available().
+
+    bin_path=None — сбросить весь кэш (все bin_path).
+    bin_path=str — сбросить кэш только для этого пути.
+
+    Пример использования: после `pip install aider-chat` в рабочей сессии:
+        from brain.agents.aider_runner import invalidate_aider_cache
+        invalidate_aider_cache()
+    """
+    if bin_path is None:
+        _aider_available_cache.clear()
+    else:
+        _aider_available_cache.pop(bin_path, None)
