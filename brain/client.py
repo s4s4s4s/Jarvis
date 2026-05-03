@@ -39,6 +39,10 @@ _client       = ollama.Client(host=_OLLAMA_BASE_URL, timeout=OLLAMA_TIMEOUT)
 _client_heavy = ollama.Client(host=_OLLAMA_BASE_URL, timeout=OLLAMA_HEAVY_TIMEOUT)
 
 
+class LLMError(RuntimeError):
+    """raised when chat() не получил осмысленный ответ после всех retry."""
+
+
 def is_ollama_available() -> bool:
     """Быстрая проверка доступности Ollama — вызывается при старте."""
     try:
@@ -49,20 +53,31 @@ def is_ollama_available() -> bool:
 
 
 def chat(model: str, messages: list[dict], options: dict | None = None) -> str:
+    """Отправить запрос в ollama. Возвращает текст или бросает LLMError.
+
+    fix #1: перестал возвращать "" — вместо этого бросает LLMError, чтобы
+    вызывающие код (project.py, planner.py, self_extend.py) могли войти в except
+    и вернуть понятный fallback вместо создания пустых файлов.
+    """
     opts = options or {"temperature": 0.2, "num_ctx": 8192}
     # Тяжёлые модели (всё что равно MODEL_HEAVY или ролевые 32b/14b coder)
     # получают большой timeout. Остальные — fast.
     heavy_models = {MODEL_HEAVY, MODEL_CODER, MODEL_REVIEWER, MODEL_ARCHITECT, MODEL_HEALER}
     client = _client_heavy if model in heavy_models else _client
-    last_err = None
+    last_err: Exception | None = None
     for attempt in range(OLLAMA_RETRIES + 1):
         try:
             resp = client.chat(model=model, messages=messages, options=opts)
-            return resp.message.content.strip()
+            content = resp.message.content
+            if content:          # непустой ответ — успех
+                return content.strip()
+            # Оллама вернула пустую строку — трактуем как ошибку и повторяем
+            last_err = LLMError(f"empty response from model '{model}'")
+            print(f"[ollama] Пустой ответ (attempt {attempt + 1}), retry...")
         except Exception as e:
             last_err = e
             print(f"[ollama] Ошибка (attempt {attempt + 1}): {e}")
-            if attempt < OLLAMA_RETRIES:
-                time.sleep(OLLAMA_RETRY_DELAY)
+        if attempt < OLLAMA_RETRIES:
+            time.sleep(OLLAMA_RETRY_DELAY)
     print(f"[ollama] Все попытки исчерпаны: {last_err}")
-    return ""
+    raise LLMError(f"ollama '{model}' failed after {OLLAMA_RETRIES + 1} attempts: {last_err}")
