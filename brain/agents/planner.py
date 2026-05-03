@@ -7,13 +7,15 @@ Hardening v2:
   - Защита от кривых подстановок {stepN_result}
   - Timeout на каждый шаг (STEP_TIMEOUT)
   - Никогда не падает молча — всегда возвращает строку
+
+fix #6: _validate_plan() принимает known_tools как параметр (list | None),
+а list_tools() вызывается один раз в _make_plan() с try/except вокруг.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
-import signal
 import threading
 from typing import Any
 
@@ -26,7 +28,7 @@ MAX_STEPS     = 8
 STEP_TIMEOUT  = 30.0   # секунд на один шаг
 PLAN_RETRIES  = 2       # попыток получить валидный план
 
-# ── JSON-схема плана ─────────────────────────────────────────────────────────
+# ── JSON-схема плана ─────────────────────────────────────────────────────────────────────────
 _PLAN_SCHEMA = {
     "type": "object",
     "required": ["plan"],
@@ -49,7 +51,7 @@ _PLAN_SCHEMA = {
     },
 }
 
-# ── промпты ──────────────────────────────────────────────────────────────────
+# ── промпты ───────────────────────────────────────────────────────────────────────────────────────
 _PLAN_SYSTEM = """Ты — Jarvis, планировщик. Дана задача пользователя.
 Доступные инструменты: {tools}
 
@@ -80,20 +82,24 @@ _SYNTH_SYSTEM = """Ты — Jarvis. Пользователь дал задачу
 Дай краткий естественный ответ на русском, как если рассказываешь что сделал."""
 
 
-# ── утилиты ──────────────────────────────────────────────────────────────────
+# ── утилиты ──────────────────────────────────────────────────────────────────────────────────────────
 
 def _strip_markdown(raw: str) -> str:
-    """Убирает ```json ... ``` обёртки."""
+    """\u0423\u0431\u0438\u0440\u0430\u0435\u0442 ```json ... ``` \u043e\u0431\u0451\u0440\u0442\u043a\u0438."""
     raw = raw.strip()
     raw = re.sub(r'^```[a-zA-Z]*\n?', '', raw)
     raw = re.sub(r'\n?```$', '', raw)
     return raw.strip()
 
 
-def _validate_plan(plan: list[dict]) -> tuple[bool, str]:
-    """Проверяет структуру плана без jsonschema-зависимости."""
+def _validate_plan(plan: list[dict], known_tools: list[str] | None = None) -> tuple[bool, str]:
+    """П\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u0442 \u0441\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u0443 \u043f\u043b\u0430\u043d\u0430.
+
+    fix #6: known_tools \u043f\u0435\u0440\u0435\u0434\u0430\u0451\u0442\u0441\u044f \u0441\u043d\u0430\u0440\u0443\u0436\u0438 \u0447\u0442\u043e\u0431\u044b \u043d\u0435 \u0432\u044b\u0437\u044b\u0432\u0430\u0442\u044c list_tools() \u043d\u0430 \u043a\u0430\u0436\u0434\u043e\u043c \u0448\u0430\u0433\u0435.
+    \u0415\u0441\u043b\u0438 None \u2014 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u044b \u043d\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u044f\u044e\u0442\u0441\u044f (fallback \u0434\u043b\u044f \u043e\u0431\u0440\u0430\u0442\u043d\u043e\u0439 \u0441\u043e\u0432\u043c\u0435\u0441\u0442\u0438\u043c\u043e\u0441\u0442\u0438).
+    """
     if not isinstance(plan, list) or len(plan) == 0:
-        return False, "plan пуст или не список"
+        return False, "план пуст или не список"
     if len(plan) > MAX_STEPS:
         return False, f"слишком много шагов: {len(plan)} > {MAX_STEPS}"
 
@@ -114,13 +120,11 @@ def _validate_plan(plan: list[dict]) -> tuple[bool, str]:
             tool_name = step.get("tool", "")
             if not tool_name:
                 return False, f"шаг {step_num}: tool не указан"
-            known = list_tools()
-            if tool_name not in known:
-                return False, f"шаг {step_num}: инструмент '{tool_name}' не существует. Доступные: {known}"
+            if known_tools is not None and tool_name not in known_tools:
+                return False, f"шаг {step_num}: инструмент '{tool_name}' не существует. Доступные: {known_tools}"
             if not isinstance(step.get("args", {}), dict):
                 return False, f"шаг {step_num}: args должен быть объектом"
 
-    # последний шаг должен быть answer
     if plan[-1].get("type") != "answer":
         return False, "последний шаг должен быть type='answer'"
 
@@ -147,9 +151,8 @@ def _safe_substitute(args: dict, step_results: dict[int, Any]) -> dict:
                 if not isinstance(val, str):
                     val = json.dumps(val, ensure_ascii=False)
                 return val[:2000]
-            # шаг не выполнен — оставляем как есть, но логируем
             logger.warning(f"[planner] substitute: шаг {sn} ещё не выполнен")
-            return m.group(0)  # возвращаем placeholder без изменений
+            return m.group(0)
         result[k] = PLACEHOLDER_RE.sub(_repl, v)
     return result
 
@@ -159,10 +162,6 @@ class _StepTimeoutError(Exception):
 
 
 def _call_tool_with_timeout(tool_name: str, args: dict, timeout: float) -> Any:
-    """
-    Запускает call_tool в отдельном потоке с таймаутом.
-    Возвращает ToolResult или бросает _StepTimeoutError.
-    """
     result_holder: list = [None]
     exc_holder:    list = [None]
 
@@ -182,14 +181,24 @@ def _call_tool_with_timeout(tool_name: str, args: dict, timeout: float) -> Any:
     return result_holder[0]
 
 
-# ── построение плана (с retry) ────────────────────────────────────────────────
+# ── построение плана (с retry) ──────────────────────────────────────────────────────────────────────
 
 def _make_plan(query: str) -> tuple[list[dict] | None, str]:
     """
     Возвращает (план, "") при успехе или (None, причина_ошибки).
     Делает до PLAN_RETRIES попыток.
+
+    fix #6: list_tools() вызывается один раз с try/except,
+    результат передаётся в _validate_plan() аргументом.
     """
-    tools_str = ", ".join(list_tools())
+    # fix #6: один вызов list_tools() на всё планирование
+    try:
+        known_tools: list[str] | None = list_tools()
+    except Exception as e:
+        logger.warning(f"[planner] list_tools() failed: {e} — инструменты не будут валидированы")
+        known_tools = None  # fallback: валидация типов остаётся, проверка tool_name отключается
+
+    tools_str = ", ".join(known_tools) if known_tools else "недоступны"
     last_error = "неизвестная ошибка"
 
     for attempt in range(1, PLAN_RETRIES + 1):
@@ -200,7 +209,6 @@ def _make_plan(query: str) -> tuple[list[dict] | None, str]:
                 {"role": "user",   "content": query},
             ]
         else:
-            # упрощённый промпт на retry
             system = _PLAN_RETRY_SYSTEM.format(tools=tools_str, query=query)
             msgs = [
                 {"role": "system", "content": system},
@@ -221,7 +229,7 @@ def _make_plan(query: str) -> tuple[list[dict] | None, str]:
             logger.error(f"[planner] attempt {attempt}: {last_error}")
             continue
 
-        valid, reason = _validate_plan(plan)
+        valid, reason = _validate_plan(plan, known_tools=known_tools)
         if not valid:
             last_error = f"schema error: {reason}"
             logger.warning(f"[planner] attempt {attempt}: {last_error}")
@@ -233,7 +241,7 @@ def _make_plan(query: str) -> tuple[list[dict] | None, str]:
     return None, last_error
 
 
-# ── основной run ──────────────────────────────────────────────────────────────
+# ── основной run ──────────────────────────────────────────────────────────────────────────────────
 
 def run(query: str, history: list[dict]) -> str:
     """
@@ -263,7 +271,7 @@ def run(query: str, history: list[dict]) -> str:
         desc      = step.get("description", "")
 
         if step_type == "answer":
-            break  # финальный синтез ниже
+            break
 
         if step_type == "tool":
             tool_name = step.get("tool", "")
