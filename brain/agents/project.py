@@ -2132,6 +2132,9 @@ def _filter_invalid_checks(plan: dict, spec: dict | None) -> tuple[dict, list[di
                     removed.append({"check": ch, "reason": "file_exists_on_input_fixture"})
                     continue
             new_checks.append(ch)
+        # FIX-4: если все checks удалены — добавляем минимальный rc_zero
+        if not new_checks and (t.get("checks") or []):
+            new_checks = [{"type": "rc_zero"}]
         new_t["checks"] = new_checks
         new_tests.append(new_t)
     new_plan["tests"] = new_tests
@@ -2818,7 +2821,9 @@ def _heal_via_aider(slug: str, plan: dict, failed: dict, spec: dict | None = Non
     test_command = failed.get("command", "") or ""
     try:
         pdir = project_dir(slug)
-        res = aider_runner.aider_heal(pdir, target, error_text, test_command=test_command)
+        read_only, _ = _build_neighbor_context(pdir, plan, target)
+        res = aider_runner.aider_heal(pdir, target, error_text, test_command=test_command,
+                                      read_only_files=read_only or None)
         return {
             "ok":         bool(res.ok),
             "target":     target,
@@ -2892,6 +2897,16 @@ def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budg
         # Если aider успешно применил правку — ретестируем; иначе fallthrough в LLM-диагностику.
         if diag is None and AIDER_ENABLED and aider_runner.is_aider_available(AIDER_BIN):
             try:
+                # FIX-2: снимаем hash файла до aider для no-change guard
+                _heal_target_pre = _pick_heal_target(plan, failed, spec=spec, slug=slug)
+                if _heal_target_pre:
+                    import hashlib as _hl
+                    try:
+                        _pre_content = read_project_file(slug, _heal_target_pre)
+                        setattr(budget, f"_pre_hash_{heal_iter}",
+                                _hl.md5(_pre_content.encode("utf-8", errors="replace")).hexdigest())
+                    except Exception:
+                        pass
                 budget.check(f"heal:aider:iter{heal_iter}")
                 ah = _heal_via_aider(slug, plan, failed, spec=spec)
                 budget.spend(1)
@@ -2899,6 +2914,23 @@ def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budg
                 add_phase(slug, f"heal:iter{heal_iter}", "failed", f"budget: {e}")
                 break
             if ah.get("ok"):
+                # FIX-2: no-change guard — если aider не изменил файл, не ретестируем
+                _target_after = ah.get("target")
+                _changed = True
+                if _target_after:
+                    import hashlib as _hl
+                    try:
+                        _content_after = read_project_file(slug, _target_after)
+                        _hash_after = _hl.md5(_content_after.encode("utf-8", errors="replace")).hexdigest()
+                        _hash_before = getattr(budget, f"_pre_hash_{heal_iter}", None)
+                        if _hash_before and _hash_before == _hash_after:
+                            _changed = False
+                    except Exception:
+                        pass
+                if not _changed:
+                    add_phase(slug, f"heal:iter{heal_iter}", "failed",
+                              f"aider no-change guard: {_target_after} не изменился")
+                    continue
                 add_phase(
                     slug, f"heal:iter{heal_iter}", "ok",
                     f"aider heal target={ah.get('target')} duration={ah.get('duration_s')}s"
@@ -3307,6 +3339,9 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
             try:
                 test_results = _test(slug, plan, spec)
                 _set_last_phase(slug, "test")
+            except BudgetExceeded as e:
+                add_phase(slug, "test", "failed", f"budget: {e}")
+                return _abort_partial(f"budget at test: {e}")
             except Exception as e:
                 add_phase(slug, "test", "failed", str(e))
                 test_results = []
