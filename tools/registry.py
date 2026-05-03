@@ -8,6 +8,7 @@ from tools.currency import convert_currency, get_rates
 from tools.time_tool import get_time
 from tools.weather import get_weather
 from tools.timer import set_timer, list_timers, cancel_timer
+from tools.web_search import web_search
 
 # Системные инструменты (Level 2)
 from tools.system.files import read_file, write_file, list_dir, search_files, delete_file
@@ -67,6 +68,10 @@ def _call_timer_list() -> Any:
 def _call_timer_cancel(timer_id: str) -> Any:
     ok = cancel_timer(timer_id)
     return {"cancelled": ok, "id": timer_id}
+
+# ── web search ────────────────────────────────────────────────────────────────
+def _call_web_search(query: str, max_results: int = 5) -> Any:
+    return web_search(query=query, max_results=max_results)
 
 # ── auditor ────────────────────────────────────────────────────────────────────────
 _DEFAULT_AUDIT_FILES = [
@@ -180,6 +185,7 @@ _TOOL_MAP: dict[str, Any] = {
     "timer.set":          _call_timer_set,
     "timer.list":         _call_timer_list,
     "timer.cancel":       _call_timer_cancel,
+    "web.search":         _call_web_search,
     "auditor.run":        _call_auditor,
     # Файлы (Level 2)
     "file.read":          _call_file_read,
