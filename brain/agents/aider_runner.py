@@ -249,12 +249,15 @@ def aider_heal(
     timeout_s: Optional[int] = None,
     max_retries: Optional[int] = None,
     api_base: Optional[str] = None,
+    read_only_files: list[str] | None = None,
 ) -> AiderResult:
     """Починить файл по описанию ошибки.
 
     Стратегия: формируем для aider инструкцию вида
       «при запуске <cmd> возникла ошибка: <stderr>. Исправь файл так чтобы тест проходил.»
     и зовём aider_build на тот же файл.
+
+    C-1 fix: принимает read_only_files (контракты соседей) и прокидывает в aider_build.
     """
     instruction_parts = [
         f"При проверке файла {target_file} возникла ошибка."
@@ -276,6 +279,7 @@ def aider_heal(
         timeout_s=timeout_s,
         max_retries=max_retries,
         api_base=api_base,
+        read_only_files=read_only_files,
     )
 
 
