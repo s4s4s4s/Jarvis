@@ -8,6 +8,9 @@
 3. Верифицированные failure → удаляет совпадающие auto-примеры
 4. auto-success с confidence ≥ 0.90 → добавляет без верификации
 5. Сбрасывает embed-кэш, архивирует обработанные записи
+
+fix #8: _load_examples() теперь вызывается под _lock, чтобы устранить
+race condition с _save_examples() при параллельных вызовах через ThreadPoolExecutor.
 """
 from __future__ import annotations
 
@@ -141,18 +144,20 @@ def remove_failed_example(record_id: str) -> None:
 
 
 def _load_examples() -> list[dict]:
-    if not ROUTE_EXAMPLES.exists():
-        return []
-    result = []
-    for line in ROUTE_EXAMPLES.read_text("utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            result.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return result
+    """fix #8: читаем целиком под _lock, чтобы синхронизироваться с _save_examples."""
+    with _lock:
+        if not ROUTE_EXAMPLES.exists():
+            return []
+        result = []
+        for line in ROUTE_EXAMPLES.read_text("utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                result.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return result
 
 
 def _save_examples(examples: list[dict]) -> None:
