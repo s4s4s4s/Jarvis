@@ -158,7 +158,6 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> tup
 
 def ask_llm(text: str) -> AskResult:
     history = hist.snapshot()
-    hist.append("user", text)
 
     t_route0 = time.monotonic()
     try:
@@ -182,9 +181,12 @@ def ask_llm(text: str) -> AskResult:
         answer, tool_ok = _dispatch(route_data, text, history)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
-        # fix #14: hist.append под локом — предотвращаем race condition при
-        # параллельных запросах, которые могут записать ответы не по порядку.
+        # fix N1: hist.append(user) перенесён ВНУТРЬ _run() — теперь user-turn
+        # записывается только после успешного получения ответа, что исключает
+        # «висячий» user-turn без assistant-ответа при падении thread.
+        # fix #14: оба append под одним локом — атомарная пара user+assistant.
         with _hist_lock:
+            hist.append("user", text)
             hist.append("assistant", answer)
 
         try:
