@@ -13,7 +13,7 @@ from brain.client import chat, MODEL_ROUTER, MODEL_FAST
 from brain.prompts import ROUTER_SYSTEM, TOOL_FORMAT_SYSTEM
 from brain import history as hist
 from brain.logger import log_route
-from brain.router_embed import route_embed
+from brain.router_embed import route_embed, eager_load
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jarvis-ask")
 atexit.register(lambda: _executor.shutdown(wait=False, cancel_futures=True))
@@ -21,6 +21,14 @@ atexit.register(lambda: _executor.shutdown(wait=False, cancel_futures=True))
 # fix #14: лок для hist.append — предотвращает race condition при параллельных
 # запросах из ThreadPoolExecutor, которые записывают ответы не по порядку.
 _hist_lock = threading.Lock()
+
+# fix F6: подогреваем embed-router заранее в фоне.
+# Это использует уже существующий eager_load() из router_embed.py и убирает
+# 2-5 секундную паузу на первом пользовательском запросе.
+try:
+    threading.Thread(target=eager_load, daemon=True, name="jarvis-embed-eager-load").start()
+except Exception:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -117,11 +125,11 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> tup
         from brain.agents.planner import run as planner_run
         return planner_run(text, history), True
 
-    if route == "extend":                          # ← Level 3
+    if route == "extend":
         from brain.agents.self_extend import run as extend_run
         return extend_run(text, history), True
 
-    if route == "project":                         # ← Level 4
+    if route == "project":
         from brain.agents.project import run as project_run
         return project_run(text, history), True
 
@@ -181,10 +189,6 @@ def ask_llm(text: str) -> AskResult:
         answer, tool_ok = _dispatch(route_data, text, history)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
-        # fix N1: hist.append(user) перенесён ВНУТРЬ _run() — теперь user-turn
-        # записывается только после успешного получения ответа, что исключает
-        # «висячий» user-turn без assistant-ответа при падении thread.
-        # fix #14: оба append под одним локом — атомарная пара user+assistant.
         with _hist_lock:
             hist.append("user", text)
             hist.append("assistant", answer)
