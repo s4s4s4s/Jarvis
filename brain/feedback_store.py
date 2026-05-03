@@ -16,6 +16,11 @@
   "reason":     "",
   "verified":   false        # true = пользователь подтвердил вручную
 }
+
+fix F1: mark_verified теперь выполняет read_text + write_text полностью внутри
+_lock. Ранее чтение было вне лока: если _write() записывал новую запись
+между read_text() и write_text() в mark_verified, новая запись терялась
+(перезаписывалась старой версией файла).
 """
 from __future__ import annotations
 
@@ -66,23 +71,27 @@ def mark_verified(record_id: str, correct: bool) -> None:
     """
     Marks a record as user-verified.
     Reads full file, updates target line, rewrites.
+
+    fix F1: весь цикл read→modify→write выполняется под _lock.
+    Без этого _write() мог записать новую строку между read_text() и
+    write_text() — новая запись терялась при перезаписи.
     """
-    if not FEEDBACK_LOG.exists():
-        return
-    lines = FEEDBACK_LOG.read_text("utf-8").splitlines()
-    updated = []
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            obj = json.loads(line)
-            if obj.get("id") == record_id:
-                obj["verified"] = True
-                obj["outcome"] = "success" if correct else "failure"
-            updated.append(json.dumps(obj, ensure_ascii=False))
-        except json.JSONDecodeError:
-            updated.append(line)
     with _lock:
+        if not FEEDBACK_LOG.exists():
+            return
+        lines = FEEDBACK_LOG.read_text("utf-8").splitlines()
+        updated = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+                if obj.get("id") == record_id:
+                    obj["verified"] = True
+                    obj["outcome"] = "success" if correct else "failure"
+                updated.append(json.dumps(obj, ensure_ascii=False))
+            except json.JSONDecodeError:
+                updated.append(line)
         FEEDBACK_LOG.write_text("\n".join(updated) + "\n", encoding="utf-8")
 
 
