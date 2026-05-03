@@ -9,6 +9,12 @@ brain/agents/coder.py — CoderAgent (Level 4).
 
 Возвращает чистый код файла (str). Никогда не падает молча — на ошибке
 LLM возвращает короткий комментарий-заглушку, чтобы оркестратор увидел проблему.
+
+fix P2: patch_file() теперь автоматически переключается на MODEL_HEAVY если
+текущий файл больше PATCH_HEAVY_THRESHOLD байт. Это убирает
+регрессии у MODEL_FAST при перегенерации больших файлов — иерархически
+она обрезает контекст и теряет логику в середине файла.
+Также num_ctx для patch увеличен до 16384 чтобы вместить текущий код + feedback.
 """
 from __future__ import annotations
 
@@ -22,23 +28,24 @@ from brain.prompts import PROJECT_CODER_SYSTEM
 
 logger = logging.getLogger(__name__)
 
-CODER_TEMPERATURE = 0.2
-CODER_NUM_CTX     = 8192
+CODER_TEMPERATURE       = 0.2
+CODER_NUM_CTX           = 8192
+PATCH_NUM_CTX           = 16384   # fix P2: patch нуждается в большем окне
+PATCH_HEAVY_THRESHOLD   = 3000    # fix P2: файл больше — переключаемся на MODEL_HEAVY
 
 
 def _strip_code_fence(raw: str) -> str:
     """LLMs often wrap code in ```python ... ``` despite the instruction."""
     s = raw.strip()
     if s.startswith("```"):
-        # remove first fence line
         s = s.split("\n", 1)[1] if "\n" in s else s[3:]
     if s.endswith("```"):
         s = s.rsplit("```", 1)[0]
     return s.rstrip() + "\n"
 
 
-MAX_CTX_FILE_BYTES = 4000  # лимит на один соседний файл в контексте
-MAX_CTX_TOTAL_BYTES = 12000  # общий лимит на cross-file context
+MAX_CTX_FILE_BYTES  = 4000
+MAX_CTX_TOTAL_BYTES = 12000
 
 
 def _format_existing_files(existing: dict[str, str] | None, current_path: str) -> str:
@@ -70,8 +77,6 @@ def _build_user_message(spec: dict, plan: dict, target: dict, feedback: str,
         for f in (plan.get("files") or [])
     ) or "  (нет других файлов)"
 
-    # P9.10: выводим plan.inputs явным блоком, чтобы coder видел точные пути
-    # входных файлов и не придумывал имена вроде example.txt.
     inputs_block = ""
     plan_inputs = plan.get("inputs") or []
     if plan_inputs:
@@ -144,7 +149,7 @@ def write_file(
     code = _strip_code_fence(raw)
     if not code.strip():
         logger.warning(f"[coder] empty output for {target.get('path')} — stubbing")
-        return f"# AUTO-GENERATED STUB — empty LLM output\n"
+        return "# AUTO-GENERATED STUB — empty LLM output\n"
     return code
 
 
@@ -160,9 +165,24 @@ def patch_file(
 ) -> str:
     """
     Re-generate file content given current code + reviewer feedback.
-    For now, regeneration mode (LLM rewrites whole file). Diff-based patching
-    is a future iteration.
+    Regeneration mode: LLM rewrites whole file.
+    Diff-based patching is a future iteration.
+
+    fix P2: если current_code > PATCH_HEAVY_THRESHOLD байт —
+    автоматически переключаемся на MODEL_HEAVY (у него больший context window).
+    Каллер всё ещё может переопределить model= вручную.
+    num_ctx увеличен до PATCH_NUM_CTX=16384 чтобы вместить
+    текущий код + feedback + контекст проекта.
     """
+    # fix P2: автоматический downgrade на heavy для больших файлов
+    effective_model = model
+    if len(current_code) > PATCH_HEAVY_THRESHOLD and model == MODEL_FAST:
+        logger.info(
+            f"[coder.patch] {target.get('path')}: файл {len(current_code)} б > {PATCH_HEAVY_THRESHOLD} —"
+            f" переключаюсь на {MODEL_HEAVY}"
+        )
+        effective_model = MODEL_HEAVY
+
     user_msg = _build_user_message(spec, plan, target, feedback, existing)
     user_msg += (
         "\n\nТекущая версия файла (требует исправления):\n"
@@ -173,7 +193,10 @@ def patch_file(
         {"role": "user",   "content": user_msg},
     ]
     try:
-        raw = chat(model, msgs, options={"temperature": CODER_TEMPERATURE, "num_ctx": CODER_NUM_CTX})
+        raw = chat(
+            effective_model, msgs,
+            options={"temperature": CODER_TEMPERATURE, "num_ctx": PATCH_NUM_CTX},
+        )
     except Exception as e:
         logger.error(f"[coder.patch] LLM error: {e}")
         return current_code   # лучше не ломать рабочий файл
