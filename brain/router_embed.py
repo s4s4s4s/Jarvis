@@ -5,11 +5,16 @@ Embedding-роутер на sentence-transformers.
 Zagrużaetsja odin raz pri starte, zathem každyj zapros —
 cosine similarity za ~20-50 ms. Vozvrashhaet None esli
 neuvereno → LLM fallback v ask.py.
+
+fix #9: _load() защищён Lock + Double-Checked Locking,
+чтобы несколько потоков из ThreadPoolExecutor не загрузили
+SentenceTransformer одновременно (OOM-риск).
 """
 from __future__ import annotations
 
 import json
 import logging
+import threading
 from typing import Any
 
 import numpy as np
@@ -22,42 +27,48 @@ logger = logging.getLogger(__name__)
 _model = None
 _examples: list[dict] | None = None
 _example_vecs: np.ndarray | None = None
+_load_lock = threading.Lock()  # fix #9: гарантируем однократную загрузку
 
 
 def _load() -> None:
     global _model, _examples, _example_vecs
+    # Быстрая проверка без захвата лока (Double-Checked Locking)
     if _model is not None:
         return
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError:
-        logger.error("[router_embed] sentence-transformers not installed. Run: pip install sentence-transformers>=2.7.0")
-        return
-
-    if not ROUTE_EXAMPLES.exists():
-        logger.warning(f"[router_embed] {ROUTE_EXAMPLES} not found — embed router disabled")
-        return
-
-    raw_examples = []
-    for line in ROUTE_EXAMPLES.read_text("utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    with _load_lock:
+        # Повторная проверка внутри лока: первый поток уже загрузил, остальные пропускают
+        if _model is not None:
+            return
         try:
-            raw_examples.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            logger.error("[router_embed] sentence-transformers not installed. Run: pip install sentence-transformers>=2.7.0")
+            return
 
-    if not raw_examples:
-        logger.warning("[router_embed] route_examples.jsonl is empty")
-        return
+        if not ROUTE_EXAMPLES.exists():
+            logger.warning(f"[router_embed] {ROUTE_EXAMPLES} not found — embed router disabled")
+            return
 
-    logger.info(f"[router_embed] Loading model: {EMBED_MODEL_NAME}")
-    _model = SentenceTransformer(EMBED_MODEL_NAME)
-    _examples = raw_examples
-    texts = [e["text"] for e in _examples]
-    _example_vecs = _model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-    logger.info(f"[router_embed] Ready: {len(_examples)} examples loaded")
+        raw_examples = []
+        for line in ROUTE_EXAMPLES.read_text("utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                raw_examples.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+        if not raw_examples:
+            logger.warning("[router_embed] route_examples.jsonl is empty")
+            return
+
+        logger.info(f"[router_embed] Loading model: {EMBED_MODEL_NAME}")
+        _model = SentenceTransformer(EMBED_MODEL_NAME)
+        _examples = raw_examples
+        texts = [e["text"] for e in _examples]
+        _example_vecs = _model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+        logger.info(f"[router_embed] Ready: {len(_examples)} examples loaded")
 
 
 def route_embed(text: str) -> dict[str, Any] | None:
@@ -103,25 +114,26 @@ def route_embed(text: str) -> dict[str, Any] | None:
 def invalidate_cache() -> None:
     """Force reload of examples and vectors on next call (used by learning_loop)."""
     global _model, _examples, _example_vecs
-    _examples = None
-    _example_vecs = None
-    # Keep _model loaded — only reload examples/vectors, not the heavy model
-    if _model is not None and ROUTE_EXAMPLES.exists():
-        try:
-            raw_examples = []
-            for line in ROUTE_EXAMPLES.read_text("utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    raw_examples.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-            _examples = raw_examples
-            texts = [e["text"] for e in _examples]
-            _example_vecs = _model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-            logger.info(f"[router_embed] Cache refreshed: {len(_examples)} examples")
-        except Exception as e:
-            logger.error(f"[router_embed] Cache refresh error: {e}")
-            _examples = None
-            _example_vecs = None
+    with _load_lock:
+        _examples = None
+        _example_vecs = None
+        # Keep _model loaded — only reload examples/vectors, not the heavy model
+        if _model is not None and ROUTE_EXAMPLES.exists():
+            try:
+                raw_examples = []
+                for line in ROUTE_EXAMPLES.read_text("utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        raw_examples.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+                _examples = raw_examples
+                texts = [e["text"] for e in _examples]
+                _example_vecs = _model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+                logger.info(f"[router_embed] Cache refreshed: {len(_examples)} examples")
+            except Exception as e:
+                logger.error(f"[router_embed] Cache refresh error: {e}")
+                _examples = None
+                _example_vecs = None
