@@ -9,6 +9,10 @@ neuvereno → LLM fallback v ask.py.
 fix #9: _load() защищён Lock + Double-Checked Locking,
 чтобы несколько потоков из ThreadPoolExecutor не загрузили
 SentenceTransformer одновременно (OOM-риск).
+
+fix N6: route_embed теперь проверяет _example_vecs is not None перед
+@ (иначе TypeError после неудачного cache refresh, когда _examples != None,
+но _example_vecs == None).
 """
 from __future__ import annotations
 
@@ -78,6 +82,9 @@ def route_embed(text: str) -> dict[str, Any] | None:
     """
     if _model is None:
         _load()
+    # fix N6: явная проверка _example_vecs до @-умножения.
+    # Без этой проверки после неудачного cache refresh _examples может быть
+    # не-None, а _example_vecs == None, что вызывало TypeError при @ .
     if _model is None or _examples is None or _example_vecs is None:
         return None
 
@@ -131,9 +138,13 @@ def invalidate_cache() -> None:
                         continue
                 _examples = raw_examples
                 texts = [e["text"] for e in _examples]
-                _example_vecs = _model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+                # fix N6: _example_vecs обновляется атомарно: или оба значения,
+                # или оба None. Невозможно состояние _examples=data, _example_vecs=None.
+                new_vecs = _model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+                _example_vecs = new_vecs
                 logger.info(f"[router_embed] Cache refreshed: {len(_examples)} examples")
             except Exception as e:
                 logger.error(f"[router_embed] Cache refresh error: {e}")
+                # Сбрасываем оба, чтобы route_embed корректно вернул None
                 _examples = None
                 _example_vecs = None
