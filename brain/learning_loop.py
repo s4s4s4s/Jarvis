@@ -9,8 +9,9 @@
 4. auto-success с confidence ≥ 0.90 → добавляет без верификации
 5. Сбрасывает embed-кэш, архивирует обработанные записи
 
-fix #8: _load_examples() теперь вызывается под _lock, чтобы устранить
-race condition с _save_examples() при параллельных вызовах через ThreadPoolExecutor.
+fix N7/N1: весь цикл load→modify→save выполняется атомарно под _lock
+через _run_with_lock(). Устраняет race condition между run_learning_cycle()
+и remove_failed_example() при параллельных вызовах из ThreadPoolExecutor.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import json
 import logging
 import threading
 from datetime import datetime, timezone
+from typing import Callable
 
 from core.paths import ROUTE_EXAMPLES, LEARNING_REPORT
 
@@ -26,6 +28,47 @@ _lock = threading.Lock()
 
 AUTO_SUCCESS_THRESHOLD = 0.90  # confidence ниже этого → не добавляем
 
+
+# ─── атомарный helper ────────────────────────────────────────────────────────
+
+def _read_examples_locked() -> list[dict]:
+    """Читает route_examples.jsonl. Вызывается ТОЛЬКО внутри _lock."""
+    if not ROUTE_EXAMPLES.exists():
+        return []
+    result = []
+    for line in ROUTE_EXAMPLES.read_text("utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            result.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return result
+
+
+def _write_examples_locked(examples: list[dict]) -> None:
+    """Записывает route_examples.jsonl. Вызывается ТОЛЬКО внутри _lock."""
+    ROUTE_EXAMPLES.parent.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(e, ensure_ascii=False) for e in examples]
+    ROUTE_EXAMPLES.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _run_with_lock(fn: Callable[[list[dict]], list[dict]]) -> int:
+    """Атомарный цикл: читает примеры под локом, применяет fn, записывает.
+
+    fn получает список примеров, возвращает изменённый список.
+    Возвращает разницу длин (>0 добавлено, <0 удалено, 0 без изменений).
+    """
+    with _lock:
+        examples = _read_examples_locked()
+        before = len(examples)
+        examples = fn(examples)
+        _write_examples_locked(examples)
+        return len(examples) - before
+
+
+# ─── публичные функции ───────────────────────────────────────────────────────
 
 def run_learning_cycle() -> dict:
     """Full learning cycle. Returns stats dict."""
@@ -36,62 +79,67 @@ def run_learning_cycle() -> dict:
     verified_failure  = [r for r in records if r["outcome"] == "failure" and r["verified"]]
     auto_success      = [r for r in records if r["outcome"] == "success" and not r["verified"]]
 
-    examples = _load_examples()
-    existing_texts = {e["text"].lower() for e in examples}
-
-    added   = 0
-    removed = 0
-
-    # 1. Добавляем верифицированные успехи
-    for rec in verified_success:
-        text = rec["text"].strip()
-        if text.lower() in existing_texts:
-            continue
-        examples.append({
-            "text":      text,
-            "route":     rec["route"],
-            "tool":      rec["tool"],
-            "tool_args": {},
-            "filler":    "",
-            "_source":   "learned_success",
-            "_ts":       rec["ts"],
-        })
-        existing_texts.add(text.lower())
-        added += 1
-
-    # 2. Удаляем примеры, которые вели к failure
     failure_texts = {r["text"].lower() for r in verified_failure}
-    before_len = len(examples)
-    examples = [
-        e for e in examples
-        if not (
-            e["text"].lower() in failure_texts
-            and e.get("_source") in ("auto_success", "learned_success")
-        )
-    ]
-    removed = before_len - len(examples)
 
-    # 3. Добавляем auto-success с высокой confidence
-    auto_added = 0
-    for rec in auto_success:
-        if rec.get("confidence", 0) < AUTO_SUCCESS_THRESHOLD:
-            continue
-        text = rec["text"].strip()
-        if text.lower() in existing_texts:
-            continue
-        examples.append({
-            "text":      text,
-            "route":     rec["route"],
-            "tool":      rec["tool"],
-            "tool_args": {},
-            "filler":    "",
-            "_source":   "auto_success",
-            "_ts":       rec["ts"],
-        })
-        existing_texts.add(text.lower())
-        auto_added += 1
+    added_vs = 0
+    added_auto = 0
+    removed_n = 0
 
-    _save_examples(examples)
+    def _apply(examples: list[dict]) -> list[dict]:
+        nonlocal added_vs, added_auto, removed_n
+        existing_texts = {e["text"].lower() for e in examples}
+
+        # 1. Добавляем верифицированные успехи
+        for rec in verified_success:
+            text = rec["text"].strip()
+            if text.lower() in existing_texts:
+                continue
+            examples.append({
+                "text":      text,
+                "route":     rec["route"],
+                "tool":      rec["tool"],
+                "tool_args": {},
+                "filler":    "",
+                "_source":   "learned_success",
+                "_ts":       rec["ts"],
+            })
+            existing_texts.add(text.lower())
+            added_vs += 1
+
+        # 2. Удаляем примеры, которые вели к failure
+        before_len = len(examples)
+        examples = [
+            e for e in examples
+            if not (
+                e["text"].lower() in failure_texts
+                and e.get("_source") in ("auto_success", "learned_success")
+            )
+        ]
+        removed_n = before_len - len(examples)
+
+        # 3. Добавляем auto-success с высокой confidence
+        for rec in auto_success:
+            if rec.get("confidence", 0) < AUTO_SUCCESS_THRESHOLD:
+                continue
+            text = rec["text"].strip()
+            if text.lower() in existing_texts:
+                continue
+            examples.append({
+                "text":      text,
+                "route":     rec["route"],
+                "tool":      rec["tool"],
+                "tool_args": {},
+                "filler":    "",
+                "_source":   "auto_success",
+                "_ts":       rec["ts"],
+            })
+            existing_texts.add(text.lower())
+            added_auto += 1
+
+        return examples
+
+    _run_with_lock(_apply)
+
     _invalidate_embed_cache()
 
     # Архивируем обработанные (feedback.jsonl остаётся маленьким)
@@ -99,20 +147,27 @@ def run_learning_cycle() -> dict:
     if processed_ids:
         archive_processed(processed_ids)
 
+    # Читаем финальный счётчик без отдельного лока — достаточно точно для репорта
+    try:
+        with _lock:
+            total = len(_read_examples_locked())
+    except Exception:
+        total = -1
+
     report = {
         "ts":               datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "total_feedback":   len(records),
         "verified_success": len(verified_success),
         "verified_failure":  len(verified_failure),
-        "auto_success_added": auto_added,
-        "examples_added":   added + auto_added,
-        "examples_removed": removed,
-        "total_examples":   len(examples),
+        "auto_success_added": added_auto,
+        "examples_added":   added_vs + added_auto,
+        "examples_removed": removed_n,
+        "total_examples":   total,
     }
     _write_report(report)
     logger.info(
         f"[learning] Cycle done: +{report['examples_added']} added, "
-        f"-{removed} removed, total={len(examples)}"
+        f"-{removed_n} removed, total={total}"
     )
     return report
 
@@ -127,44 +182,35 @@ def remove_failed_example(record_id: str) -> None:
     rec = next((r for r in records if r["id"] == record_id), None)
     if not rec:
         return
-    examples = _load_examples()
     text_lower = rec["text"].lower()
-    before = len(examples)
-    examples = [
-        e for e in examples
-        if not (
-            e["text"].lower() == text_lower
-            and e.get("_source") in ("auto_success", "learned_success")
-        )
-    ]
-    if len(examples) < before:
-        _save_examples(examples)
+
+    def _apply(examples: list[dict]) -> list[dict]:
+        return [
+            e for e in examples
+            if not (
+                e["text"].lower() == text_lower
+                and e.get("_source") in ("auto_success", "learned_success")
+            )
+        ]
+
+    diff = _run_with_lock(_apply)
+    if diff < 0:
         _invalidate_embed_cache()
         logger.info(f"[learning] Removed failed example: '{rec['text'][:60]}'")
 
 
+# ─── legacy public API (для совместимости с router_embed.invalidate_cache) ──
+
 def _load_examples() -> list[dict]:
-    """fix #8: читаем целиком под _lock, чтобы синхронизироваться с _save_examples."""
+    """Публичный read под локом. Используется внешним кодом (тесты, отладка)."""
     with _lock:
-        if not ROUTE_EXAMPLES.exists():
-            return []
-        result = []
-        for line in ROUTE_EXAMPLES.read_text("utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                result.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        return result
+        return _read_examples_locked()
 
 
 def _save_examples(examples: list[dict]) -> None:
+    """Публичный write под локом. Используется внешним кодом (тесты)."""
     with _lock:
-        ROUTE_EXAMPLES.parent.mkdir(parents=True, exist_ok=True)
-        lines = [json.dumps(e, ensure_ascii=False) for e in examples]
-        ROUTE_EXAMPLES.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _write_examples_locked(examples)
 
 
 def _write_report(report: dict) -> None:
