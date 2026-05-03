@@ -40,6 +40,13 @@ TOOLS_DIR  = ROOT / "tools"
 # одновременно, что даёт частичное состояние / ImportError.
 _reload_lock = threading.Lock()
 
+# fix F4: отдельный лок на чтение/патч/запись tools/registry.py.
+# _reload_lock защищает только reload()+smoke-test, но не сам файл registry.py.
+# Без этого два параллельных extend могут одновременно прочитать одну и ту же
+# версию registry.py, каждый вставит свой wrapper/map_entry и последний write_text
+# затрёт изменения первого.
+_registry_patch_lock = threading.Lock()
+
 # ─── запрещённые паттерны ─────────────────────────────────────────────────────────────────────────────────────
 # fix #13: расширен список опасных паттернов
 # fix N4: добавлен паттерн на прямой импорт subprocess (блокирует использование алиаса:
@@ -60,7 +67,7 @@ _DANGEROUS_PATTERNS = [
     r"open\s*\([^)]*['\"]w['\"].*\.\.\.\.\.",
     r"socket\.connect",
     r"requests\.post.*password",
-    r"import\s+ctypes",
+    r"\bctypes\b",  # fix F5: блокируем любые формы ctypes (import / from / alias)
     r"winreg",
 ]
 
@@ -82,29 +89,22 @@ def _strip_comments_and_strings(code: str) -> str:
     - Убираем тройные строки (docstring)
     - Убираем однострочные строки в кавычках ("\'...\'" / '"..."')
     """
-    # Убираем тройные строки
     code = re.sub(r'\"\"\".*?\"\"\"', '', code, flags=re.DOTALL)
     code = re.sub(r"\'\'\'.+?\'\'\'", '', code, flags=re.DOTALL)
     result_lines = []
     for line in code.splitlines():
         stripped = line.strip()
-        # Пропускаем чистые строки-комментарии
         if stripped.startswith('#'):
             continue
-        # Убираем inline-комментарий в конце строки
-        # Простой способ: режем по первому '#' не внутри строки
-        # (полная реализация требует tokenizer, нам достаточно грубого варианта)
         no_comment = re.sub(r'(?<![\'\"])#.*$', '', line)
         result_lines.append(no_comment)
     return '\n'.join(result_lines)
 
 
 def _security_check(code: str) -> tuple[bool, str]:
-    # Паттерны на весь исходник (exec, eval, os.system и т.д.)
     for pat in _DANGEROUS_PATTERNS:
         if re.search(pat, code, re.IGNORECASE | re.DOTALL):
             return False, f"Обнаружен опасный паттерн: {pat}"
-    # fix SEC-1: subprocess и аналогичные паттерны — только в коде без комментариев
     code_only = _strip_comments_and_strings(code)
     for pat in _CODE_ONLY_PATTERNS:
         if re.search(pat, code_only, re.IGNORECASE | re.DOTALL):
@@ -119,8 +119,6 @@ def _ast_check(code: str) -> tuple[bool, str]:
     except SyntaxError as e:
         return False, f"Синтаксическая ошибка: {e}"
 
-
-# ─── smoke-тест с умными аргументами ──────────────────────────────────────────────────────────────
 
 def _build_smoke_kwargs(design: dict) -> dict:
     """
@@ -141,16 +139,13 @@ def _build_smoke_kwargs(design: dict) -> dict:
     kwargs: dict[str, object] = {}
     for param, type_hint in args_spec.items():
         t = str(type_hint).lower().strip()
-        # ищем первый подходящий префикс типа
         default = next(
             (v for k, v in _TYPE_DEFAULTS.items() if t.startswith(k)),
-            "test",  # fallback на строку
+            "test",
         )
         kwargs[param] = default
     return kwargs
 
-
-# ─── промпты ────────────────────────────────────────────────────────────────────────────────────────
 
 _DESIGN_SYSTEM = """Ты — Jarvis, архитектор инструментов. Пользователь хочет добавить новый инструмент.
 Уже есть: {existing_tools}
@@ -202,14 +197,12 @@ Dобавь:
 """
 
 
-# ─── логирование ────────────────────────────────────────────────────────────────────────────────────────────
-
 def _log_result(tool_name: str, status: str, detail: str, query: str) -> None:
     EXTEND_LOG.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "ts":        datetime.now().isoformat(timespec="seconds"),
         "tool_name": tool_name,
-        "status":    status,   # created | failed | smoke_fail | security_fail
+        "status":    status,
         "detail":    detail,
         "query":     query[:200],
     }
@@ -217,78 +210,76 @@ def _log_result(tool_name: str, status: str, detail: str, query: str) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-# ─── патч registry.py ────────────────────────────────────────────────────────────────────────────────────
-
 def _patch_registry(tool_name: str, filename: str, entry_fn: str) -> tuple[bool, str]:
     """
     Добавляет импорт + wrapper + запись в _TOOL_MAP.
     Патч напрямую в файл, без LLM — детерминированный формат.
+
+    fix F4: read→modify→write для registry.py выполняется под _registry_patch_lock.
+    Это устраняет lost update при двух параллельных extend-запросах.
     """
     registry_path = ROOT / "tools" / "registry.py"
-    try:
-        src = registry_path.read_text(encoding="utf-8")
-    except Exception as e:
-        return False, f"Не удалось прочитать registry.py: {e}"
+    with _registry_patch_lock:
+        try:
+            src = registry_path.read_text(encoding="utf-8")
+        except Exception as e:
+            return False, f"Не удалось прочитать registry.py: {e}"
 
-    # имя модуля: tools/my_tool.py → my_tool
-    module = Path(filename).stem
-    snake  = tool_name.replace(".", "_").replace("-", "_")
-    import_line  = f"from tools.{module} import {entry_fn}"
-    wrapper_name = f"_call_{snake}"
-    wrapper_code = (
-        f"\ndef {wrapper_name}(**kwargs):\n"
-        f"    return {entry_fn}(**kwargs)\n"
-    )
-    map_line = f'    "{tool_name}": {wrapper_name},'
-
-    # не дублируем
-    if import_line in src:
-        return True, "уже зарегистрирован"
-
-    import_anchors = [
-        "# ── memory",
-        "from tools.memory import",
-        "@dataclass",
-    ]
-    placed_import = False
-    for anchor in import_anchors:
-        if anchor in src:
-            src = src.replace(anchor, f"{import_line}\n{anchor}", 1)
-            placed_import = True
-            break
-    if not placed_import:
-        lines = src.splitlines(keepends=True)
-        last_import_idx = 0
-        for i, line in enumerate(lines):
-            if line.startswith("from ") or line.startswith("import "):
-                last_import_idx = i
-        lines.insert(last_import_idx + 1, import_line + "\n")
-        src = "".join(lines)
-
-    map_anchor = "\n_TOOL_MAP:"
-    if map_anchor in src:
-        src = src.replace(map_anchor, wrapper_code + map_anchor, 1)
-    else:
-        src = src.replace("_TOOL_MAP: dict", wrapper_code + "_TOOL_MAP: dict", 1)
-
-    closing = "\n}\n\n\ndef list_tools"
-    if closing in src:
-        src = src.replace(closing, f"\n{map_line}{closing}", 1)
-    else:
-        src = re.sub(
-            r'(\n\}\s*\n+def list_tools)',
-            f"\n{map_line}\n" + r"\1",
-            src, count=1
+        module = Path(filename).stem
+        snake  = tool_name.replace(".", "_").replace("-", "_")
+        import_line  = f"from tools.{module} import {entry_fn}"
+        wrapper_name = f"_call_{snake}"
+        wrapper_code = (
+            f"\ndef {wrapper_name}(**kwargs):\n"
+            f"    return {entry_fn}(**kwargs)\n"
         )
+        map_line = f'    "{tool_name}": {wrapper_name},'
 
-    try:
-        registry_path.write_text(src, encoding="utf-8")
-        return True, ""
-    except Exception as e:
-        return False, f"Не удалось записать registry.py: {e}"
+        if import_line in src:
+            return True, "уже зарегистрирован"
 
+        import_anchors = [
+            "# ── memory",
+            "from tools.memory import",
+            "@dataclass",
+        ]
+        placed_import = False
+        for anchor in import_anchors:
+            if anchor in src:
+                src = src.replace(anchor, f"{import_line}\n{anchor}", 1)
+                placed_import = True
+                break
+        if not placed_import:
+            lines = src.splitlines(keepends=True)
+            last_import_idx = 0
+            for i, line in enumerate(lines):
+                if line.startswith("from ") or line.startswith("import "):
+                    last_import_idx = i
+            lines.insert(last_import_idx + 1, import_line + "\n")
+            src = "".join(lines)
 
-# ─── основной run ────────────────────────────────────────────────────────────────────────────────────
+        map_anchor = "\n_TOOL_MAP:"
+        if map_anchor in src:
+            src = src.replace(map_anchor, wrapper_code + map_anchor, 1)
+        else:
+            src = src.replace("_TOOL_MAP: dict", wrapper_code + "_TOOL_MAP: dict", 1)
+
+        closing = "\n}\n\n\ndef list_tools"
+        if closing in src:
+            src = src.replace(closing, f"\n{map_line}{closing}", 1)
+        else:
+            src = re.sub(
+                r'(\n\}\s*\n+def list_tools)',
+                f"\n{map_line}\n" + r"\1",
+                src, count=1
+            )
+
+        try:
+            registry_path.write_text(src, encoding="utf-8")
+            return True, ""
+        except Exception as e:
+            return False, f"Не удалось записать registry.py: {e}"
+
 
 def run(query: str, history: list[dict]) -> str:
     """
@@ -299,7 +290,6 @@ def run(query: str, history: list[dict]) -> str:
     logger.info(f"[self_extend] запрос: {query[:80]}")
     existing = list_tools()
 
-    # ── Шаг 1: дизайн инструмента ──
     try:
         raw = chat(
             MODEL_HEAVY,
@@ -336,7 +326,6 @@ def run(query: str, history: list[dict]) -> str:
         _log_result(tool_name, "failed", msg, query)
         return f"Сэр, {msg}"
 
-    # защита от path traversal
     safe_filename = Path(filename).name
     norm_filename = filename.replace("\\", "/")
     inner_path = norm_filename.removeprefix("tools/")
@@ -345,7 +334,6 @@ def run(query: str, history: list[dict]) -> str:
         _log_result(tool_name, "security_fail", msg, query)
         return f"Сэр, {msg}"
 
-    # ── Шаг 2: генерация кода ──
     try:
         code_raw = chat(
             MODEL_HEAVY,
@@ -368,7 +356,6 @@ def run(query: str, history: list[dict]) -> str:
         _log_result(tool_name, "failed", msg, query)
         return f"Сэр, {msg}"
 
-    # ── Шаг 3: security + AST ──
     sec_ok, sec_msg = _security_check(code)
     if not sec_ok:
         _log_result(tool_name, "security_fail", sec_msg, query)
@@ -379,7 +366,6 @@ def run(query: str, history: list[dict]) -> str:
         _log_result(tool_name, "failed", ast_msg, query)
         return f"Сэр, код содержит синтаксические ошибки: {ast_msg}"
 
-    # ── Шаг 4: запись файла ──
     target_path = TOOLS_DIR / safe_filename
     if target_path.exists():
         msg = f"Файл {safe_filename} уже существует, не перезаписываю."
@@ -393,18 +379,12 @@ def run(query: str, history: list[dict]) -> str:
         _log_result(tool_name, "failed", msg, query)
         return f"Сэр, {msg}"
 
-    # ── Шаг 5: патч registry ──
     reg_ok, reg_msg = _patch_registry(tool_name, safe_filename, entry_fn)
     if not reg_ok:
-        target_path.unlink(missing_ok=True)  # откатываем
+        target_path.unlink(missing_ok=True)
         _log_result(tool_name, "failed", reg_msg, query)
         return f"Сэр, файл создан, но регистрация не удалась: {reg_msg}"
 
-    # ── Шаг 6: smoke-тест ──
-    # fix N3: используем тестовые kwargs из design, чтобы не получать
-    # ложный smoke_fail при обязательных параметрах.
-    # fix BUG-3: importlib.reload + call_tool защищены _reload_lock,
-    # чтобы два параллельных extend не перезагружали registry одновременно.
     try:
         with _reload_lock:
             import tools.registry as _reg_mod
