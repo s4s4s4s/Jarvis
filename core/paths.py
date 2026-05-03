@@ -1,8 +1,12 @@
 import os
 from pathlib import Path
 
-# ROOT можно переопределить через переменную среды JARVIS_ROOT
-ROOT         = Path(os.environ.get("JARVIS_ROOT", r"C:\jarvis"))
+# fix #15: ROOT определяется относительно этого файла как fallback,
+# а не захардкоженным C:\jarvis. Если JARVIS_ROOT выставлен — используем его.
+# Иначе берём два уровня вверх от core/paths.py (т.е. корень репозитория).
+_default_root = Path(__file__).resolve().parent.parent
+ROOT         = Path(os.environ.get("JARVIS_ROOT", str(_default_root)))
+
 LOGS_DIR     = ROOT / "logs"
 ROUTER_LOG   = LOGS_DIR / "router.jsonl"
 MEMORY_PATH  = ROOT / "data" / "memory.json"   # legacy flat-JSON (migration source)

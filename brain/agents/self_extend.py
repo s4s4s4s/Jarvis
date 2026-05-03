@@ -35,6 +35,10 @@ EXTEND_LOG = LOGS_DIR / "self_extend.jsonl"
 TOOLS_DIR  = ROOT / "tools"
 
 # ─── запрещённые паттерны ─────────────────────────────────────────────────────────────────────
+# fix #13: расширен список опасных паттернов:
+#   - os.unlink / pathlib unlink / Path(...).unlink — способы удаления файлов помимо os.remove
+#   - glob + цикл с remove/unlink — массовые удаления через итерацию
+#   - shutil.rmtree уже был, оставляем
 _DANGEROUS_PATTERNS = [
     r"\bexec\s*\(",
     r"\beval\s*\(",
@@ -43,8 +47,11 @@ _DANGEROUS_PATTERNS = [
     r"os\.system",
     r"os\.popen",
     r"shutil\.rmtree",
-    r"os\.remove.*\*",
-    r"open\s*\([^)]*['\"]в['\"].*\.\.\.",   # запись в произвольные пути
+    r"os\.remove",          # fix #13: ловим os.remove в любом контексте (не только с *)
+    r"os\.unlink",          # fix #13: os.unlink — прямое удаление файла
+    r"\.unlink\s*\(",       # fix #13: pathlib Path.unlink() / любой объект .unlink()
+    r"\bglob\b.*for.*\b(remove|unlink|rmtree)\b",  # fix #13: glob-цикл с удалением
+    r"open\s*\([^)]*['\"]w['\"].*\.\.\.\.",   # запись в произвольные пути (оригинал был с в-кириллицей, исправлен на w)
     r"socket\.connect",
     r"requests\.post.*password",
     r"import\s+ctypes",
@@ -54,7 +61,7 @@ _DANGEROUS_PATTERNS = [
 
 def _security_check(code: str) -> tuple[bool, str]:
     for pat in _DANGEROUS_PATTERNS:
-        if re.search(pat, code, re.IGNORECASE):
+        if re.search(pat, code, re.IGNORECASE | re.DOTALL):
             return False, f"Обнаружен опасный паттерн: {pat}"
     return True, ""
 
@@ -95,7 +102,7 @@ _CODE_SYSTEM = """Ты — Jarvis, пишешь Python инструмент дл
 Требования:
 - Только stdlib + зависимости уже есть в проекте или описанные в задаче
 - Функция возвращает str или dict, никогда не падает без try/except
-- Не использовать: exec, eval, subprocess, os.system, shutil.rmtree
+- Не использовать: exec, eval, subprocess, os.system, shutil.rmtree, os.remove, os.unlink
 - Docstring на русском одной строкой
 - Верни ТОЛЬКО код (без markdown, без пояснений)
 

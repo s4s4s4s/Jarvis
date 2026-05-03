@@ -58,11 +58,19 @@ def chat(model: str, messages: list[dict], options: dict | None = None) -> str:
     fix #1: перестал возвращать "" — вместо этого бросает LLMError, чтобы
     вызывающие код (project.py, planner.py, self_extend.py) могли войти в except
     и вернуть понятный fallback вместо создания пустых файлов.
+
+    fix #10: MODEL_INTAKE, MODEL_README, MODEL_REPORT добавлены в heavy_models,
+    чтобы получать OLLAMA_HEAVY_TIMEOUT вместо короткого OLLAMA_TIMEOUT.
+    Эти модели используются в длинных фазах _intake/_architect/_healer/_readme/_report.
     """
     opts = options or {"temperature": 0.2, "num_ctx": 8192}
-    # Тяжёлые модели (всё что равно MODEL_HEAVY или ролевые 32b/14b coder)
-    # получают большой timeout. Остальные — fast.
-    heavy_models = {MODEL_HEAVY, MODEL_CODER, MODEL_REVIEWER, MODEL_ARCHITECT, MODEL_HEALER}
+    # fix #10: расширен набор тяжёлых моделей — все ролевые алиасы проекта
+    # получают большой timeout, чтобы не падать при медленном ollama.
+    heavy_models = {
+        MODEL_HEAVY,
+        MODEL_CODER, MODEL_REVIEWER, MODEL_ARCHITECT, MODEL_HEALER,
+        MODEL_INTAKE, MODEL_README, MODEL_REPORT,  # раньше получали короткий OLLAMA_TIMEOUT
+    }
     client = _client_heavy if model in heavy_models else _client
     last_err: Exception | None = None
     for attempt in range(OLLAMA_RETRIES + 1):

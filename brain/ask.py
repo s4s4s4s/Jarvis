@@ -3,6 +3,7 @@ from __future__ import annotations
 import atexit
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -16,6 +17,10 @@ from brain.router_embed import route_embed
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jarvis-ask")
 atexit.register(lambda: _executor.shutdown(wait=False, cancel_futures=True))
+
+# fix #14: лок для hist.append — предотвращает race condition при параллельных
+# запросах из ThreadPoolExecutor, которые записывают ответы не по порядку.
+_hist_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +181,11 @@ def ask_llm(text: str) -> AskResult:
         t0 = time.monotonic()
         answer, tool_ok = _dispatch(route_data, text, history)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
-        hist.append("assistant", answer)
+
+        # fix #14: hist.append под локом — предотвращаем race condition при
+        # параллельных запросах, которые могут записать ответы не по порядку.
+        with _hist_lock:
+            hist.append("assistant", answer)
 
         try:
             from brain.implicit_eval import evaluate as implicit_eval
