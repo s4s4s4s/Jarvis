@@ -44,7 +44,7 @@ _DANGEROUS_PATTERNS = [
     r"os\.popen",
     r"shutil\.rmtree",
     r"os\.remove.*\*",
-    r"open\s*\([^)]*['\"]w['\"].*\.\.\.",   # запись в произвольные пути
+    r"open\s*\([^)]*['\"]в['\"].*\.\.\.",   # запись в произвольные пути
     r"socket\.connect",
     r"requests\.post.*password",
     r"import\s+ctypes",
@@ -119,7 +119,7 @@ Dобавь:
 """
 
 
-# ─── логирование ───────────────────────────────────────────────────────────────────────────────────────
+# ─── логирование ────────────────────────────────────────────────────────────────────────────────────────
 
 def _log_result(tool_name: str, status: str, detail: str, query: str) -> None:
     EXTEND_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -134,12 +134,15 @@ def _log_result(tool_name: str, status: str, detail: str, query: str) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-# ─── патч registry.py ─────────────────────────────────────────────────────────────────────────────────
+# ─── патч registry.py ──────────────────────────────────────────────────────────────────────────────────
 
 def _patch_registry(tool_name: str, filename: str, entry_fn: str) -> tuple[bool, str]:
     """
     Добавляет импорт + wrapper + запись в _TOOL_MAP.
     Патч напрямую в файл, без LLM — детерминированный формат.
+
+    fix #3: порядок анкоров проверяется в порядке приоритета (realia реальных anchor-ов в файле).
+    fix #7: заменен некорректный lstrip(«tools/») на removeprefix(«tools/»).
     """
     registry_path = ROOT / "tools" / "registry.py"
     try:
@@ -162,21 +165,28 @@ def _patch_registry(tool_name: str, filename: str, entry_fn: str) -> tuple[bool,
     if import_line in src:
         return True, "уже зарегистрирован"
 
-    # вставляем import после блока "# ── memory"
-    import_anchor = "# ── memory"
-    if import_anchor in src:
-        src = src.replace(
-            import_anchor,
-            f"{import_line}\n{import_anchor}",
-            1,
-        )
-    else:
-        # fallback: добавляем после блока from tools.memory
-        src = src.replace(
-            "from tools.memory import",
-            f"{import_line}\nfrom tools.memory import",
-            1,
-        )
+    # вставляем import перед блоком "# ── memory"
+    # fix #3: проверяем несколько анкоров в порядке реального файла
+    import_anchors = [
+        "# ── memory",       # если есть секция памяти
+        "from tools.memory import",  # первая строка блока memory (fix #3)
+        "@dataclass",        # fallback: вставляем до первого dataclass
+    ]
+    placed_import = False
+    for anchor in import_anchors:
+        if anchor in src:
+            src = src.replace(anchor, f"{import_line}\n{anchor}", 1)
+            placed_import = True
+            break
+    if not placed_import:
+        # ультра-fallback: добавляем после последнего import-блока
+        lines = src.splitlines(keepends=True)
+        last_import_idx = 0
+        for i, line in enumerate(lines):
+            if line.startswith("from ") or line.startswith("import "):
+                last_import_idx = i
+        lines.insert(last_import_idx + 1, import_line + "\n")
+        src = "".join(lines)
 
     # вставляем wrapper перед _TOOL_MAP
     map_anchor = "\n_TOOL_MAP:"
@@ -190,7 +200,6 @@ def _patch_registry(tool_name: str, filename: str, entry_fn: str) -> tuple[bool,
     if closing in src:
         src = src.replace(closing, f"\n{map_line}{closing}", 1)
     else:
-        # альтернативная закрывающая
         src = re.sub(
             r'(\n\}\s*\n+def list_tools)',
             f"\n{map_line}\n" + r"\1",
@@ -204,7 +213,7 @@ def _patch_registry(tool_name: str, filename: str, entry_fn: str) -> tuple[bool,
         return False, f"Не удалось записать registry.py: {e}"
 
 
-# ─── основной run ──────────────────────────────────────────────────────────────────────────────────────
+# ─── основной run ────────────────────────────────────────────────────────────────────────────────────
 
 def run(query: str, history: list[dict]) -> str:
     """
@@ -226,6 +235,8 @@ def run(query: str, history: list[dict]) -> str:
             ],
             options={"temperature": 0.1, "num_ctx": 8192},
         )
+        if not raw:
+            raise ValueError("пустой ответ LLM")
         raw = re.sub(r'^```[a-zA-Z]*\n?', '', raw.strip())
         raw = re.sub(r'\n?```$', '', raw).strip()
         design = json.loads(raw)
@@ -251,8 +262,11 @@ def run(query: str, history: list[dict]) -> str:
         return f"Сэр, {msg}"
 
     # защита от path traversal
+    # fix #7: заменен некорректный lstrip("tools/") на removeprefix("tools/")
     safe_filename = Path(filename).name
-    if not safe_filename.endswith(".py") or "/" in filename.replace("\\", "/").lstrip("tools/"):
+    norm_filename = filename.replace("\\", "/")
+    inner_path = norm_filename.removeprefix("tools/")
+    if not safe_filename.endswith(".py") or "/" in inner_path:
         msg = f"Недопустимый путь файла: {filename}"
         _log_result(tool_name, "security_fail", msg, query)
         return f"Сэр, {msg}"
@@ -271,6 +285,8 @@ def run(query: str, history: list[dict]) -> str:
             ],
             options={"temperature": 0.05, "num_ctx": 8192},
         )
+        if not code_raw:
+            raise ValueError("пустой ответ LLM")
         code = re.sub(r'^```[a-zA-Z]*\n?', '', code_raw.strip())
         code = re.sub(r'\n?```$', '', code).strip()
     except Exception as e:
@@ -312,7 +328,6 @@ def run(query: str, history: list[dict]) -> str:
 
     # ── Шаг 6: smoke-тест ──
     try:
-        # перезагружаем registry чтобы подхватить патч
         import tools.registry as _reg_mod
         importlib.reload(_reg_mod)
         from tools.registry import call_tool as _ct
