@@ -146,9 +146,12 @@ def estimate_complexity(query: str, spec: dict | None = None, plan: dict | None 
     return "S"
 
 
-def budget_for_tier(tier: str) -> dict:
-    """Параметры бюджета для тира. Дефолт — M."""
-    return BUDGET_TIERS.get(tier, BUDGET_TIERS["M"])
+def budget_for_tier(tier: str | None) -> dict:
+    """Параметры бюджета для тира. Дефолт — M.
+    S-2 fix: принимает None явно — estimate_complexity гарантирует str,
+    но budget_for_tier мог получить None из внешнего кода.
+    """
+    return BUDGET_TIERS.get(tier or "M", BUDGET_TIERS["M"])
 
 
 # ─── budget tracking ────────────────────────────────────────────────────────
@@ -287,7 +290,8 @@ def _normalize_intake_spec(spec: dict, query: str) -> dict:
     is_echo = (
         len(reqs) == 1
         and q_norm
-        and reqs[0].lower().startswith(q_norm[: min(40, len(q_norm))])
+        # S-1 fix: strip пробелов/точек перед сравнением — LLM иногда добавляет пробел или точку в начало
+        and reqs[0].lower().strip(" .").startswith(q_norm.strip(" .")[: min(40, len(q_norm.strip(" .")))]) 
     )
     # P6.1: если эхо — разбиваем примитивно по знакам препинания. Не заменяет LLM,
     # но хотя бы даёт архитектору отдельные куски вместо одной слипшейся строки.
@@ -1461,9 +1465,10 @@ def _enforce_plan_validity(
             new_plan = _safe_parse(raw)
             if isinstance(new_plan, dict) and (new_plan.get("files") or []):
                 new_plan["files"] = (new_plan.get("files") or [])[:MAX_FILES]
-                new_plan.setdefault("build_steps", plan.get("build_steps", []))
-                new_plan.setdefault("tests", plan.get("tests", []))
-                new_plan.setdefault("inputs", plan.get("inputs", []))
+                # S-7 fix: setdefault не перезаписывает пустые списки [] от LLM
+                for _field in ("build_steps", "tests", "inputs"):
+                    if not new_plan.get(_field):
+                        new_plan[_field] = plan.get(_field) or []
                 plan = new_plan
                 plan = _autofill_exports_from_tests(plan)
         except Exception as e:
@@ -2069,7 +2074,9 @@ def _run_one_test(slug: str, t: dict) -> dict:
         # rc уже отдельная проверка только если её попросили; если её нет — 
         # требуем rc=0 неявно как минимальный sanity-check.
         has_rc_check = any(c.get("type") == "rc_zero" for c in check_results)
-        rc_implicit_ok = True if has_rc_check else (res.get("returncode") == 0)
+        # S-5 fix: если runner вернул ok=False (FileNotFoundError, venv отсутствует) — rc_implicit_ok тоже False
+        runner_ok = bool(res.get("ok", True))
+        rc_implicit_ok = runner_ok and (True if has_rc_check else (res.get("returncode") == 0))
         overall_ok = checks_ok and rc_implicit_ok
         legacy_expects = ""
         legacy_expects_ok = True
@@ -2144,7 +2151,8 @@ def _filter_invalid_checks(plan: dict, spec: dict | None) -> tuple[dict, list[di
         # Иначе _run_one_test уходит в legacy-путь (expects), который не защищён.
         if not new_checks and t.get("checks"):
             new_checks = [{"type": "rc_zero"}]
-            removed.append({"check": {"type": "__all_removed__"}, "reason": "rc_zero_fallback_added"})
+            # S-3 fix: это добавление fallback, не удаление — не записываем в removed,
+            # чтобы лог 'removed N invalid check(s)' не вводил в заблуждение.
         new_t["checks"] = new_checks
         new_tests.append(new_t)
     new_plan["tests"] = new_tests
@@ -2835,10 +2843,26 @@ def _heal_via_aider(slug: str, plan: dict, failed: dict, spec: dict | None = Non
         _ro_files, _ = _build_neighbor_context(pdir, plan, target)
         res = aider_runner.aider_heal(pdir, target, error_text, test_command=test_command,
                                       read_only_files=_ro_files or None)
+        heal_ok = bool(res.ok)
+        heal_error = res.error if not res.ok else ""
+        # S-6 fix: проверяем статику после heal — aider может вернуть ok=True с битым файлом
+        if heal_ok:
+            try:
+                _static = static_check(str(pdir / target))
+                _static_errors = _static.get("errors") or []
+                if _static_errors:
+                    heal_ok = False
+                    heal_error = (
+                        "aider heal ok but static errors: "
+                        + "; ".join(e.get("message", str(e)) for e in _static_errors[:3])
+                    )
+                    logger.warning(f"[heal.static] {target}: {heal_error}")
+            except Exception:
+                pass
         return {
-            "ok":         bool(res.ok),
+            "ok":         heal_ok,
             "target":     target,
-            "error":      res.error if not res.ok else "",
+            "error":      heal_error,
             "duration_s": res.duration_s,
             "attempts":   res.attempts,
         }
@@ -2940,6 +2964,16 @@ def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budg
                                       f"aider no-op: {_ah_target} unchanged (P11.7 FIX-2)")
                             continue
                         _pre_hashes[_ah_target] = _hash_after
+                    except Exception:
+                        pass
+                    # S-4 fix: обновляем хеши ВСЕХ файлов после heal —
+                    # иначе следующая итерация может ложно считать чужой файл «не изменился»
+                    try:
+                        for _sfp in file_paths:
+                            if _sfp == _ah_target:
+                                continue
+                            _sc = read_project_file(slug, _sfp)
+                            _pre_hashes[_sfp] = hashlib.md5(_sc.encode('utf-8', errors='replace')).hexdigest()
                     except Exception:
                         pass
                 if _changed:
