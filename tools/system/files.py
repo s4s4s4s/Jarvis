@@ -14,14 +14,44 @@ from pathlib import Path
 _USER_HOME = Path.home()
 _MAX_READ_BYTES = 100_000  # 100 KB — защита от огромных файлов
 
+# fix BUG-2: список разрешённых корневых директорий.
+# Все пути через _safe_path() ОБЯЗАНЫ начинаться с одного из этих корней.
+# На Windows добавляем корни всех дисков (C:\, D:\, ...) чтобы не ломать
+# абсолютные пути, при этом block /etc, /proc и прочие Unix-пути.
+def _build_allowed_roots() -> list[Path]:
+    roots = [_USER_HOME.resolve()]
+    # На Windows добавляем все доступные диски
+    if os.name == "nt":
+        import string
+        for letter in string.ascii_uppercase:
+            drive = Path(f"{letter}:\\")
+            if drive.exists():
+                roots.append(drive.resolve())
+    else:
+        # На Unix разрешаем только home
+        pass
+    return roots
+
+_ALLOWED_ROOTS: list[Path] = _build_allowed_roots()
+
 
 def _safe_path(raw: str) -> Path:
     """
     Резолвит путь относительно home или абсолютный.
-    Запрещает выход за пределы диска C: / home.
+    fix BUG-2: теперь реально запрещает выход за пределы разрешённых корней.
+    Бросает PermissionError если путь за пределами _ALLOWED_ROOTS.
     """
     p = Path(raw).expanduser().resolve()
-    return p
+    p_str = str(p)
+    for root in _ALLOWED_ROOTS:
+        root_str = str(root)
+        # Проверяем что p начинается с root (с учётом разделителя)
+        if p_str == root_str or p_str.startswith(root_str + os.sep):
+            return p
+    raise PermissionError(
+        f"Путь вне разрешённой зоны: {p}. "
+        f"Разрешены только пути внутри: {[str(r) for r in _ALLOWED_ROOTS]}"
+    )
 
 
 def read_file(path: str, encoding: str = "utf-8") -> dict:
