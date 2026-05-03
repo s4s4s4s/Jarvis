@@ -22,6 +22,7 @@ import json
 import logging
 import re
 import textwrap
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -34,16 +35,21 @@ logger = logging.getLogger(__name__)
 EXTEND_LOG = LOGS_DIR / "self_extend.jsonl"
 TOOLS_DIR  = ROOT / "tools"
 
+# fix BUG-3: лок для защиты importlib.reload + call_tool в smoke-тесте.
+# Без него два параллельных вызова extend могут перезагружать registry
+# одновременно, что даёт частичное состояние / ImportError.
+_reload_lock = threading.Lock()
+
 # ─── запрещённые паттерны ─────────────────────────────────────────────────────────────────────────────────────
 # fix #13: расширен список опасных паттернов
 # fix N4: добавлен паттерн на прямой импорт subprocess (блокирует использование алиаса:
 #   import subprocess as sp; sp.run(...) — обход через слово "subprocess" в паттерне)
+# fix SEC-1: subprocess проверяется только в строках кода (не в комментариях/docstring)
+#            через _security_check_subprocess, остальные паттерны — как раньше.
 _DANGEROUS_PATTERNS = [
     r"\bexec\s*\(",
     r"\beval\s*\(",
     r"__import__",
-    r"\bsubprocess\b",         # fix N4: ловим любое вхождение слова subprocess,
-                               #          включая import subprocess, import subprocess as sp
     r"os\.system",
     r"os\.popen",
     r"shutil\.rmtree",
@@ -58,11 +64,51 @@ _DANGEROUS_PATTERNS = [
     r"winreg",
 ]
 
+# fix SEC-1: паттерны, которые проверяются только по строкам кода (без комментариев и строк-docstring).
+# subprocess сюда вынесен отдельно, чтобы не ловить '# uses subprocess' в docstring.
+_CODE_ONLY_PATTERNS = [
+    r"\bsubprocess\b",  # fix N4 + SEC-1: любое использование subprocess в коде
+]
+
+
+def _strip_comments_and_strings(code: str) -> str:
+    """Убирает однострочные комментарии и простые строковые литералы.
+
+    Используется для проверки _CODE_ONLY_PATTERNS: нам важно что паттерн
+    встречается именно в исполняемом коде, а не в комментарии или docstring.
+
+    Не использует AST (работает до ast.parse), поэтому простая эвристика:
+    - Убираем строки, начинающиеся с # (после strip)
+    - Убираем тройные строки (docstring)
+    - Убираем однострочные строки в кавычках ("\'...\'" / '"..."')
+    """
+    # Убираем тройные строки
+    code = re.sub(r'\"\"\".*?\"\"\"', '', code, flags=re.DOTALL)
+    code = re.sub(r"\'\'\'.+?\'\'\'", '', code, flags=re.DOTALL)
+    result_lines = []
+    for line in code.splitlines():
+        stripped = line.strip()
+        # Пропускаем чистые строки-комментарии
+        if stripped.startswith('#'):
+            continue
+        # Убираем inline-комментарий в конце строки
+        # Простой способ: режем по первому '#' не внутри строки
+        # (полная реализация требует tokenizer, нам достаточно грубого варианта)
+        no_comment = re.sub(r'(?<![\'\"])#.*$', '', line)
+        result_lines.append(no_comment)
+    return '\n'.join(result_lines)
+
 
 def _security_check(code: str) -> tuple[bool, str]:
+    # Паттерны на весь исходник (exec, eval, os.system и т.д.)
     for pat in _DANGEROUS_PATTERNS:
         if re.search(pat, code, re.IGNORECASE | re.DOTALL):
             return False, f"Обнаружен опасный паттерн: {pat}"
+    # fix SEC-1: subprocess и аналогичные паттерны — только в коде без комментариев
+    code_only = _strip_comments_and_strings(code)
+    for pat in _CODE_ONLY_PATTERNS:
+        if re.search(pat, code_only, re.IGNORECASE | re.DOTALL):
+            return False, f"Обнаружен опасный паттерн в коде: {pat}"
     return True, ""
 
 
@@ -357,10 +403,13 @@ def run(query: str, history: list[dict]) -> str:
     # ── Шаг 6: smoke-тест ──
     # fix N3: используем тестовые kwargs из design, чтобы не получать
     # ложный smoke_fail при обязательных параметрах.
+    # fix BUG-3: importlib.reload + call_tool защищены _reload_lock,
+    # чтобы два параллельных extend не перезагружали registry одновременно.
     try:
-        import tools.registry as _reg_mod
-        importlib.reload(_reg_mod)
-        from tools.registry import call_tool as _ct
+        with _reload_lock:
+            import tools.registry as _reg_mod
+            importlib.reload(_reg_mod)
+            from tools.registry import call_tool as _ct
         smoke_kwargs = _build_smoke_kwargs(design)
         smoke = _ct(tool_name, smoke_kwargs)
         smoke_ok = True
