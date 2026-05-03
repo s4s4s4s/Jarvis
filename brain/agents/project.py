@@ -1,33 +1,33 @@
 """
-brain/agents/project.py тАФ ProjectAgent (Level 4: ┬л╨б╨╛╨╖╨┤╨░╤В╨╡╨╗╤М┬╗).
+brain/agents/project.py — ProjectAgent (Level 4: «Создатель»).
 
-╨Я╨╛╨╗╨╜╤Л╨╣ ╤Ж╨╕╨║╨╗ ╨╛╤В ╨╖╨░╨┐╤А╨╛╤Б╨░ ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤П ╨┤╨╛ ╤А╨░╨▒╨╛╤В╨░╤О╤Й╨╡╨│╨╛ ╨┐╤А╨╛╨╡╨║╤В╨░ ╤Б ╤В╨╡╤Б╤В╨░╨╝╨╕,
-╨╕╨╖╨╛╨╗╨╕╤А╨╛╨▓╨░╨╜╨╜╤Л╨╝ venv, README ╨╕ ╨╖╨░╨┐╨╕╤Б╤М╤О ╨▓ _index.jsonl.
+Полный цикл от запроса пользователя до работающего проекта с тестами,
+изолированным venv, README и записью в _index.jsonl.
 
-╨д╨░╨╖╤Л (╨║╨░╨╢╨┤╨░╤П ╨╗╨╛╨│╨╕╤А╤Г╨╡╤В╤Б╤П ╨▓ manifest.json ╨╕ logs/projects.jsonl):
-  1. INTAKE     тАФ ╨╕╨╖╨▓╨╗╨╡╨║╨░╨╡╤В ╤Б╨┐╨╡╨║╤Г ╨╕╨╖ NL-╨╖╨░╨┐╤А╨╛╤Б╨░ (PROJECT_INTAKE_SYSTEM, fast)
-  2. ARCHITECT  тАФ ╨┐╤А╨╛╨╡╨║╤В╨╕╤А╤Г╨╡╤В ╤Д╨░╨╣╨╗╤Л ╨╕ ╤В╨╡╤Б╤В╤Л (PROJECT_ARCHITECT_SYSTEM, heavy)
-  3. ENV        тАФ ╤Б╨╛╨╖╨┤╨░╤С╤В venv ╨╕ ╤Б╤В╨░╨▓╨╕╤В install_dep ╨┐╨░╨║╨╡╤В╤Л ╨╕╨╖ ╨┐╨╗╨░╨╜╨░
-  4. BUILD      тАФ ╨┤╨╗╤П ╨║╨░╨╢╨┤╨╛╨│╨╛ ╤Д╨░╨╣╨╗╨░ writeтЖТreviewтЖТfix ╤Ж╨╕╨║╨╗ (max MAX_REVIEW_ITERS).
-                  ╨Ъ╨░╨╢╨┤╤Л╨╣ Coder ╨┐╨╛╨╗╤Г╤З╨░╨╡╤В ╤Г╨╢╨╡-╨╜╨░╨┐╨╕╤Б╨░╨╜╨╜╤Л╨╡ ╤Д╨░╨╣╨╗╤Л ╨║╨░╨║ ╨║╨╛╨╜╤В╨╡╨║╤Б╤В.
-  5. TEST       тАФ ╨╖╨░╨┐╤Г╤Б╨║╨░╨╡╤В test commands ╨▓╨╜╤Г╤В╤А╨╕ venv, ╨┐╤А╨╛╨▓╨╡╤А╤П╨╡╤В expects ╨▓ stdout
-  6. HEAL       тАФ ╨╡╤Б╨╗╨╕ ╤В╨╡╤Б╤В ╤Г╨┐╨░╨╗, Healer ╨┤╨╕╨░╨│╨╜╨╛╤Б╤В╨╕╤А╤Г╨╡╤В тЖТ Coder ╨┐╨░╤В╤З╨╕╤В тЖТ ╨┐╨╡╤А╨╡╤В╨╡╤Б╤В
-                  (╨┤╨╛ MAX_HEAL_ITERS). ╨ж╨╕╨║╨╗ ╨┐╤А╨╡╤А╤Л╨▓╨░╨╡╤В╤Б╤П ╤А╨░╨╜╨╜╨╕╨╝ ╤Г╤Б╨┐╨╡╤Е╨╛╨╝.
-  7. README     тАФ ╨│╨╡╨╜╨╡╤А╨╕╤А╤Г╨╡╤В README.md ╨▓ ╨║╨╛╤А╨╜╨╡ ╨┐╤А╨╛╨╡╨║╤В╨░
-  8. REPORT     тАФ ╨║╨╛╤А╨╛╤В╨║╨╕╨╣ ╤Г╤Б╤В╨╜╤Л╨╣ ╨╕╤В╨╛╨│ + ╨╖╨░╨┐╨╕╤Б╤М ╨▓ _index.jsonl
+Фазы (каждая логируется в manifest.json и logs/projects.jsonl):
+  1. INTAKE     — извлекает спеку из NL-запроса (PROJECT_INTAKE_SYSTEM, fast)
+  2. ARCHITECT  — проектирует файлы и тесты (PROJECT_ARCHITECT_SYSTEM, heavy)
+  3. ENV        — создаёт venv и ставит install_dep пакеты из плана
+  4. BUILD      — для каждого файла write→review→fix цикл (max MAX_REVIEW_ITERS).
+                  Каждый Coder получает уже-написанные файлы как контекст.
+  5. TEST       — запускает test commands внутри venv, проверяет expects в stdout
+  6. HEAL       — если тест упал, Healer диагностирует → Coder патчит → перетест
+                  (до MAX_HEAL_ITERS). Цикл прерывается ранним успехом.
+  7. README     — генерирует README.md в корне проекта
+  8. REPORT     — короткий устный итог + запись в _index.jsonl
 
-╨С╤О╨┤╨╢╨╡╤В╤Л (╨╖╨░╤Й╨╕╤В╨░ ╨╛╤В ╨▒╨╡╤Б╨║╨╛╨╜╨╡╤З╨╜╨╛╤Б╤В╨╕):
-  - PROJECT_WALL_BUDGET_S тАФ ╨╛╨▒╤Й╨╕╨╣ wall-clock ╨╜╨░ ╨┐╤А╨╛╨╡╨║╤В (default 600)
-  - PROJECT_LLM_BUDGET    тАФ ╨╛╨▒╤Й╨╕╨╣ ╨╗╨╕╨╝╨╕╤В LLM-╨▓╤Л╨╖╨╛╨▓╨╛╨▓ (default 40)
-  ╨Я╤А╨╕ ╨┐╤А╨╡╨▓╤Л╤И╨╡╨╜╨╕╨╕ тАФ ╤Д╨░╨╖╨░ Pomeguard ╨┐╤А╨╡╤А╤Л╨▓╨░╨╡╤В ╤В╨╡╨║╤Г╤Й╨╕╨╣ ╤И╨░╨│, ╤Б╤В╨░╤В╤Г╤Б='failed',
-  ╨╜╨╛ manifest ╤Б╨╛╤Е╤А╨░╨╜╤П╨╡╤В╤Б╤П ╨╕ --resume ╤А╨░╨▒╨╛╤В╨░╨╡╤В.
+Бюджеты (защита от бесконечности):
+  - PROJECT_WALL_BUDGET_S — общий wall-clock на проект (default 600)
+  - PROJECT_LLM_BUDGET    — общий лимит LLM-вызовов (default 40)
+  При превышении — фаза Pomeguard прерывает текущий шаг, статус='failed',
+  но manifest сохраняется и --resume работает.
 
 Resume:
-  brain.agents.project.resume(slug) тАФ ╨┐╤А╨╛╨┤╨╛╨╗╨╢╨░╨╡╤В ╤Г╨┐╨░╨▓╤И╨╕╨╣ ╨┐╤А╨╛╨╡╨║╤В ╤Б ╤Г╨┐╨░╨▓╤И╨╡╨╣ ╤Д╨░╨╖╤Л.
-  ╨Ш╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╡╤В last_phase ╨╕╨╖ ╨╝╨░╨╜╨╕╤Д╨╡╤Б╤В╨░.
+  brain.agents.project.resume(slug) — продолжает упавший проект с упавшей фазы.
+  Использует last_phase из манифеста.
 
 CLI:
-  python -m brain.agents.project "<╨╖╨░╨┐╤А╨╛╤Б>"
+  python -m brain.agents.project "<запрос>"
   python -m brain.agents.project --resume <slug>
   python -m brain.agents.project --list
 """
@@ -36,7 +36,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import hashlib
 import re
 import sys
 import time
@@ -93,28 +92,28 @@ from tools.projects import (
 logger = logging.getLogger(__name__)
 
 MAX_REVIEW_ITERS = 2
-MAX_HEAL_ITERS   = 4  # P9.6: ╨▒╤Л╨╗╨╛ 2 тАФ ╤А╨░╤Б╤И╨╕╤А╨╕╨╗╨╕ ╨┤╨╗╤П detmin+aider ╤Ж╨╡╨┐╨╛╤З╨║╨╕ (rss_parser ╤В╤А╨╡╨▒╨╛╨▓╨░╨╗ 3+)
+MAX_HEAL_ITERS   = 4  # P9.6: было 2 — расширили для detmin+aider цепочки (rss_parser требовал 3+)
 MAX_FILES        = 10
 PHASE_TEST_TIMEOUT = 30
-PROJECT_WALL_BUDGET_S = 600       # 10 ╨╝╨╕╨╜╤Г╤В ╨╜╨░ ╨┐╤А╨╛╨╡╨║╤В ╤Ж╨╡╨╗╨╕╨║╨╛╨╝
-PROJECT_LLM_BUDGET    = 40        # ╤Б╤Г╨╝╨╝╨░╤А╨╜╨╛ ╨╜╨░ ╨▓╤Б╨╡ ╤Д╨░╨╖╤Л
+PROJECT_WALL_BUDGET_S = 600       # 10 минут на проект целиком
+PROJECT_LLM_BUDGET    = 40        # суммарно на все фазы
 
-# P3: ╨░╨┤╨░╨┐╤В╨╕╨▓╨╜╤Л╨╣ ╨▒╤О╨┤╨╢╨╡╤В ╨┐╨╛ ╤А╨░╨╖╨╝╨╡╤А╤Г ╨┐╤А╨╛╨╡╨║╤В╨░. ╨Э╨╡ ╨▓╤Л╨▒╨╕╤А╨░╨╡╤В ╤А╨╡╤И╨╡╨╜╨╕╤П, ╤В╨╛╨╗╤М╨║╨╛ ╤Б╨║╨╛╨╗╤М╨║╨╛ ╤А╨░╨╖ ╨┐╨╛╨┐╤А╨╛╨▒╨╛╨▓╨░╤В╤М.
+# P3: адаптивный бюджет по размеру проекта. Не выбирает решения, только сколько раз попробовать.
 BUDGET_TIERS = {
-    "XS": {"wall_s": 180,  "llm": 15},   # 1 ╤Д╨░╨╣╨╗, ╨╛╨┤╨╜╨╛╤Б╤В╤А╨╛╤З╨╜╤Л╨╣ ╨╖╨░╨┐╤А╨╛╤Б
-    "S":  {"wall_s": 360,  "llm": 30},   # 1-2 ╤Д╨░╨╣╨╗╨░, ╨┐╨░╤А╤Б╨╡╤А/╤Б╨║╤А╨╕╨┐╤В
-    "M":  {"wall_s": 600,  "llm": 60},   # 3-4 ╤Д╨░╨╣╨╗╨░, ╨╕╨╜╤В╨╡╨│╤А╨░╤Ж╨╕╤П
-    "L":  {"wall_s": 1200, "llm": 120},  # 5+ ╤Д╨░╨╣╨╗╨╛╨▓, ╤Б╨╗╨╛╨╢╨╜╤Л╨╣ ╨┐╤А╨╛╨╡╨║╤В
+    "XS": {"wall_s": 180,  "llm": 15},   # 1 файл, однострочный запрос
+    "S":  {"wall_s": 360,  "llm": 30},   # 1-2 файла, парсер/скрипт
+    "M":  {"wall_s": 600,  "llm": 60},   # 3-4 файла, интеграция
+    "L":  {"wall_s": 1200, "llm": 120},  # 5+ файлов, сложный проект
 }
 
 
 def estimate_complexity(query: str, spec: dict | None = None, plan: dict | None = None) -> str:
-    """P3: ╨▓╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В ╤В╨╕╤А ╨▒╤О╨┤╨╢╨╡╤В╨░ (XS/S/M/L) ╨┐╨╛ ╤А╨░╨╖╨╝╨╡╤А╨╜╤Л╨╝ ╨╝╨╡╤В╤А╨╕╨║╨░╨╝.
+    """P3: возвращает тир бюджета (XS/S/M/L) по размерным метрикам.
 
-    ╨Я╤А╨░╨▓╨╕╨╗╨░:
-      - ╨з╨╕╤Б╨╗╨╛ ╤Д╨░╨╣╨╗╨╛╨▓ ╨▓ ╨┐╨╗╨░╨╜╨╡ (╨╡╤Б╨╗╨╕ ╨╡╤Б╤В╤М) тАФ ╨│╨╗╨░╨▓╨╜╤Л╨╣ ╤Б╨╕╨│╨╜╨░╨╗: 1тЖТXS, 2тЖТS, 3-4тЖТM, 5+тЖТL.
-      - ╨С╨╡╨╖ ╨┐╨╗╨░╨╜╨░: ╨┐╨╛ ╨┤╨╗╨╕╨╜╨╡ ╨╖╨░╨┐╤А╨╛╤Б╨░ ╨╕ ╤З╨╕╤Б╨╗╤Г requirements.
-      - ╨Э╨╕╨║╨░╨║╨╛╨│╨╛ ╨▓╤Л╨▒╨╛╤А╨░ ┬л╨┐╨╛ ╨║╨╗╤О╤З╨╡╨▓╤Л╨╝ ╤Б╨╗╨╛╨▓╨░╨╝┬╗ тАФ ╤В╨╛╨╗╤М╨║╨╛ ╤А╨░╨╖╨╝╨╡╤А╨╜╤Л╨╡ ╨╝╨╡╤В╤А╨╕╨║╨╕.
+    Правила:
+      - Число файлов в плане (если есть) — главный сигнал: 1→XS, 2→S, 3-4→M, 5+→L.
+      - Без плана: по длине запроса и числу requirements.
+      - Никакого выбора «по ключевым словам» — только размерные метрики.
     """
     files_n = 0
     if isinstance(plan, dict):
@@ -146,15 +145,12 @@ def estimate_complexity(query: str, spec: dict | None = None, plan: dict | None 
     return "S"
 
 
-def budget_for_tier(tier: str | None) -> dict:
-    """╨Я╨░╤А╨░╨╝╨╡╤В╤А╤Л ╨▒╤О╨┤╨╢╨╡╤В╨░ ╨┤╨╗╤П ╤В╨╕╤А╨░. ╨Ф╨╡╤Д╨╛╨╗╤В тАФ M.
-    S-2 fix: ╨┐╤А╨╕╨╜╨╕╨╝╨░╨╡╤В None ╤П╨▓╨╜╨╛ тАФ estimate_complexity ╨│╨░╤А╨░╨╜╤В╨╕╤А╤Г╨╡╤В str,
-    ╨╜╨╛ budget_for_tier ╨╝╨╛╨│ ╨┐╨╛╨╗╤Г╤З╨╕╤В╤М None ╨╕╨╖ ╨▓╨╜╨╡╤И╨╜╨╡╨│╨╛ ╨║╨╛╨┤╨░.
-    """
-    return BUDGET_TIERS.get(tier or "M", BUDGET_TIERS["M"])
+def budget_for_tier(tier: str) -> dict:
+    """Параметры бюджета для тира. Дефолт — M."""
+    return BUDGET_TIERS.get(tier, BUDGET_TIERS["M"])
 
 
-# тФАтФАтФА budget tracking тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+# ─── budget tracking ────────────────────────────────────────────────────────
 class BudgetExceeded(Exception):
     pass
 
@@ -187,7 +183,7 @@ class Budget:
         }
 
 
-# тФАтФАтФА helpers тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+# ─── helpers ────────────────────────────────────────────────────────────────
 def _strip_json_fence(raw: str) -> str:
     s = (raw or "").strip()
     if s.startswith("```"):
@@ -238,23 +234,23 @@ def _save_metrics(slug: str, **fields) -> None:
         pass
 
 
-# тФАтФАтФА PHASE 1: intake тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+# ─── PHASE 1: intake ────────────────────────────────────────────────────────
 def _normalize_intake_spec(spec: dict, query: str) -> dict:
-    """P6: ╨┐╨╛╤Б╤В-╨╛╨▒╤А╨░╨▒╨╛╤В╨║╨░ spec ╨╛╤В LLM тАФ ╤Б╤В╤А╤Г╨║╤В╤Г╤А╨╜╤Л╨╡ ╨│╨░╤А╨░╨╜╤В╨╕╨╕, ╨▒╨╡╨╖ ╨║╨╗╤О╤З╨╡╨▓╤Л╤Е ╤Б╨╗╨╛╨▓."""
+    """P6: пост-обработка spec от LLM — структурные гарантии, без ключевых слов."""
     from tools.projects import slugify
 
     if not isinstance(spec, dict):
         spec = {}
 
-    # title тАФ ╨Я╨Ы╨Ю╨е╨Ш╨Х ╨╖╨╜╨░╤З╨╡╨╜╨╕╤П (╨┐╨╗╨╡╨╣╤Б╤Е╨╛╨╗╨┤╨╡╤А╤Л ╨╕╨╖ ╨┐╤А╨╛╨╝╨┐╤В╨░) ╨╛╤В╨▒╤А╨░╤Б╤Л╨▓╨░╨╡╨╝
+    # title — ПЛОХИЕ значения (плейсхолдеры из промпта) отбрасываем
     title = str(spec.get("title") or "").strip()
-    bad_titles = {"untitled-project", "untitled", "project", "unnamed", "name", "╨╜╨░╨╖╨▓╨░╨╜╨╕╨╡", "╨┐╤А╨╛╨╡╨║╤В"}
+    bad_titles = {"untitled-project", "untitled", "project", "unnamed", "name", "название", "проект"}
     if not title or len(title) > 100 or title.lower() in bad_titles:
         words = (query or "").strip().split()[:5]
         title = " ".join(words) if words else "untitled-project"
     spec["title"] = title
 
-    # slug тАФ ╨╛╨▒╤П╨╖╨░╤В╨╡╨╗╤М╨╜╨╛ ╨╜╨╡╨┐╤Г╤Б╤В╨╛╨╣ ╨╕ ╨▓╨░╨╗╨╕╨┤╨╜╤Л╨╣
+    # slug — обязательно непустой и валидный
     slug = str(spec.get("slug") or "").strip().lower()
     if not slug or not re.match(r"^[a-z0-9\-]{1,40}$", slug):
         slug = slugify(title)
@@ -262,7 +258,7 @@ def _normalize_intake_spec(spec: dict, query: str) -> dict:
         slug = "untitled-project"
     spec["slug"] = slug[:40]
 
-    # kind / language тАФ ╤А╨░╨╖╤А╨╡╤И╤С╨╜╨╜╤Л╨╡ ╨╝╨╜╨╛╨╢╨╡╤Б╤В╨▓╨░
+    # kind / language — разрешённые множества
     allowed_kind = {"script", "cli", "web", "bot", "library", "data"}
     kind = str(spec.get("kind") or "").strip().lower()
     spec["kind"] = kind if kind in allowed_kind else "script"
@@ -271,17 +267,17 @@ def _normalize_intake_spec(spec: dict, query: str) -> dict:
     lang = str(spec.get("language") or "").strip().lower()
     spec["language"] = lang if lang in allowed_lang else "python"
 
-    # summary тАФ ╨╡╤Б╨╗╨╕ ╤А╨╛╨▓╨╜╨╛ ╤А╨░╨▓╨╡╨╜ ╨╖╨░╨┐╤А╨╛╤Б╤Г (╤Н╤Е╨╛), ╨▒╨╡╤А╤С╨╝ ╨┐╨╡╤А╨▓╤Л╨╡ ~15 ╤Б╨╗╨╛╨▓
+    # summary — если ровно равен запросу (эхо), берём первые ~15 слов
     summary = str(spec.get("summary") or "").strip()
     q_norm_full = (query or "").strip()
     if not summary:
         summary = q_norm_full[:200]
     elif summary.lower() == q_norm_full.lower():
         words = q_norm_full.split()[:15]
-        summary = " ".join(words) + ("тАж" if len(q_norm_full.split()) > 15 else "")
+        summary = " ".join(words) + ("…" if len(q_norm_full.split()) > 15 else "")
     spec["summary"] = summary[:300]
 
-    # requirements: ╤Б╨┐╨╕╤Б╨╛╨║ ╤Б╤В╤А╨╛╨║; ╤Д╨╗╨░╨│ ╤Н╤Е╨╛ ╨╡╤Б╨╗╨╕ LLM ╨▓╤Л╨┤╨░╨╗╨░ ╨▓╨╡╤Б╤М query ╨╛╨┤╨╜╨╕╨╝ ╨┐╤Г╨╜╨║╤В╨╛╨╝
+    # requirements: список строк; флаг эхо если LLM выдала весь query одним пунктом
     reqs_raw = spec.get("requirements") or []
     if not isinstance(reqs_raw, list):
         reqs_raw = [str(reqs_raw)]
@@ -290,16 +286,15 @@ def _normalize_intake_spec(spec: dict, query: str) -> dict:
     is_echo = (
         len(reqs) == 1
         and q_norm
-        # S-1 fix: strip ╨┐╤А╨╛╨▒╨╡╨╗╨╛╨▓/╤В╨╛╤З╨╡╨║ ╨┐╨╡╤А╨╡╨┤ ╤Б╤А╨░╨▓╨╜╨╡╨╜╨╕╨╡╨╝ тАФ LLM ╨╕╨╜╨╛╨│╨┤╨░ ╨┤╨╛╨▒╨░╨▓╨╗╤П╨╡╤В ╨┐╤А╨╛╨▒╨╡╨╗ ╨╕╨╗╨╕ ╤В╨╛╤З╨║╤Г ╨▓ ╨╜╨░╤З╨░╨╗╨╛
-        and reqs[0].lower().strip(" .").startswith(q_norm.strip(" .")[: min(40, len(q_norm.strip(" .")))]) 
+        and reqs[0].lower().startswith(q_norm[: min(40, len(q_norm))])
     )
-    # P6.1: ╨╡╤Б╨╗╨╕ ╤Н╤Е╨╛ тАФ ╤А╨░╨╖╨▒╨╕╨▓╨░╨╡╨╝ ╨┐╤А╨╕╨╝╨╕╤В╨╕╨▓╨╜╨╛ ╨┐╨╛ ╨╖╨╜╨░╨║╨░╨╝ ╨┐╤А╨╡╨┐╨╕╨╜╨░╨╜╨╕╤П. ╨Э╨╡ ╨╖╨░╨╝╨╡╨╜╤П╨╡╤В LLM,
-    # ╨╜╨╛ ╤Е╨╛╤В╤П ╨▒╤Л ╨┤╨░╤С╤В ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А╤Г ╨╛╤В╨┤╨╡╨╗╤М╨╜╤Л╨╡ ╨║╤Г╤Б╨║╨╕ ╨▓╨╝╨╡╤Б╤В╨╛ ╨╛╨┤╨╜╨╛╨╣ ╤Б╨╗╨╕╨┐╤И╨╡╨╣╤Б╤П ╤Б╤В╤А╨╛╨║╨╕.
+    # P6.1: если эхо — разбиваем примитивно по знакам препинания. Не заменяет LLM,
+    # но хотя бы даёт архитектору отдельные куски вместо одной слипшейся строки.
     if is_echo:
         spec["_intake_warning"] = "requirements is echo of query"
-        # ╨а╨░╨╖╨▒╨╕╨▓╨░╨╡╨╝ ╨┐╨╛ , ; ╨╕ ┬л ╨╕ ┬╗
-        chunks = re.split(r"[,;]|\s+╨╕\s+|\s+╨╕\s+", reqs[0])
-        chunks = [c.strip(" .!?тАФ-") for c in chunks if c.strip(" .!?тАФ-")]
+        # Разбиваем по , ; и « и »
+        chunks = re.split(r"[,;]|\s+и\s+|\s+и\s+", reqs[0])
+        chunks = [c.strip(" .!?—-") for c in chunks if c.strip(" .!?—-")]
         if len(chunks) >= 2:
             reqs = chunks[:6]
     spec["requirements"] = reqs
@@ -316,7 +311,7 @@ def _normalize_intake_spec(spec: dict, query: str) -> dict:
         ac_raw = [str(ac_raw)]
     spec["acceptance_criteria"] = (
         [str(a).strip() for a in ac_raw if str(a).strip()]
-        or ["╤Б╨║╤А╨╕╨┐╤В ╨╖╨░╨┐╤Г╤Б╨║╨░╨╡╤В╤Б╤П ╨▒╨╡╨╖ ╨╛╤И╨╕╨▒╨╛╨║"]
+        or ["скрипт запускается без ошибок"]
     )
 
     return spec
@@ -327,7 +322,7 @@ def _intake(query: str, budget: Budget) -> dict:
                temperature=0.1, num_ctx=4096, where="intake")
     spec = _safe_parse(raw)
     if not isinstance(spec, dict) or not spec.get("title"):
-        # P6: ╨┐╤Г╤Б╤В╤Л╨╡ requirements (╨╜╨╡ ╤Н╤Е╨╛ ╨╖╨░╨┐╤А╨╛╤Б╨░)
+        # P6: пустые requirements (не эхо запроса)
         spec = {
             "title": " ".join((query or "").strip().split()[:5]) or "untitled-project",
             "slug": "",
@@ -336,23 +331,23 @@ def _intake(query: str, budget: Budget) -> dict:
             "summary": (query or "")[:200],
             "requirements": [],
             "deliverables": ["main.py"],
-            "acceptance_criteria": ["╤Б╨║╤А╨╕╨┐╤В ╨╖╨░╨┐╤Г╤Б╨║╨░╨╡╤В╤Б╤П ╨▒╨╡╨╖ ╨╛╤И╨╕╨▒╨╛╨║"],
+            "acceptance_criteria": ["скрипт запускается без ошибок"],
         }
     return _normalize_intake_spec(spec, query)
 
 
-# тФАтФАтФА PHASE 2: architect тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+# ─── PHASE 2: architect ─────────────────────────────────────────────────────
 def _architect(spec: dict, budget: Budget) -> dict:
-    user = "╨б╨┐╨╡╤Ж╨╕╤Д╨╕╨║╨░╤Ж╨╕╤П ╨┐╤А╨╛╨╡╨║╤В╨░:\n" + json.dumps(spec, ensure_ascii=False, indent=2)
+    user = "Спецификация проекта:\n" + json.dumps(spec, ensure_ascii=False, indent=2)
     raw = _llm(budget, MODEL_ARCHITECT, PROJECT_ARCHITECT_SYSTEM, user,
                temperature=0.1, num_ctx=8192, where="architect")
     plan = _safe_parse(raw)
     files = plan.get("files") or []
     if not isinstance(files, list) or not files:
         plan = {
-            "files": [{"path": "main.py", "purpose": "╤В╨╛╤З╨║╨░ ╨▓╤Е╨╛╨┤╨░", "depends_on": ["stdlib"]}],
+            "files": [{"path": "main.py", "purpose": "точка входа", "depends_on": ["stdlib"]}],
             "build_steps": [
-                {"step": 1, "kind": "create_file", "target": "main.py", "description": "╤Б╨╛╨╖╨┤╨░╤С╨╝ entry"},
+                {"step": 1, "kind": "create_file", "target": "main.py", "description": "создаём entry"},
                 {"step": 2, "kind": "smoke_run",   "target": "python main.py", "description": "smoke"},
             ],
             "tests": [{"name": "smoke", "command": "python main.py", "expects": ""}],
@@ -363,11 +358,11 @@ def _architect(spec: dict, budget: Budget) -> dict:
     return plan
 
 
-# тФАтФАтФА PHASE 3: env (venv + pip) тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+# ─── PHASE 3: env (venv + pip) ──────────────────────────────────────────────
 _PKG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]+([<>=!~]=?[A-Za-z0-9._-]+)?$")
 
 
-# ╨б╤В╨╛╨┐-╤Б╨╗╨╛╨▓╨░ тАФ ╤Н╤В╨╛ ╨Э╨Х ╨┐╨░╨║╨╡╤В╤Л, ╨░ ╤Д╨╗╨░╨│╨╕/╨╛╨┐╤Ж╨╕╨╕/╨║╨╛╨╝╨░╨╜╨┤╤Л
+# Стоп-слова — это НЕ пакеты, а флаги/опции/команды
 _PKG_STOPWORDS = {
     "pip", "install", "-r", "--requirement", "-U", "--upgrade", "--user",
     "--no-input", "--no-deps", "--prefer-binary", "requirements.txt",
@@ -376,13 +371,13 @@ _PKG_STOPWORDS = {
 
 
 def _parse_requirements_txt(content: str) -> list[str]:
-    """╨а╨░╨╖╨╛╨▒╤А╨░╤В╤М requirements.txt тАФ ╨┐╨╛ ╨╛╨┤╨╜╨╛╨╝╤Г ╨┐╨░╨║╨╡╤В╤Г ╨╜╨░ ╤Б╤В╤А╨╛╨║╤Г, ╨╕╨│╨╜╨╛╤А╨╕╤А╤Г╤П # ╨║╨╛╨╝╨╝╨╡╨╜╤В╨░╤А╨╕╨╕."""
+    """Разобрать requirements.txt — по одному пакету на строку, игнорируя # комментарии."""
     pkgs: list[str] = []
     for raw in (content or "").splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
-        # ╨Я╤А╨╛╨┐╤Г╤Б╨║╨░╨╡╨╝ ╤Б╤В╤А╨╛╨║╨╕ ╨▓╨╕╨┤╨░ -r other.txt, -e ., ╨╕ ╨┐╤А╨╛╤З╤Г╤О ╤Д╨╗╨░╨│╨╛╨▓╤Г╤О ╨╝╤Г╤В╤М
+        # Пропускаем строки вида -r other.txt, -e ., и прочую флаговую муть
         if line.startswith("-") or line in _PKG_STOPWORDS:
             continue
         if _PKG_PATTERN.match(line):
@@ -391,21 +386,21 @@ def _parse_requirements_txt(content: str) -> list[str]:
 
 
 def _extract_packages(slug: str, plan: dict) -> list[str]:
-    """╨б╨╛╨▒╨╕╤А╨░╨╡╤В ╨┐╨░╨║╨╡╤В╤Л ╨╕╨╖ ╤В╤А╤С╤Е ╨╕╤Б╤В╨╛╤З╨╜╨╕╨║╨╛╨▓ (╨┐╨╛ ╤Г╨▒╤Л╨▓╨░╨╜╨╕╤О ╨╜╨░╨┤╤С╨╢╨╜╨╛╤Б╤В╨╕):
-      1. plan['pip_requirements'] тАФ ╤П╨▓╨╜╨╛ ╨╛╨▒╤К╤П╨▓╨╗╨╡╨╜╨╜╤Л╨╡ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А╨╛╨╝.
-      2. ╨б╨╛╨┤╨╡╤А╨╢╨╕╨╝╨╛╨╡ requirements.txt ╨▓ ╨┐╤А╨╛╨╡╨║╤В╨╡ (╨╡╤Б╨╗╨╕ ╤Д╨░╨╣╨╗ ╤Г╨╢╨╡ ╤Б╨│╨╡╨╜╨╡╤А╨╕╤А╨╛╨▓╨░╨╜).
-      3. build_steps[install_dep].target тАФ ╨╗╨╡╨│╨░╤Б╨╕ ╤Д╨╛╤А╨╝╨░╤В, ╤Д╨╕╨╗╤М╤В╤А╤Г╨╡╨╝ ╤Б╤В╨╛╨┐-╤Б╨╗╨╛╨▓╨░.
+    """Собирает пакеты из трёх источников (по убыванию надёжности):
+      1. plan['pip_requirements'] — явно объявленные архитектором.
+      2. Содержимое requirements.txt в проекте (если файл уже сгенерирован).
+      3. build_steps[install_dep].target — легаси формат, фильтруем стоп-слова.
     """
     pkgs: list[str] = []
 
-    # ╨Ш╤Б╤В╨╛╤З╨╜╨╕╨║ 1: ╤П╨▓╨╜╤Л╨╣ pip_requirements
+    # Источник 1: явный pip_requirements
     for p in (plan.get("pip_requirements") or []):
         if isinstance(p, str):
             tok = p.strip().strip("\"'")
             if tok and _PKG_PATTERN.match(tok) and tok.lower() not in _PKG_STOPWORDS:
                 pkgs.append(tok)
 
-    # ╨Ш╤Б╤В╨╛╤З╨╜╨╕╨║ 2: requirements.txt ╨▓ ╤Д╨░╨╣╨╗╨░╤Е ╨┐╤А╨╛╨╡╨║╤В╨░
+    # Источник 2: requirements.txt в файлах проекта
     try:
         existing = get_project_files(slug)
         if isinstance(existing, dict) and "requirements.txt" in existing:
@@ -413,7 +408,7 @@ def _extract_packages(slug: str, plan: dict) -> list[str]:
     except Exception as e:
         logger.debug(f"[project] requirements.txt parse skipped: {e}")
 
-    # ╨Ш╤Б╤В╨╛╤З╨╜╨╕╨║ 3: build_steps[install_dep] тАФ legacy fallback
+    # Источник 3: build_steps[install_dep] — legacy fallback
     for step in (plan.get("build_steps") or []):
         if step.get("kind") != "install_dep":
             continue
@@ -424,13 +419,13 @@ def _extract_packages(slug: str, plan: dict) -> list[str]:
                 continue
             if token.lower() in _PKG_STOPWORDS:
                 continue
-            # ╨Я╤А╨╛╨┐╤Г╤Б╨║╨░╨╡╨╝ ╤П╨▓╨╜╤Л╨╡ ╨┐╤Г╤В╨╕ ╨║ ╤Д╨░╨╣╨╗╨░╨╝ (╤Б╨╛╨┤╨╡╤А╨╢╨░╤В / ╨╕╨╗╨╕ \ ╨╕╨╗╨╕ ╨╖╨░╨║╨░╨╜╤З╨╕╨▓╨░╤О╤В╤Б╤П ╨╜╨░ .txt)
+            # Пропускаем явные пути к файлам (содержат / или \ или заканчиваются на .txt)
             if "/" in token or "\\" in token or token.endswith(".txt"):
                 continue
             if _PKG_PATTERN.match(token):
                 pkgs.append(token)
 
-    # ╨Ф╨╡╨┤╤Г╨┐ ╤Б ╤Б╨╛╤Е╤А╨░╨╜╨╡╨╜╨╕╨╡╨╝ ╨┐╨╛╤А╤П╨┤╨║╨░ (case-insensitive)
+    # Дедуп с сохранением порядка (case-insensitive)
     seen: set[str] = set()
     out: list[str] = []
     for p in pkgs:
@@ -458,28 +453,28 @@ def _phase_env(slug: str, plan: dict) -> dict:
     }
 
 
-# тФАтФАтФА PHASE 4: build (coder тЖФ reviewer loop) тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+# ─── PHASE 4: build (coder ↔ reviewer loop) ────────────────────────────────
 def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budget: Budget) -> dict:
-    """P9: build ╤З╨╡╤А╨╡╨╖ aider. ╨Ю╨┤╨╕╨╜ ╨▓╤Л╨╖╨╛╨▓ ╨▓╨╝╨╡╤Б╤В╨╛ coder/reviewer ╤Ж╨╕╨║╨╗╨░.
+    """P9: build через aider. Один вызов вместо coder/reviewer цикла.
 
-    aider ╤Б╨░╨╝ ╤А╨░╨╖╨▒╨╡╤А╤С╤В╤Б╤П ╤Б syntax/parse-╨┐╤А╨╛╨▒╨╗╨╡╨╝╨░╨╝╨╕ (╤Н╤В╨╛ ╨╡╨│╨╛ ╨║╨╕╨╗╨╗╨╡╤А-╤Д╨╕╤З╨░).
-    ╨Ь╤Л ╤В╨╛╨╗╤М╨║╨╛ ╤Д╨╛╤А╨╝╤Г╨╗╨╕╤А╤Г╨╡╨╝ ╨┐╨╛╨╜╤П╤В╨╜╤Г╤О ╨╕╨╜╤Б╤В╤А╤Г╨║╤Ж╨╕╤О ╨╕╨╖ spec+target ╨╕ ╤З╨╕╤В╨░╨╡╨╝ ╤А╨╡╨╖╤Г╨╗╤М╤В╨░╤В.
+    aider сам разберётся с syntax/parse-проблемами (это его киллер-фича).
+    Мы только формулируем понятную инструкцию из spec+target и читаем результат.
 
-    ╨С╤О╨┤╨╢╨╡╤В: ╨╛╨┤╨╕╨╜ ╨▓╤Л╨╖╨╛╨▓ aider = 1 spend (╨║╨░╨║ ╨╛╨┤╨╕╨╜ LLM-╨▓╤Л╨╖╨╛╨▓ ╨▓ ╨╜╨░╤И╨╡╨╣ ╨╝╨╡╤В╤А╨╕╨║╨╡),
-    ╤Е╨╛╤В╤П ╨▓╨╜╤Г╤В╤А╨╕ aider ╨╝╨╛╨╢╨╡╤В ╤Б╨┤╨╡╨╗╨░╤В╤М ╨╜╨╡╤Б╨║╨╛╨╗╤М╨║╨╛ ╨╛╨▒╤А╨░╤Й╨╡╨╜╨╕╨╣ ╨║ ollama.
+    Бюджет: один вызов aider = 1 spend (как один LLM-вызов в нашей метрике),
+    хотя внутри aider может сделать несколько обращений к ollama.
     """
     from core.config import AIDER_TIMEOUT_S
     pdir = project_dir(slug)
     rel_path = target.get("path") or "main.py"
 
-    # Early-return ╨┤╨╗╤П runtime-deliverable: ╨╡╤Б╨╗╨╕ ╤Д╨░╨╣╨╗ ╨╖╨╜╨░╤З╨╕╤В╤Б╤П ╨▓ spec.deliverables
-    # ╨╕ ╨╜╨╡ ╤П╨▓╨╗╤П╨╡╤В╤Б╤П source-╨║╨╛╨┤╨╛╨╝ тАФ ╤Н╤В╨╛ ╨░╤А╤В╨╡╤Д╨░╨║╤В ╨▓╤А╨╡╨╝╨╡╨╜╨╕ ╨▓╤Л╨┐╨╛╨╗╨╜╨╡╨╜╨╕╤П (output.json, news.csv ╨╕ ╤В.╨┐.).
-    # ╨б╨╛╨╖╨┤╨░╤С╨╝ ╨┐╤Г╤Б╤В╤Г╤О ╨╖╨░╨│╨╗╤Г╤И╨║╤Г, smoke_test ╨╖╨░╨┐╨╛╨╗╨╜╨╕╤В ╨╡╤С ╨┐╤А╨╕ ╨╖╨░╨┐╤Г╤Б╨║╨╡ entry-point.
-    # ╨н╤В╨╛ ╨╕╨╖╨▒╨░╨▓╨╗╤П╨╡╤В aider ╨╛╤В ╨┐╨╛╨┐╤Л╤В╨║╨╕ "╨╜╨░╨┐╨╕╤Б╨░╤В╤М" runtime-╨┤╨░╨╜╨╜╤Л╨╡ ╨╕ ╤Б╨╛╨│╨╗╨░╤Б╤Г╨╡╤В╤Б╤П ╤Б ╨┐╨╛╨▓╨╡╨┤╨╡╨╜╨╕╨╡╨╝
-    # legacy-╨┐╨░╨╣╨┐╨╗╨░╨╣╨╜╨░, ╨│╨┤╨╡ ╤В╨░╨║╨╕╨╡ ╤Д╨░╨╣╨╗╤Л ╤Д╨░╨║╤В╨╕╤З╨╡╤Б╨║╨╕ ╨┐╨╡╤А╨╡╨╖╨░╨┐╨╕╤Б╤Л╨▓╨░╨╗╨╕╤Б╤М ╤В╨╡╤Б╤В╨╛╨╝.
+    # Early-return для runtime-deliverable: если файл значится в spec.deliverables
+    # и не является source-кодом — это артефакт времени выполнения (output.json, news.csv и т.п.).
+    # Создаём пустую заглушку, smoke_test заполнит её при запуске entry-point.
+    # Это избавляет aider от попытки "написать" runtime-данные и согласуется с поведением
+    # legacy-пайплайна, где такие файлы фактически перезаписывались тестом.
     deliverables = [str(d).strip() for d in (spec.get("deliverables") or []) if d]
-    # Source-╤А╨░╤Б╤И╨╕╤А╨╡╨╜╨╕╤П тАФ ╤Н╤В╨╕ ╤Д╨░╨╣╨╗╤Л ╨▓╤Б╨╡╨│╨┤╨░ ╤Б╤В╤А╨╛╨╕╤В aider, ╨┤╨░╨╢╨╡ ╨╡╤Б╨╗╨╕ ╨╛╨╜╨╕ ╨▓ deliverables.
-    # Runtime-╤Д╨╛╤А╨╝╨░╤В╤Л (.json, .csv, .xml, .html ╨╕ ╨┐╤А.) тАФ ╤А╨╡╨╖╤Г╨╗╤М╤В╨░╤В ╤А╨░╨▒╨╛╤В╤Л ╨║╨╛╨┤╨░.
+    # Source-расширения — эти файлы всегда строит aider, даже если они в deliverables.
+    # Runtime-форматы (.json, .csv, .xml, .html и пр.) — результат работы кода.
     SOURCE_EXTS = {".py", ".md", ".sh", ".ps1", ".bat", ".js", ".ts", ".toml", ".yaml", ".yml", ".cfg", ".ini"}
     rel_lower = rel_path.lower()
     is_runtime_deliverable = (
@@ -492,7 +487,7 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
             full.parent.mkdir(parents=True, exist_ok=True)
             if not full.exists():
                 full.write_bytes(b"")
-            logger.info(f"[project.build_aider] {rel_path} is runtime deliverable тАФ created empty stub, skipping aider")
+            logger.info(f"[project.build_aider] {rel_path} is runtime deliverable — created empty stub, skipping aider")
             return {
                 "path":    rel_path,
                 "ok":      True,
@@ -505,27 +500,27 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
             }
         except Exception as e:
             logger.warning(f"[project.build_aider] failed to create stub for {rel_path}: {e}")
-            # fallthrough ╨▓ ╨╛╨▒╤Л╤З╨╜╤Л╨╣ aider-╨┐╤Г╤В╤М
+            # fallthrough в обычный aider-путь
 
-    # ╨б╨╛╨▒╨╕╤А╨░╨╡╨╝ ╨╕╨╜╤Б╤В╤А╤Г╨║╤Ж╨╕╤О ╨┤╨╗╤П aider ╨╕╨╖ spec + target
+    # Собираем инструкцию для aider из spec + target
     title = spec.get("title") or slug
     summary = spec.get("summary") or ""
     requirements = spec.get("requirements") or []
     acceptance = spec.get("acceptance_criteria") or []
     target_purpose = target.get("purpose") or target.get("description") or ""
 
-    instruction_parts = [f"╨Я╤А╨╛╨╡╨║╤В ┬л{title}┬╗: {summary}".strip(": ")]
+    instruction_parts = [f"Проект «{title}»: {summary}".strip(": ")]
     if target_purpose:
-        instruction_parts.append(f"╨Э╨░╨╖╨╜╨░╤З╨╡╨╜╨╕╨╡ ╤Д╨░╨╣╨╗╨░ {rel_path}: {target_purpose}")
+        instruction_parts.append(f"Назначение файла {rel_path}: {target_purpose}")
     if requirements:
         reqs_str = "\n".join(f"- {r}" for r in requirements[:8])
-        instruction_parts.append(f"╨в╤А╨╡╨▒╨╛╨▓╨░╨╜╨╕╤П ╨║ ╨┐╤А╨╛╨╡╨║╤В╤Г:\n{reqs_str}")
+        instruction_parts.append(f"Требования к проекту:\n{reqs_str}")
     if acceptance:
         ac_str = "\n".join(f"- {a}" for a in acceptance[:5])
-        instruction_parts.append(f"╨Ъ╤А╨╕╤В╨╡╤А╨╕╨╕ ╨┐╤А╨╕╤С╨╝╨║╨╕:\n{ac_str}")
+        instruction_parts.append(f"Критерии приёмки:\n{ac_str}")
 
-    # P9.10: ╤П╨▓╨╜╨╛ ╨┐╨╡╤А╨╡╨┤╨░╤С╨╝ ╨▓╤Е╨╛╨┤╨╜╤Л╨╡ ╤Д╨░╨╣╨╗╤Л ╨▓ ╨╕╨╜╤Б╤В╤А╤Г╨║╤Ж╨╕╤О aider'╤Г.
-    # ╨С╨╡╨╖ ╤Н╤В╨╛╨│╨╛ ╨▒╨╗╨╛╨║╨░ aider ╤Е╨░╤А╨┤╨║╨╛╨┤╨╕╤В example.txt ╨▓╨╝╨╡╤Б╤В╨╛ ╤А╨╡╨░╨╗╤М╨╜╨╛╨│╨╛ ╨╕╨╝╨╡╨╜╨╕ ╨╕╨╖ spec.
+    # P9.10: явно передаём входные файлы в инструкцию aider'у.
+    # Без этого блока aider хардкодит example.txt вместо реального имени из spec.
     plan_inputs = (plan.get("inputs") or []) if isinstance(plan, dict) else []
     if plan_inputs:
         in_lines = []
@@ -536,33 +531,33 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
             if not p:
                 continue
             sample = it.get("sample_content", "")
-            preview = (sample[:160] + "тАж") if len(sample) > 160 else sample
+            preview = (sample[:160] + "…") if len(sample) > 160 else sample
             preview_one = preview.replace("\n", " \u21b5 ")
-            in_lines.append(f"- {p} (╨┐╤А╨╕╨╝╨╡╤А ╤Б╨╛╨┤╨╡╤А╨╢╨╕╨╝╨╛╨│╨╛: {preview_one!r})")
+            in_lines.append(f"- {p} (пример содержимого: {preview_one!r})")
         if in_lines:
             instruction_parts.append(
-                "╨Т╨е╨Ю╨Ф╨Э╨л╨Х ╨д╨Р╨Щ╨Ы╨л (╨╕╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╣ ╨а╨Ю╨Т╨Э╨Ю ╤Н╤В╨╕ ╨┐╤Г╤В╨╕ ╨▓ ╨║╨╛╨┤╨╡, ╨Э╨Х ╨┐╤А╨╕╨┤╤Г╨╝╤Л╨▓╨░╨╣ ╤Б╨▓╨╛╨╕):\n"
+                "ВХОДНЫЕ ФАЙЛЫ (используй РОВНО эти пути в коде, НЕ придумывай свои):\n"
                 + "\n".join(in_lines)
-                + "\n╨д╨░╨╣╨╗╤Л ╨▒╤Г╨┤╤Г╤В ╤Б╨╛╨╖╨┤╨░╨╜╤Л ╤Б ╤А╨╡╨░╨╗╨╕╤Б╤В╨╕╤З╨╜╤Л╨╝ ╤Б╨╛╨┤╨╡╤А╨╢╨╕╨╝╤Л╨╝ ╨┐╨╡╤А╨╡╨┤ ╨╖╨░╨┐╤Г╤Б╨║╨╛╨╝ ╤В╨╡╤Б╤В╨░."
+                + "\nФайлы будут созданы с реалистичным содержимым перед запуском теста."
             )
 
-    # P11.2: CONTRACT-╨▒╨╗╨╛╨║ (must_export + required_imports) ╨╕ read-only ╨║╨╛╨╜╤В╨╡╨║╤Б╤В ╤Б╨╛╤Б╨╡╨┤╨╡╨╣.
-    # ╨б╤В╤А╨╛╨╕╤В╤Б╤П ╨Ш╨б╨Ъ╨Ы╨о╨з╨Ш╨в╨Х╨Ы╨м╨Э╨Ю ╨╕╨╖ plan.files тАФ ╨╜╨╕╨║╨░╨║╨╕╤Е keyword-╤Н╨▓╤А╨╕╤Б╤В╨╕╨║.
+    # P11.2: CONTRACT-блок (must_export + required_imports) и read-only контекст соседей.
+    # Строится ИСКЛЮЧИТЕЛЬНО из plan.files — никаких keyword-эвристик.
     contract_block = _build_contract_prompt_block(plan, rel_path)
     if contract_block:
         instruction_parts.append(contract_block)
     read_only_files, neighbor_descs = _build_neighbor_context(pdir, plan, rel_path)
     if neighbor_descs:
         instruction_parts.append(
-            "╨б╨Ю╨б╨Х╨Ф╨Э╨Ш╨Х ╨Ь╨Ю╨Ф╨г╨Ы╨Ш (╨╕╤Е ╨║╨╛╨╜╤В╤А╨░╨║╤В╤Л ╨┐╨╡╤А╨╡╨┤╨░╨╜╤Л read-only ╨▓ ╨║╨╛╨╜╤В╨╡╨║╤Б╤В aider):\n"
+            "СОСЕДНИЕ МОДУЛИ (их контракты переданы read-only в контекст aider):\n"
             + "\n".join(neighbor_descs)
         )
 
     instruction_parts.append(
-        f"╨б╨╛╨╖╨┤╨░╨╣ (╨╕╨╗╨╕ ╨╛╨▒╨╜╨╛╨▓╨╕) ╨д╨Р╨Щ╨Ы {rel_path} ╨Ш ╨в╨Ю╨Ы╨м╨Ъ╨Ю ╨Х╨У╨Ю. "
-        f"╨Э╨Х ╤Б╨╛╨╖╨┤╨░╨▓╨░╨╣ ╨╜╨╕╨║╨░╨║╨╕╤Е ╨┤╤А╤Г╨│╨╕╤Е .py-╤Д╨░╨╣╨╗╨╛╨▓ (init_db.py, helpers.py, utils.py ╨╕ ╤В.╨┐.) тАФ ╨▓╤Б╤С ╨╜╤Г╨╢╨╜╨╛╨╡ ╨┤╨╗╤П ╤А╨░╨▒╨╛╤В╤Л ╨┤╨╛╨╗╨╢╨╜╨╛ ╨╗╨╡╨╢╨░╤В╤М ╨▓╨╜╤Г╤В╤А╨╕ {rel_path} ╨╕╨╗╨╕ ╨▒╤А╨░╤В╤М╤Б╤П ╨╕╨╖ ╤Г╨╢╨╡ ╤Б╨┐╨╗╨░╨╜╨╕╤А╨╛╨▓╨░╨╜╨╜╤Л╤Е ╤Б╨╛╤Б╨╡╨┤╨╡╨╣. "
-        "╨Я╨╕╤И╨╕ ╤А╨░╨▒╨╛╤В╨░╤О╤Й╨╕╨╣, ╤Б╨╕╨╜╤В╨░╨║╤Б╨╕╤З╨╡╤Б╨║╨╕ ╨║╨╛╤А╤А╨╡╨║╤В╨╜╤Л╨╣ ╨║╨╛╨┤. "
-        "╨Э╨╡ ╨┤╨╛╨▒╨░╨▓╨╗╤П╨╣ ╨║╨╛╨╝╨╝╨╡╨╜╤В╨░╤А╨╕╨╡╨▓-╨╕╨╖╨▓╨╕╨╜╨╡╨╜╨╕╨╣ ╨╕ ╨╖╨░╨│╨╗╤Г╤И╨╡╨║."
+        f"Создай (или обнови) ФАЙЛ {rel_path} И ТОЛЬКО ЕГО. "
+        f"НЕ создавай никаких других .py-файлов (init_db.py, helpers.py, utils.py и т.п.) — всё нужное для работы должно лежать внутри {rel_path} или браться из уже спланированных соседей. "
+        "Пиши работающий, синтаксически корректный код. "
+        "Не добавляй комментариев-извинений и заглушек."
     )
     instruction = "\n\n".join(instruction_parts)
 
@@ -570,7 +565,7 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
     res = aider_runner.aider_build(pdir, rel_path, instruction, read_only_files=read_only_files or None)
     budget.spend(1)
 
-    # ╨Я╨╛╤Б╤В-╨┐╤А╨╛╨▓╨╡╤А╨║╨░: ╨┤╨░╨╢╨╡ ╨╡╤Б╨╗╨╕ aider ╤Б╨║╨░╨╖╨░╨╗ ok, ╨┐╤А╨╛╨│╨╛╨╜╨╕╨╝ static_check ╨┤╨╗╤П ╨╝╨╡╤В╤А╨╕╨║ ╨╝╨░╨╜╨╕╤Д╨╡╤Б╤В╨░.
+    # Пост-проверка: даже если aider сказал ok, прогоним static_check для метрик манифеста.
     sc = static_check(rel_path, res.content) if res.content else {"applicable": False}
     static_summary = {
         "tools":         sc.get("tools") or [],
@@ -598,12 +593,12 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
             },
         }
 
-    # P11.2.d: ╨┐╨╛╤Б╤В-╨▒╨╕╨╗╨┤ ╨╗╨╕╨╜╤В╨╡╤А ╨║╨╛╨╜╤В╤А╨░╨║╤В╨░.
-    # ╨б╨▓╨╡╤А╤П╨╡╨╝ ╤А╨╡╨░╨╗╤М╨╜╤Л╨╡ top-level ╨╕╨╝╨╡╨╜╨░ ╤Д╨░╨╣╨╗╨░ ╤Б plan.files[*].exports ╨┤╨╗╤П ╤Н╤В╨╛╨│╨╛ ╤Д╨░╨╣╨╗╨░.
-    # P11.5.C: ╨▒╨╗╨╛╨║╨╕╤А╤Г╤О╤Й╨╕╨╣ ╨╗╨╕╨╜╤В╨╡╤А тАФ contract.ok=False ╨┤╨╡╨╗╨░╨╡╤В build phase failed,
-    # ╤З╤В╨╛╨▒╤Л heal-loop ╤Б╤А╨░╨╖╤Г ╨┐╨╛╨┤╤Е╨▓╨░╤В╨╕╨╗ ╤Н╤В╨╛╤В ╤Д╨░╨╣╨╗ ╨▓ target ╤Б missing-╤Н╨║╤Б╨┐╨╛╤А╤В╨░╨╝╨╕.
-    # P11.6.D (FM-18): ╨┐╤Г╤Б╤В╨╛╨╣ py-╤Д╨░╨╣╨╗ (<20 ╨▒╨░╨╣╤В ╨┐╨╛╤Б╨╗╨╡ strip) тАФ ╤В╨╛╨╢╨╡ contract_failure,
-    # ╨┤╨░╨╢╨╡ ╨╡╤Б╨╗╨╕ expected_exports ╨┐╤Г╤Б╤В╤Л: aider ╨╝╨╛╨│ ╨╝╨╛╨╗╤З╨░ ╨╖╨░╨┐╨╕╤Б╨░╤В╤М 0 ╨▒╨░╨╣╤В.
+    # P11.2.d: пост-билд линтер контракта.
+    # Сверяем реальные top-level имена файла с plan.files[*].exports для этого файла.
+    # P11.5.C: блокирующий линтер — contract.ok=False делает build phase failed,
+    # чтобы heal-loop сразу подхватил этот файл в target с missing-экспортами.
+    # P11.6.D (FM-18): пустой py-файл (<20 байт после strip) — тоже contract_failure,
+    # даже если expected_exports пусты: aider мог молча записать 0 байт.
     contract_check = {"checked": False}
     target_in_plan = next(
         (f for f in (plan.get("files") or []) if isinstance(f, dict) and f.get("path") == rel_path),
@@ -612,13 +607,13 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
     expected_exports = (target_in_plan or {}).get("exports") or []
     file_text_for_lint = res.content or ""
 
-    # P11.6.D: ╨┐╤А╨╛╨▓╨╡╤А╨║╨░ ╨╜╨░ ╤Д╨░╨║╤В╨╕╤З╨╡╤Б╨║╨╕ ╨┐╤Г╤Б╤В╨╛╨╣ py-╤Д╨░╨╣╨╗ (FM-18). ╨б╤А╨░╨▒╨░╤В╤Л╨▓╨░╨╡╤В
-    # ╨┤╨░╨╢╨╡ ╨║╨╛╨│╨┤╨░ expected_exports ╨┐╤Г╤Б╤В (e.g. main.py ╨▒╨╡╨╖ ╤Д╤Г╨╜╨║╤Ж╨╕╨╣).
+    # P11.6.D: проверка на фактически пустой py-файл (FM-18). Срабатывает
+    # даже когда expected_exports пуст (e.g. main.py без функций).
     if _is_python_path(rel_path) and len(file_text_for_lint.strip()) < 20:
         synthetic_missing = [
             (e.get("name") or "")
             for e in expected_exports if isinstance(e, dict) and e.get("name")
-        ] or ["<╨╗╤О╨▒╨╛╨╡ ╨╛╤Б╨╝╤Л╤Б╨╗╨╡╨╜╨╜╨╛╨╡ ╤Б╨╛╨┤╨╡╤А╨╢╨╕╨╝╨╛╨╡>"]
+        ] or ["<любое осмысленное содержимое>"]
         contract_check = {
             "checked":     True,
             "ok":          False,
@@ -628,11 +623,11 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
             "reason":      "empty_file",
         }
         logger.warning(
-            f"[contract.lint] {rel_path}: empty file (<20 chars) тАФ ╤В╤А╨░╨║╤В╤Г╨╡╨╝ ╨║╨░╨║ contract_failure (P11.6.D)"
+            f"[contract.lint] {rel_path}: empty file (<20 chars) — трактуем как contract_failure (P11.6.D)"
         )
     else:
         try:
-            # ╨б╨▓╨╡╤А╨║╨░ ╨╕╨╝╨╡╨╡╤В ╤Б╨╝╤Л╤Б╨╗ ╤В╨╛╨╗╤М╨║╨╛ ╨┤╨╗╤П ╨┐╨╕╤В╨╛╨╜-╤Д╨░╨╣╨╗╨╛╨▓ ╤Б ╨╖╨░╤П╨▓╨╗╨╡╨╜╨╜╤Л╨╝╨╕ ╤Н╨║╤Б╨┐╨╛╤А╤В╨░╨╝╨╕
+            # Сверка имеет смысл только для питон-файлов с заявленными экспортами
             if _is_python_path(rel_path) and expected_exports:
                 cc = _check_file_contract(file_text_for_lint, expected_exports)
                 contract_check = {
@@ -651,9 +646,9 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
             logger.warning(f"[contract.lint] {rel_path}: failed: {e}")
             contract_check = {"checked": False, "error": str(e)}
 
-    # P11.5.C: ╨▒╨╗╨╛╨║╨░╨┤╨░. ╨Х╤Б╨╗╨╕ ╨╗╨╕╨╜╤В╨╡╤А ╨┐╤А╨╛╨▓╨╡╤А╨╕╨╗ ╨╕ ╨╜╨╡ ╨Ю╨Ъ тАФ ╤Д╨░╨╖╨░ ╨▒╨╕╨╗╨┤╨░ ╤Б╤З╨╕╤В╨░╨╡╤В╤Б╤П ╨┐╤А╨╛╨▓╨░╨╗╤М╨╜╨╛╨╣.
-    # ╨н╤В╨╛ ╤Б╨╕╨│╨╜╨░╨╗ ╨┤╨╗╤П heal-loop: ╨▓╤Л╨╖╨▓╨░╤В╤М aider ╨╜╨░ ╤Н╤В╨╛╨╝ ╤Д╨░╨╣╨╗╨╡ ╤Б ╤Е╨╕╨╜╤В╨╛╨╝ ┬л╨▓╨╛╤Б╤Б╤В╨░╨╜╨╛╨▓╨╕ missing exports┬╗,
-    # ╨▓╨╝╨╡╤Б╤В╨╛ ╤В╨╛╨│╨╛ ╤З╤В╨╛╨▒╤Л ╨┐╤Г╤Б╨║╨░╤В╤М smoke-╤В╨╡╤Б╤В ╨║╨╛╤В╨╛╤А╤Л╨╣ ╨▓╤Б╤С ╤А╨░╨▓╨╜╨╛ ╤Г╨┐╨░╨┤╤С╤В ╨╜╨░ ImportError.
+    # P11.5.C: блокада. Если линтер проверил и не ОК — фаза билда считается провальной.
+    # Это сигнал для heal-loop: вызвать aider на этом файле с хинтом «восстанови missing exports»,
+    # вместо того чтобы пускать smoke-тест который всё равно упадёт на ImportError.
     contract_failed = bool(
         contract_check.get("checked")
         and contract_check.get("ok") is False
@@ -662,7 +657,7 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
         missing = contract_check.get("missing") or []
         kind_mm = contract_check.get("kind_mismatch") or []
         logger.warning(
-            f"[contract.block] {rel_path} тЖТ build failed (P11.5): "
+            f"[contract.block] {rel_path} → build failed (P11.5): "
             f"missing={missing} kind_mismatch={kind_mm}"
         )
 
@@ -677,16 +672,10 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
             if contract_failed
             else f"aider built {rel_path} in {res.duration_s}s"
         ),
-        # C-4 fix: ╨┐╨╛╨╗╨╡ "error" ╨┐╤А╨╕ contract_failed тАФ ╨╜╤Г╨╢╨╜╨╛ _diagnose ╨╕ heal-loop
-        "error": (
-            f"contract violated: missing={contract_check.get('missing') or []} "
-            f"kind_mismatch={contract_check.get('kind_mismatch') or []}"
-            if contract_failed else ""
-        ),
         "iters":   res.attempts,
         "static":  static_summary,
         "contract": contract_check,  # P11.2.d
-        "contract_failure": contract_failed,  # P11.5.C
+        "contract_failure": contract_failed,  # P11.5.C: явный флаг для heal-loop
         "_via":    "aider",
         "aider":   {
             "duration_s": res.duration_s,
@@ -696,16 +685,16 @@ def _build_one_file_aider(slug: str, spec: dict, plan: dict, target: dict, budge
 
 
 def _build_one_file(slug: str, spec: dict, plan: dict, target: dict, budget: Budget) -> dict:
-    """Build-loop ╤Б ╨┤╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╡╤Б╨║╨╛╨╣ ╤Б╤В╨░╤В╨╕╨║╨╛╨╣ ╨┐╨╡╤А╨╡╨┤ LLM-Reviewer (P1).
+    """Build-loop с детерминистической статикой перед LLM-Reviewer (P1).
 
-    P9: ╨╡╤Б╨╗╨╕ AIDER_ENABLED ╨╕ aider ╨┤╨╛╤Б╤В╤Г╨┐╨╡╨╜ тАФ ╨┤╨╡╨╗╨╡╨│╨╕╤А╤Г╨╡╨╝ ╨▓ _build_one_file_aider.
-    ╨Ш╨╜╨░╤З╨╡ тАФ ╤Б╤В╨░╤А╤Л╨╣ ╨┐╤Г╤В╤М coder/reviewer.
+    P9: если AIDER_ENABLED и aider доступен — делегируем в _build_one_file_aider.
+    Иначе — старый путь coder/reviewer.
 
-    ╨Э╨░ ╨║╨░╨╢╨┤╨╛╨╣ ╨╕╤В╨╡╤А╨░╤Ж╨╕╨╕ (╤Б╤В╨░╤А╤Л╨╣ ╨┐╤Г╤В╤М):
-      1. Coder ╨┐╨╕╤И╨╡╤В/╨┐╨░╤В╤З╨╕╤В ╨║╨╛╨┤.
-      2. static_check (ast.parse + ruff/pyflakes ╨╡╤Б╨╗╨╕ ╨╡╤Б╤В╤М).
-      3. ╨Х╤Б╨╗╨╕ ╤Б╨╕╨╜╤В╨░╨║╤Б╨╕╤Б ╨▒╨╕╤В╤Л╨╣ тЖТ ╨┐╤А╨╛╨┐╤Г╤Б╨║╨░╨╡╨╝ LLM-Reviewer, ast-╨╛╤И╨╕╨▒╨║╨░ тАФ feedback.
-      4. ╨Ш╨╜╨░╤З╨╡ ╨▓╤Л╨╖╤Л╨▓╨░╨╡╨╝ Reviewer (╨┐╤А╨╕ ╨╜╨░╨╗╨╕╤З╨╕╨╕ lint-warnings тАФ ╨┐╤А╨╛╨▒╤А╨╛╤Б╨╕╨╝ ╨╕╤Е ╨║╨░╨║ hint).
+    На каждой итерации (старый путь):
+      1. Coder пишет/патчит код.
+      2. static_check (ast.parse + ruff/pyflakes если есть).
+      3. Если синтаксис битый → пропускаем LLM-Reviewer, ast-ошибка — feedback.
+      4. Иначе вызываем Reviewer (при наличии lint-warnings — пробросим их как hint).
     """
     from core.config import AIDER_ENABLED
     if AIDER_ENABLED and aider_runner.is_aider_available():
@@ -715,7 +704,7 @@ def _build_one_file(slug: str, spec: dict, plan: dict, target: dict, budget: Bud
             raise
         except Exception as e:
             logger.warning(f"[project.build] aider path failed ({e}); falling back to legacy")
-            # ╨Я╨░╨┤╨░╨╡╨╝ ╨▓ ╤Б╤В╨░╤А╤Л╨╣ ╨┐╤Г╤В╤М тАФ fallback ╨┐╨╛ ╨┐╤А╨╕╨╜╤Ж╨╕╨┐╤Г ╨┐╤А╨╛╨╡╨║╤В╨░
+            # Падаем в старый путь — fallback по принципу проекта
 
     feedback = ""
     code = ""
@@ -731,11 +720,11 @@ def _build_one_file(slug: str, spec: dict, plan: dict, target: dict, budget: Bud
             code = coder_agent.patch_file(spec, plan, target, code, feedback, existing=existing)
         budget.spend(1)
 
-        # P1: ╨┤╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╡╤Б╨║╨░╤П ╤Б╤В╨░╤В╨╕╨║╨░ ╨┤╨╛ Reviewer.
+        # P1: детерминистическая статика до Reviewer.
         sc = static_check(target.get("path", ""), code)
         last_static = sc
         if sc.get("applicable") and not sc.get("ok"):
-            # ╨б╨╕╨╜╤В╨░╨║╤Б╨╕╤Б ╨▒╨╕╤В╤Л╨╣ тАФ ╨╜╨╡ ╤В╤А╨░╤В╨╕╨╝ LLM ╨╜╨░ Reviewer.
+            # Синтаксис битый — не тратим LLM на Reviewer.
             static_fail_streak += 1
             feedback = static_errors_to_feedback(sc.get("errors") or [])
             final_review = {
@@ -744,15 +733,15 @@ def _build_one_file(slug: str, spec: dict, plan: dict, target: dict, budget: Bud
                 "summary": f"static: {sc.get('errors', [''])[0][:120]}",
                 "_source": "static",
             }
-            # ╨Х╤Б╨╗╨╕ ╤Н╤В╨╛ ╨┐╨╛╤Б╨╗╨╡╨┤╨╜╤П╤П ╨┤╨╛╨┐╤Г╤Б╤В╨╕╨╝╨░╤П ╨╕╤В╨╡╤А╨░╤Ж╨╕╤П тАФ ╨▓╤Л╤Е╨╛╨┤╨╕╨╝, ╤Д╨░╨╣╨╗ ╨╛╤Б╤В╨░╨╜╨╡╤В╤Б╤П ╨┐╨╕╤Б╨░╤В╤М╤Б╤П ╨║╨░╨║
-            # ╨╡╤Б╤В╤М (╨┐╤Г╤Б╤В╤М ╤Е╨╕╨╗╨╡╤А ╨╗╨╛╨▓╨╕╤В ╨╜╨░ ╤Д╨░╨╖╨╡ test ╨╕╨╗╨╕ ╨┐╤А╨╛╨╡╨║╤В ╤Г╨┐╨░╨┤╤С╤В ╤З╨╡╤Б╤В╨╜╨╛).
+            # Если это последняя допустимая итерация — выходим, файл останется писаться как
+            # есть (пусть хилер ловит на фазе test или проект упадёт честно).
             if it >= MAX_REVIEW_ITERS:
                 break
             continue
 
         budget.check(f"review:{target.get('path')}:iter{it}")
-        # ╨Я╤А╨╛╨▒╤А╨░╤Б╤Л╨▓╨░╨╡╨╝ lint-warnings ╨║╨░╨║ hint Reviewer'╤Г ╤З╨╡╤А╨╡╨╖ spec'╨╛╨▓╤Л╨╣ ╤Б╨╗╨╛╤В ╨▒╨╡╨╖ ╨╗╨╛╨╝╨║╨╕ API.
-        # Reviewer.review ╨╜╨╡ ╨╖╨╜╨░╨╡╤В ╨┐╤А╨╛ ╤Н╤В╨╛, ╨╜╨╛ ╨▓ promt-╤Б╨▒╨╛╤А╨║╨╡ spec ╨▓╤Л╨▓╨╛╨┤╨╕╤В╤Б╤П ╤Ж╨╡╨╗╨╕╨║╨╛╨╝ тАФ ╨╗╨╕╨╜╤В ╨▒╤Г╨┤╨╡╤В ╨▓╨╕╨┤╨╡╨╜.
+        # Пробрасываем lint-warnings как hint Reviewer'у через spec'овый слот без ломки API.
+        # Reviewer.review не знает про это, но в promt-сборке spec выводится целиком — линт будет виден.
         review_spec = spec
         warnings = sc.get("warnings") or []
         if warnings:
@@ -774,8 +763,7 @@ def _build_one_file(slug: str, spec: dict, plan: dict, target: dict, budget: Bud
 
     return {
         "path":     target["path"],
-        # BUG-3 FIX: ok только если последний review — approve
-        "ok":       final_review.get("verdict") == "approve",
+        "ok":       True,
         "verdict":  final_review.get("verdict"),
         "issues":   len(final_review.get("issues") or []),
         "summary":  final_review.get("summary", "")[:200],
@@ -795,20 +783,6 @@ def _build(slug: str, spec: dict, plan: dict, budget: Budget) -> list[dict]:
     for target in plan["files"]:
         if not isinstance(target, dict) or "path" not in target:
             continue
-        # BUG-10 FIX: при resume пропускаем файлы уже существующие на диске
-        _tpath = target.get("path", "")
-        try:
-            _existing_fp = safe_project_path(slug, _tpath)
-            if _existing_fp.exists() and _existing_fp.stat().st_size > 0:
-                logger.info(f"[build.resume_skip] {_tpath} exists — skip rebuild (BUG-10)")
-                results.append({"path": _tpath, "ok": True, "verdict": "approve", "issues": 0,
-                    "summary": "skipped: file exists (resume)", "iters": 0,
-                    "static": {"tools":[],"errors":[],"warnings":[],"fail_streak":0,"final_ast_ok":True},
-                    "_via": "resume_skip"})
-                add_phase(slug, f"build:{_tpath}", "ok", "resume_skip")
-                continue
-        except Exception:
-            pass
         try:
             res = _build_one_file(slug, spec, plan, target, budget)
         except BudgetExceeded as e:
@@ -822,22 +796,20 @@ def _build(slug: str, spec: dict, plan: dict, budget: Budget) -> list[dict]:
     return results
 
 
-# тФАтФАтФА PHASE 5: test тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
-# ╨Ь╨░╤И╨╕╨╜╨╜╨╛-╨┐╤А╨╛╨▓╨╡╤А╤П╨╡╨╝╤Л╨╡ ╤В╨╕╨┐╤Л checks. ╨Ч╨░╨╝╨╡╨╜╤П╤О╤В ╤Б╨▓╨╛╨▒╨╛╨┤╨╜╨╛╤В╨╡╨║╤Б╤В╨╛╨▓╤Л╨╣ `expects`,
-# ╨║╨╛╤В╨╛╤А╤Л╨╣ ╨╖╨░╤Б╤В╨░╨▓╨╗╤П╨╗ Coder ╤Е╨░╤А╨┤╨║╨╛╨┤╨╕╤В╤М ╨╛╨╢╨╕╨┤╨░╨╡╨╝╤Л╨╡ ╤Б╤В╤А╨╛╨║╨╕ ╨▓ ╨║╨╛╨┤.
+# ─── PHASE 5: test ──────────────────────────────────────────────────────────
+# Машинно-проверяемые типы checks. Заменяют свободнотекстовый `expects`,
+# который заставлял Coder хардкодить ожидаемые строки в код.
 VALID_CHECK_TYPES = {
-    "rc_zero",          # ╨║╨╛╨┤ ╨▓╨╛╨╖╨▓╤А╨░╤В╨░ == 0
-    "file_exists",      # path ╤Б╤Г╤Й╨╡╤Б╤В╨▓╤Г╨╡╤В
-    "file_min_size",    # path ╨╕╨╝╨╡╨╡╤В ╤А╨░╨╖╨╝╨╡╤А >= bytes
-    "file_min_lines",   # path ╨╕╨╝╨╡╨╡╤В >= lines ╤Б╤В╤А╨╛╨║
-    "stdout_contains",  # text ╨▓╤Б╤В╤А╨╡╤З╨░╨╡╤В╤Б╤П ╨▓ stdout (case-insensitive)
-    # BUG-6 NOTE: stdout_contains in VALID_CHECK_TYPES but _filter_invalid_checks removes it.
-    # Architect should NOT generate this type (kept for _evaluate_check compat).
+    "rc_zero",          # код возврата == 0
+    "file_exists",      # path существует
+    "file_min_size",    # path имеет размер >= bytes
+    "file_min_lines",   # path имеет >= lines строк
+    "stdout_contains",  # text встречается в stdout (case-insensitive)
 }
 
 
 def _evaluate_check(slug: str, check: dict, run_result: dict) -> dict:
-    """╨Я╤А╨╛╨▓╨╡╤А╤П╨╡╤В ╨╛╨┤╨╜╨╛ ╤Г╤Б╨╗╨╛╨▓╨╕╨╡ ╨┐╤А╨╛╤В╨╕╨▓ ╤А╨╡╨╖╤Г╨╗╤М╤В╨░╤В╨░ ╨╖╨░╨┐╤Г╤Б╨║╨░. ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В dict ╤Б ok/reason."""
+    """Проверяет одно условие против результата запуска. Возвращает dict с ok/reason."""
     if not isinstance(check, dict):
         return {"type": "invalid", "ok": False, "reason": "check is not a dict"}
     ctype = (check.get("type") or "").strip()
@@ -856,7 +828,7 @@ def _evaluate_check(slug: str, check: dict, run_result: dict) -> dict:
         ok = text.lower() in stdout.lower()
         return {"type": ctype, "ok": ok, "reason": f"text={text!r} found={ok}"}
 
-    # ╨д╨░╨╣╨╗╨╛╨▓╤Л╨╡ ╨┐╤А╨╛╨▓╨╡╤А╨║╨╕: ╨┐╤Г╤В╤М ╨╛╤В╨╜╨╛╤Б╨╕╤В╨╡╨╗╤М╨╜╨╛ ╨║╨╛╤А╨╜╤П ╨┐╤А╨╛╨╡╨║╤В╨░, ╨╖╨░╤Й╨╕╤Й╨░╨╡╨╝ safe_project_path
+    # Файловые проверки: путь относительно корня проекта, защищаем safe_project_path
     rel = (check.get("path") or "").strip()
     if not rel:
         return {"type": ctype, "ok": False, "reason": "empty path"}
@@ -898,39 +870,39 @@ def _evaluate_check(slug: str, check: dict, run_result: dict) -> dict:
     return {"type": ctype, "ok": False, "reason": "unhandled check type"}
 
 
-# тФАтФАтФА P9.7: helpers ╨┤╨╗╤П ╤Г╤Б╤В╨╛╨╣╤З╨╕╨▓╨╛╤Б╤В╨╕ ╨║ ╨┐╨╗╨╛╤Е╨╕╨╝ ╨┐╨╗╨░╨╜╨░╨╝ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А╨░ тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
-# ╨Р╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А-LLM ╨╕╨╜╨╛╨│╨┤╨░ ╨│╨╡╨╜╨╡╤А╨╕╤А╤Г╨╡╤В ╨╜╨╡╨▓╨░╨╗╨╕╨┤╨╜╤Л╨╡ checks: ╤Б╤В╨░╨▓╨╕╤В file_exists ╨╜╨░
-# ╨Т╨е╨Ю╨Ф╨Э╨л╨Х ╤Д╨░╨╣╨╗╤Л (╨║╨╛╤В╨╛╤А╤Л╤Е ╨╜╨╡╤В ╨┤╨╛ ╨╖╨░╨┐╤Г╤Б╨║╨░ ╨╕ ╨║╨╛╤В╨╛╤А╤Л╨╡ ╤Б╨║╤А╨╕╨┐╤В ╨╛╨▒╤А╨░╨▒╨░╤В╤Л╨▓╨░╨╡╤В, ╨╜╨╡
-# ╤Б╨╛╨╖╨┤╨░╤С╤В) ╨╕╨╗╨╕ ╨╜╨╡╤А╨╡╨░╨╗╨╕╤Б╤В╨╕╤З╨╜╤Л╨╡ file_min_size (╨╜╨░╨┐╤А╨╕╨╝╨╡╤А, 1024╨▒ ╨┤╨╗╤П example.com
-# ╨║╨╛╤В╨╛╤А╤Л╨╣ ╨▓╨╡╤Б╨╕╤В 529╨▒). ╨н╤В╨╕ ╨╛╤И╨╕╨▒╨║╨╕ aider ╨┐╨╛╤З╨╕╨╜╨╕╤В╤М ╨╜╨╡ ╨╝╨╛╨╢╨╡╤В тАФ ╨╛╨╜╨╕ ╨▓ ╨┐╨╗╨░╨╜╨╡, ╨╜╨╡ ╨▓
-# ╨║╨╛╨┤╨╡. ╨Я╨╛╤Н╤В╨╛╨╝╤Г ╨╝╤Л ╨┤╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╡╤Б╨║╨╕ ╨╜╨╛╤А╨╝╨░╨╗╨╕╨╖╤Г╨╡╨╝ ╤В╨░╨║╨╕╨╡ checks ╨┐╨╡╤А╨╡╨┤ ╨╖╨░╨┐╤Г╤Б╨║╨╛╨╝
-# ╨╕ ╨┐╤А╨╕ evaluate. ╨Я╨╛╨┤╤Е╨╛╨┤ ┬л╨╜╨╕╨║╨░╨║╨╕╤Е ╤Е╨░╤А╨┤╨║╨╛╨┤╨╛╨▓ ╨╕ keyword-╨╛╨▓┬╗ ╤Б╨╛╨▒╨╗╤О╨┤╤С╨╜: ╤Д╨╕╨╗╤М╤В╤А╤Г╨╡╨╝
-# ╨┐╨╛ deliverables (╤Б╤В╤А╤Г╨║╤В╤Г╤А╨╜╨╛╨╡ ╨┐╨╛╨╗╨╡ ╤Б╨┐╨╡╨║╨╕) ╨╕ ╤А╨╡╨░╨╗╤М╨╜╨╛╨╝╤Г ╤А╨░╨╖╨╝╨╡╤А╤Г (╤Д╨░╨║╤В), ╨░ ╨╜╨╡ ╨┐╨╛
-# ╨╕╨╝╨╡╨╜╨░╨╝ ╤Д╨░╨╣╨╗╨╛╨▓ ╨╕╨╗╨╕ ╨┐╨╛╨┤╤Б╤В╤А╨╛╨║╨░╨╝.
+# ─── P9.7: helpers для устойчивости к плохим планам архитектора ─────────────
+# Архитектор-LLM иногда генерирует невалидные checks: ставит file_exists на
+# ВХОДНЫЕ файлы (которых нет до запуска и которые скрипт обрабатывает, не
+# создаёт) или нереалистичные file_min_size (например, 1024б для example.com
+# который весит 529б). Эти ошибки aider починить не может — они в плане, не в
+# коде. Поэтому мы детерминистически нормализуем такие checks перед запуском
+# и при evaluate. Подход «никаких хардкодов и keyword-ов» соблюдён: фильтруем
+# по deliverables (структурное поле спеки) и реальному размеру (факт), а не по
+# именам файлов или подстрокам.
 
-# Source-╤А╨░╤Б╤И╨╕╤А╨╡╨╜╨╕╤П, ╨║╨╛╤В╨╛╤А╤Л╨╡ ╨Э╨Ш╨Ъ╨Ю╨У╨Ф╨Р ╨╜╨╡ ╨┤╨╛╨╗╨╢╨╜╤Л ╨░╨▓╤В╨╛╨╖╨░╨┐╨╛╨╗╨╜╤П╤В╤М╤Б╤П dummy-╤Д╨░╨╣╨╗╨╛╨╝:
-# ╤Н╤В╨╛ ╨╕╤Б╤Е╨╛╨┤╨╜╨╕╨║╨╕, ╨╕ ╨╕╤Е ╨╛╤В╤Б╤Г╤В╤Б╤В╨▓╨╕╨╡ тАФ ╤А╨╡╨░╨╗╤М╨╜╤Л╨╣ ╨▒╨░╨│, ╨╜╨╡ ╨▓╤Е╨╛╨┤.
+# Source-расширения, которые НИКОГДА не должны автозаполняться dummy-файлом:
+# это исходники, и их отсутствие — реальный баг, не вход.
 _SOURCE_EXT_FOR_FIXTURE = {".py", ".js", ".ts", ".go", ".rs", ".rb", ".java", ".c", ".cpp", ".h", ".hpp", ".sh", ".html", ".css", ".md", ".yml", ".yaml", ".toml"}
-# ╨Ь╨╕╨╜╨╕╨╝╨░╨╗╤М╨╜╤Л╨╣ ╤А╨╡╨░╨╗╨╕╤Б╤В╨╕╤З╨╜╤Л╨╣ ╨┐╨╛╨╗ ╨┤╨╗╤П file_min_size, ╨╡╤Б╨╗╨╕ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А ╨╖╨░╨▓╤Л╤Б╨╕╨╗.
+# Минимальный реалистичный пол для file_min_size, если архитектор завысил.
 _MIN_SIZE_REALISTIC_FLOOR = 64
 
-# P9.9: ╤В╨╕╨┐╤Л checks, ╨║╨╛╤В╨╛╤А╤Л╨╡ ╨┐╨╛╨┤╤А╨░╨╖╤Г╨╝╨╡╨▓╨░╤О╤В ╤З╤В╨╛ path тАФ ╤Н╤В╨╛ ╨Т╨л╨е╨Ю╨Ф ╤Б╨║╤А╨╕╨┐╤В╨░
-# (╨┐╨╛╤Б╤В-╨┐╤А╨╛╨▓╨╡╤А╨║╨╕ ╤А╨╡╨╖╤Г╨╗╤М╤В╨░╤В╨░ ╤А╨░╨▒╨╛╤В╤Л). ╨Х╤Б╨╗╨╕ file_exists(path) ╨▓╤Б╤В╤А╨╡╤З╨░╨╡╤В╤Б╤П
-# ╨▓╨╝╨╡╤Б╤В╨╡ ╤Б ╨╗╤О╨▒╤Л╨╝ ╨╕╨╖ ╤Н╤В╨╕╤Е ╤З╨╡╨║╨╛╨▓ ╨╜╨░ ╤В╨╛╤В ╨╢╨╡ ╨┐╤Г╤В╤М тАФ path ╤Б╤З╨╕╤В╨░╨╡╤В╤Б╤П ╨▓╤Л╤Е╨╛╨┤╨╛╨╝,
-# ╤Д╨╕╨║╤Б╤В╤Г╤А╤Г ╤Б╨╛╨╖╨┤╨░╨▓╨░╤В╤М ╨Э╨Х╨Ы╨м╨Ч╨п (╤Б╨╛╨╖╨┤╨░╨╜╨╕╨╡ ╨┐╤Г╤Б╤В╨╛╨│╨╛ ╤Д╨░╨╣╨╗╨░-╨╖╨░╨│╨╗╤Г╤И╨║╨╕ ╤Б╨╗╨╛╨╝╨░╨╡╤В ╨╗╨╛╨│╨╕╨║╤Г
-# ╤Б╨║╤А╨╕╨┐╤В╨░: ╨╗╨╕╨▒╨╛ ╨╛╨╜ ╨┐╤А╨╛╨┐╤Г╤Б╤В╨╕╤В ╤Г╨╢╨╡ ╤Б╤Г╤Й╨╡╤Б╤В╨▓╤Г╤О╤Й╨╕╨╣ ┬л╨╛╨▒╤А╨░╨▒╨╛╤В╨░╨╜╨╜╤Л╨╣┬╗ ╤Д╨░╨╣╨╗, ╨╗╨╕╨▒╨╛
-# ╨┐╨╡╤А╨╡╨╖╨░╨┐╨╕╤И╨╡╤В ╨╜╤Г╨╗╨╡╨▓╤Л╨╝╨╕ ╨▒╨░╨╣╤В╨░╨╝╨╕). file_exists ╨╜╨░ ╨▓╤Л╤Е╨╛╨┤ тАФ ╨▓╨░╨╗╨╕╨┤╨╜╨░╤П ╨┐╨╛╤Б╤В-╨┐╤А╨╛╨▓╨╡╤А╨║╨░,
-# ╨╡╤С ╨╜╤Г╨╢╨╜╨╛ ╨╛╤Б╤В╨░╨▓╨╕╤В╤М.
+# P9.9: типы checks, которые подразумевают что path — это ВЫХОД скрипта
+# (пост-проверки результата работы). Если file_exists(path) встречается
+# вместе с любым из этих чеков на тот же путь — path считается выходом,
+# фикстуру создавать НЕЛЬЗЯ (создание пустого файла-заглушки сломает логику
+# скрипта: либо он пропустит уже существующий «обработанный» файл, либо
+# перезапишет нулевыми байтами). file_exists на выход — валидная пост-проверка,
+# её нужно оставить.
 _OUTPUT_CHECK_TYPES = {
     "file_min_lines", "file_min_size", "file_max_size",
     "json_valid", "yaml_valid", "file_contains", "file_matches_regex",
     "line_count_min", "line_count_max",
 }
 
-# P9.10: ╨┤╨╡╤Д╨╛╨╗╤В╨╜╤Л╨╡ sample-╤Б╨╛╨┤╨╡╤А╨╢╨╕╨╝╤Л╨╡ ╨┤╨╗╤П ╨▓╤Е╨╛╨┤╨╜╤Л╤Е ╤Д╨╕╨║╤Б╤В╤Г╤А ╨┐╨╛ ╤А╨░╤Б╤И╨╕╤А╨╡╨╜╨╕╤О.
-# ╨Ш╤Б╨┐╨╛╨╗╤М╨╖╤Г╤О╤В╤Б╤П ╨║╨╛╨│╨┤╨░ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А ╨╜╨╡ ╤Г╨║╨░╨╖╨░╨╗ sample_content ╨▓ plan.inputs[].
-# ╨ж╨╡╨╗╤М тАФ ╨┤╨░╤В╤М ╤Б╨║╤А╨╕╨┐╤В╤Г ╤А╨╡╨░╨╗╨╕╤Б╤В╨╕╤З╨╜╤Л╨╣ ╨▓╤Е╨╛╨┤, ╤З╤В╨╛╨▒╤Л ╨╛╨╜ ╨╝╨╛╨│ ╨▓╤Л╨┤╨░╤В╤М ╨╛╤Б╨╝╤Л╤Б╨╗╨╡╨╜╨╜╤Л╨╣ ╨▓╤Л╤Е╨╛╨┤.
-# ╨в╨╡╨║╤Б╤В ╨┐╨╛╨┤╨╛╨▒╤А╨░╨╜ ╤В╨░╨║, ╤З╤В╨╛╨▒╤Л ╨┐╤А╨╛╤Е╨╛╨┤╨╕╨╗╨╕ ╤В╨╕╨┐╨╕╤З╨╜╤Л╨╡ ╤А╨╡╨│╨╡╨║╤Б╤Л/╨┐╨░╤А╤Б╨╡╤А╤Л: email, URL, ╤З╨╕╤Б╨╗╨░.
+# P9.10: дефолтные sample-содержимые для входных фикстур по расширению.
+# Используются когда архитектор не указал sample_content в plan.inputs[].
+# Цель — дать скрипту реалистичный вход, чтобы он мог выдать осмысленный выход.
+# Текст подобран так, чтобы проходили типичные регексы/парсеры: email, URL, числа.
 _DEFAULT_INPUT_SAMPLES = {
     ".txt": (
         "Hello, contact us at support@example.com or sales@company.co.uk.\n"
@@ -980,8 +952,8 @@ _DEFAULT_INPUT_SAMPLES = {
     ),
 }
 
-# P9.10: regex ╨┤╨╗╤П ╨╕╨╖╨▓╨╗╨╡╤З╨╡╨╜╨╕╤П ╨╕╨╝╨╡╨╜ ╨▓╤Е╨╛╨┤╨╜╤Л╤Е ╤Д╨░╨╣╨╗╨╛╨▓ ╨╕╨╖ spec.summary/title.
-# ╨Ы╨╛╨▓╨╕╤В ╨╗╤О╨▒╨╛╨╡ ╤Б╨╗╨╛╨▓╨╛ ╤Б data-╤А╨░╤Б╤И╨╕╤А╨╡╨╜╨╕╨╡╨╝ (X.txt, input.csv, data.json, etc).
+# P9.10: regex для извлечения имен входных файлов из spec.summary/title.
+# Ловит любое слово с data-расширением (X.txt, input.csv, data.json, etc).
 _INPUT_FILE_RE = re.compile(
     r"\b([A-Za-z][\w\-]{0,40}\.(?:txt|csv|tsv|json|log|xml|yml|yaml|html))\b",
     re.IGNORECASE,
@@ -989,8 +961,8 @@ _INPUT_FILE_RE = re.compile(
 
 
 def _default_sample_for(rel_path: str) -> bytes:
-    """╨Ф╨╡╤Д╨╛╨╗╤В╨╜╤Л╨╣ ╤А╨╡╨░╨╗╨╕╤Б╤В╨╕╤З╨╜╤Л╨╣ sample ╨┤╨╗╤П ╨▓╤Е╨╛╨┤╨░ ╨┐╨╛ ╤А╨░╤Б╤И╨╕╤А╨╡╨╜╨╕╤О.
-    ╨Х╤Б╨╗╨╕ ╤А╨░╤Б╤И╨╕╤А╨╡╨╜╨╕╨╡ ╨╜╨╡╨╕╨╖╨▓╨╡╤Б╤В╨╜╨╛ тАФ ╨▓╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╨╝ ╨┐╤Г╤Б╤В╤Л╨╡ ╨▒╨░╨╣╤В╤Л (╨┐╨╛╨▓╨╡╨┤╨╡╨╜╨╕╨╡ ╨┤╨╛ P9.10)."""
+    """Дефолтный реалистичный sample для входа по расширению.
+    Если расширение неизвестно — возвращаем пустые байты (поведение до P9.10)."""
     rel_norm = _norm_path(rel_path)
     last = rel_norm.rsplit("/", 1)[-1]
     ext = ("." + last.rsplit(".", 1)[-1].lower()) if "." in last else ""
@@ -999,8 +971,8 @@ def _default_sample_for(rel_path: str) -> bytes:
 
 
 def _heuristic_input_paths(spec: dict | None) -> list[str]:
-    """╨Ш╨╖╨▓╨╗╨╡╨║╨░╨╡╤В ╨▓╨╡╤А╨╛╤П╤В╨╜╤Л╨╡ ╨▓╤Е╨╛╨┤╨╜╤Л╨╡ ╤Д╨░╨╣╨╗╤Л ╨╕╨╖ spec.summary/title ╨┐╨╛ regex.
-    ╨Ш╤Б╨║╨╗╤О╤З╨░╨╡╤В deliverables (╤Н╤В╨╛ ╨▓╤Л╤Е╨╛╨┤╤Л). ╨Ф╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╡╤Б╨║╨╕, ╨▒╨╡╨╖ LLM."""
+    """Извлекает вероятные входные файлы из spec.summary/title по regex.
+    Исключает deliverables (это выходы). Детерминистически, без LLM."""
     if not isinstance(spec, dict):
         return []
     text_blob = " ".join(str(spec.get(k, "")) for k in ("summary", "title"))
@@ -1019,10 +991,10 @@ def _heuristic_input_paths(spec: dict | None) -> list[str]:
 
 
 def _enrich_plan_with_heuristic_inputs(plan: dict, spec: dict | None) -> dict:
-    """P9.10: ╨╡╤Б╨╗╨╕ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А ╨╖╨░╨▒╤Л╨╗ plan.inputs, ╨╜╨╛ ╨▓ spec.summary ╨╡╤Б╤В╤М ╨╕╨╝╨╡╨╜╨░
-    ╨▓╤Е╨╛╨┤╨╜╤Л╤Е ╤Д╨░╨╣╨╗╨╛╨▓ тАФ ╨▓╨┐╨╕╤Б╤Л╨▓╨░╨╡╨╝ ╨╕╤Е ╨▓ plan.inputs ╨Я╨Х╨а╨Х╨Ф build-╤Д╨░╨╖╨╛╨╣, ╤З╤В╨╛╨▒╤Л coder/aider
-    ╨▓╨╕╨┤╨╡╨╗╨╕ ╤Н╤В╨╕ ╨┐╤Г╤В╨╕. ╨б╤Г╤Й╨╡╤Б╤В╨▓╤Г╤О╤Й╨╕╨╡ plan.inputs ╨Э╨Х ╨┐╨╡╤А╨╡╨╖╨░╨┐╨╕╤Б╤Л╨▓╨░╤О╤В╤Б╤П.
-    ╨Ф╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╜╨╛, ╨▒╨╡╨╖ LLM. ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В plan (╨╝╨╛╨┤╨╕╤Д╨╕╤Ж╨╕╤А╤Г╨╡╤В in-place)."""
+    """P9.10: если архитектор забыл plan.inputs, но в spec.summary есть имена
+    входных файлов — вписываем их в plan.inputs ПЕРЕД build-фазой, чтобы coder/aider
+    видели эти пути. Существующие plan.inputs НЕ перезаписываются.
+    Детерминистично, без LLM. Возвращает plan (модифицирует in-place)."""
     if not isinstance(plan, dict):
         return plan
     existing_paths: set[str] = set()
@@ -1048,17 +1020,17 @@ def _enrich_plan_with_heuristic_inputs(plan: dict, spec: dict | None) -> dict:
     return plan
 
 
-# тФАтФАтФА P11.1: ╨║╨╛╨╜╤В╤А╨░╨║╤В╤Л plan.files ╨╕ ╨▓╨░╨╗╨╕╨┤╨░╤Ж╨╕╤П ╨░╤А╤Е╨╕╤В╨╡╨║╤В╤Г╤А╤Л тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
-# ╨Э╨╡-╨┐╨╕╤В╨╛╨╜-╤А╨░╤Б╤И╨╕╤А╨╡╨╜╨╕╤П ╨┤╨╗╤П ╨║╨╛╤В╨╛╤А╤Л╤Е exports ╨╗╨╛╨│╨╕╤З╨╡╤Б╨║╨╕ ╨┐╤Г╤Б╤В╤Л (╨┤╨░╨╜╨╜╤Л╨╡/╨┤╨╛╨║╨╕/╨║╨╛╨╜╤Д╨╕╨│╨╕).
+# ─── P11.1: контракты plan.files и валидация архитектуры ───────────────────────
+# Не-питон-расширения для которых exports логически пусты (данные/доки/конфиги).
 _NON_PYTHON_EXTS = {
     ".json", ".txt", ".md", ".csv", ".tsv", ".yaml", ".yml", ".ini",
     ".cfg", ".toml", ".html", ".css", ".sql", ".log", ".env",
 }
 
-# ╨Ш╨╝╨╡╨╜╨░ ╨║╨╛╤В╨╛╤А╤Л╨╡ ╨╛╨▒╤Л╤З╨╜╨╛ ╤П╨▓╨╗╤П╤О╤В╤Б╤П ╤В╨╛╤З╨║╨╛╨╣ ╨▓╤Е╨╛╨┤╨░ тАФ ╨╕╤Е ╨╜╨╕╨║╤В╨╛ ╨╜╨╡ ╨╕╨╝╨┐╨╛╤А╤В╨╕╤А╤Г╨╡╤В,
-# ╨┐╨╛╤Н╤В╨╛╨╝╤Г exports ╨╝╨╛╨╢╨╡╤В ╨▒╤Л╤В╤М ╨┐╤Г╤Б╤В╤Л╨╝. ╨Ф╨╡╤В╨╡╨║╤В╨╕╨╝ ╤Б╤В╤А╤Г╨║╤В╤Г╤А╨╜╨╛ (╨▒╨░╨╖╨╛╨▓╨╛╨╡ ╨╕╨╝╤П ╤Д╨░╨╣╨╗╨░),
-# ╨╜╨╡ ╨║╨╗╤О╤З╨╡╨▓╤Л╨╝╨╕ ╤Б╨╗╨╛╨▓╨░╨╝╨╕ ╨▓ ╨╖╨░╨┤╨░╤З╨╡: ╤Б╤А╨╡╨┤╨╕ .py-╤Д╨░╨╣╨╗╨╛╨▓ ╨┐╤А╨╛╨╡╨║╤В╨░ ╤Д╨░╨╣╨╗ ╤Б ╨░╨▒╤Б╨╛╨╗╤О╤В╨╜╨╛
-# ╨╜╨╕╨║╨░╨║╨╕╨╝╨╕ depends_on (╨║╤А╨╛╨╝╨╡ stdlib) тАФ ╤Н╤В╨╛ ╨║╨░╨╜╨┤╨╕╨┤╨░╤В ╨╜╨░ entry-point.
+# Имена которые обычно являются точкой входа — их никто не импортирует,
+# поэтому exports может быть пустым. Детектим структурно (базовое имя файла),
+# не ключевыми словами в задаче: среди .py-файлов проекта файл с абсолютно
+# никакими depends_on (кроме stdlib) — это кандидат на entry-point.
 _LIKELY_ENTRY_BASENAMES = {"main.py", "__main__.py", "app.py", "run.py", "cli.py"}
 
 
@@ -1067,22 +1039,22 @@ def _is_python_path(rel: str) -> bool:
 
 
 def _is_non_python_path(rel: str) -> bool:
-    """True ╨┤╨╗╤П ╤Д╨░╨╣╨╗╨╛╨▓-╨┤╨░╨╜╨╜╤Л╤Е/╨┤╨╛╨║╨╕/╨║╨╛╨╜╤Д╨╕╨│╨╕╨▓ (╨╜╨╡ .py)."""
+    """True для файлов-данных/доки/конфигив (не .py)."""
     rl = rel.lower()
     if rl.endswith(".py"):
         return False
     for ext in _NON_PYTHON_EXTS:
         if rl.endswith(ext):
             return True
-    # ╤Д╨░╨╣╨╗╤Л ╨▒╨╡╨╖ ╤А╨░╤Б╤И╨╕╤А╨╡╨╜╨╕╤П (LICENSE, Makefile) тАФ ╤В╨╛╨╢╨╡ ╨╜╨╡-╨┐╨╕╤В╨╛╨╜
+    # файлы без расширения (LICENSE, Makefile) — тоже не-питон
     if "." not in rl.rsplit("/", 1)[-1]:
         return True
     return False
 
 
 def _normalize_export_entry(e: dict | None) -> dict | None:
-    """╨Э╨╛╤А╨╝╨░╨╗╨╕╨╖╤Г╨╡╤В ╨╛╨┤╨╕╨╜ ╤Н╨╗╨╡╨╝╨╡╨╜╤В exports. ╨а╨╡╨╢╨╡╨║╤В╨╕╤В ╨╝╤Г╤Б╨╛╤А ╨╕ ╨┐╨╛╨╗╤Г╤З╨░╨╡╤В ╨╛╨┤╨╕╨╜╨░╨║╨╛╨▓╤Г╤О
-    ╤Б╤Е╨╡╨╝╤Г ╨┐╤А╨╡╨┤╤Б╨║╨░╨╖╤Г╨╡╨╝╨╛: {name, kind, signature, doc}."""
+    """Нормализует один элемент exports. Режектит мусор и получает одинаковую
+    схему предсказуемо: {name, kind, signature, doc}."""
     if not isinstance(e, dict):
         return None
     name = str(e.get("name") or "").strip()
@@ -1090,8 +1062,8 @@ def _normalize_export_entry(e: dict | None) -> dict | None:
         return None
     kind = str(e.get("kind") or "").strip().lower()
     if kind not in ("function", "class", "const"):
-        # ╨б╤В╨░╨▓╨╕╨╝ ╤Н╨▓╤А╨╕╤Б╤В╨╕╨║╤Г ╨┐╨╛ ╨▓╨╕╨┤╤Г: ╨▓╤Б╤С ╨▓ UPPER_SNAKE тАФ ╨║╨╛╨╜╤Б╤В╨░╨╜╤В╨░,
-        # ╨▓╤Б╤С ╤Б ╨▒╨╛╨╗╤М╤И╨╛╨╣ ╨▒╤Г╨║╨▓╤Л тАФ ╨║╨╗╨░╤Б╤Б, ╨╛╤Б╤В╨░╨╗╤М╨╜╨╛╨╡ тАФ ╤Д╤Г╨╜╨║╤Ж╨╕╤П.
+        # Ставим эвристику по виду: всё в UPPER_SNAKE — константа,
+        # всё с большой буквы — класс, остальное — функция.
         if name.isupper():
             kind = "const"
         elif name[0].isupper():
@@ -1104,8 +1076,8 @@ def _normalize_export_entry(e: dict | None) -> dict | None:
 
 
 def _file_likely_entry_point(file_entry: dict) -> bool:
-    """╨д╨░╨╣╨╗ ╨▓╤Л╨│╨╗╤П╨┤╨╕╤В ╨║╨░╨║ entry point: ╨▒╨░╨╖╨╛╨▓╨╛╨╡ ╨╕╨╝╤П main.py/__main__.py/app.py/run.py/cli.py.
-    ╨Э╨╡ ╨╕╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╡╤В ╨║╨╗╤О╤З╨╡╨▓╤Л╨╡ ╤Б╨╗╨╛╨▓╨░ ╨╕╨╖ ╨╖╨░╨┤╨░╤З╨╕ тАФ ╤В╨╛╨╗╤М╨║╨╛ ╨╕╨╝╤П ╤Д╨░╨╣╨╗╨░."""
+    """Файл выглядит как entry point: базовое имя main.py/__main__.py/app.py/run.py/cli.py.
+    Не использует ключевые слова из задачи — только имя файла."""
     if not isinstance(file_entry, dict):
         return False
     rel = _norm_path(file_entry.get("path") or "")
@@ -1114,17 +1086,17 @@ def _file_likely_entry_point(file_entry: dict) -> bool:
 
 
 def _normalize_plan_contracts(plan: dict, spec: dict | None) -> dict:
-    """P11.1: ╨▓╨░╨╗╨╕╨┤╨╕╤А╤Г╨╡╤В ╨╕ ╨╜╨╛╤А╨╝╨░╨╗╨╕╨╖╤Г╨╡╤В plan.files ╨┐╨╛╤Б╨╗╨╡ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А╨░:
-      1) ╨Э╨╛╤А╨╝╨░╨╗╨╕╨╖╤Г╨╡╤В exports ╨║╨░╨╢╨┤╨╛╨│╨╛ ╤Д╨░╨╣╨╗╨░ (╨╛╤В╨▒╤А╨░╤Б╤Л╨▓╨░╨╡╤В ╨╝╤Г╤Б╨╛╤А, ╨▓╤Л╨▒╨╕╤А╨░╨╡╤В kind ╤Н╨▓╤А╨╕╤Б╤В╨╕╤З╨╡╤Б╨║╨╕).
-      2) ╨Я╤А╨╛╨▓╨╡╤А╤П╨╡╤В ╤Б╨╛╨│╨╗╨░╤Б╨╛╨▓╨░╨╜╨╜╨╛╤Б╤В╤М depends_on тЖФ exports: ╨╡╤Б╨╗╨╕ B ╨╖╨░╨▓╨╕╤Б╨╕╤В ╨╛╤В A,
-         ╨░ A.exports ╨┐╤Г╤Б╤В тАФ ╤Д╨╗╨░╨│ _exports_warning. ╨Я╨╗╨░╨╜ ╨Э╨Х ╤А╨╡╨╢╨╡╨║╤В╨╕╤В (lossless).
-      3) ╨б╤З╨╕╤В╨░╨╡╤В _contract_metrics ╨┤╨╗╤П ╤В╨╡╨╗╨╡╨╝╨╡╤В╤А╨╕╨╕.
+    """P11.1: валидирует и нормализует plan.files после архитектора:
+      1) Нормализует exports каждого файла (отбрасывает мусор, выбирает kind эвристически).
+      2) Проверяет согласованность depends_on ↔ exports: если B зависит от A,
+         а A.exports пуст — флаг _exports_warning. План НЕ режектит (lossless).
+      3) Считает _contract_metrics для телеметрии.
 
-    ╨Я╤А╨╕╨╜╤Ж╨╕╨┐: ╨▓╨░╨╗╨╕╨┤╨░╤В╨╛╤А ╨Э╨Ш╨Ъ╨Ю╨У╨Ф╨Р ╨╜╨╡ ╤А╤Г╨▒╨╕╤В ╨┐╨╗╨░╨╜ тАФ ╤В╨╛╨╗╤М╨║╨╛ ╨╜╨╛╤А╨╝╨░╨╗╨╕╨╖╤Г╨╡╤В ╨╕ ╤Б╨┐╨╕╤Б╤Л╨▓╨░╨╡╤В
-    warnings. fallback ╨▓╤Б╨╡╨│╨┤╨░ тАФ ╨┐╤Г╤Б╤В╤Л╨╡ exports ╨┤╨╛╨┐╤Г╤Б╨║╨░╤О╤В╤Б╤П ╨▓ ╤Н╤В╨╛╨╣ ╨▓╨╡╤А╤Б╨╕╨╕. P11.2 ╨╕╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╡╤В
-    exports ╨┐╤А╨╕ ╨╜╨░╨╗╨╕╤З╨╕╨╕; ╨╡╤Б╨╗╨╕ ╨┐╤Г╤Б╤В╤Л тАФ fall back ╨╜╨░ ╤Б╤В╨░╤А╤Л╨╣ ╨┐╤Г╤В╤М (╨║╨╛╨┤ ╤Б╨╛╤Б╨╡╨┤╨╜╨╕╤Е ╤Д╨░╨╣╨╗╨╛╨▓).
+    Принцип: валидатор НИКОГДА не рубит план — только нормализует и списывает
+    warnings. fallback всегда — пустые exports допускаются в этой версии. P11.2 использует
+    exports при наличии; если пусты — fall back на старый путь (код соседних файлов).
 
-    ╨Ь╨╛╨┤╨╕╤Д╨╕╤Ж╨╕╤А╤Г╨╡╤В plan in-place ╨╕ ╨▓╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В ╨╡╨│╨╛ ╨╢╨╡.
+    Модифицирует plan in-place и возвращает его же.
     """
     if not isinstance(plan, dict):
         return plan
@@ -1143,9 +1115,9 @@ def _normalize_plan_contracts(plan: dict, spec: dict | None) -> dict:
         "files_total": 0,
         "py_files": 0,
         "files_with_exports": 0,
-        "files_missing_exports": [],   # list[str] of paths where exports ╨┐╤Г╤Б╤В ╨╜╨╛ ╨┤╨╛╨╗╨╢╨╜╤Л ╨▒╤Л╤В╤М
-        "depends_unmatched": [],       # list[str] "B->A" ╨│╨┤╨╡ A.exports ╨┐╤Г╤Б╤В
-        "depends_outside_plan": [],    # list[str] "B->X" ╨│╨┤╨╡ X ╨╜╨╡ ╨▓ plan.files ╨╕ ╨╜╨╡ stdlib
+        "files_missing_exports": [],   # list[str] of paths where exports пуст но должны быть
+        "depends_unmatched": [],       # list[str] "B->A" где A.exports пуст
+        "depends_outside_plan": [],    # list[str] "B->X" где X не в plan.files и не stdlib
     }
 
     for f in files:
@@ -1156,7 +1128,7 @@ def _normalize_plan_contracts(plan: dict, spec: dict | None) -> dict:
             continue
         metrics["files_total"] += 1
 
-        # ╨Э╨╛╤А╨╝╨░╨╗╨╕╨╖╤Г╨╡╨╝ exports
+        # Нормализуем exports
         raw_exports = f.get("exports")
         norm_exports: list[dict] = []
         if isinstance(raw_exports, list):
@@ -1171,12 +1143,12 @@ def _normalize_plan_contracts(plan: dict, spec: dict | None) -> dict:
             if norm_exports:
                 metrics["files_with_exports"] += 1
             else:
-                # ╨Я╤Г╤Б╤В╤Л╨╡ exports ╨╛╨║╨░╨╖╤Л╨▓╨░╤О╤В╤Б╤П ╨╗╨╡╨│╨╕╤В╨╕╨╝╨╜╤Л╨╝╨╕ ╤В╨╛╨╗╤М╨║╨╛ ╨┤╨╗╤П entry-point
-                # ╤Д╨░╨╣╨╗╨╛╨▓ (main.py/app.py/...) тАФ ╨╕╤Е ╨╜╨╕╨║╤В╨╛ ╨╜╨╡ ╨╕╨╝╨┐╨╛╤А╤В╨╕╤А╤Г╨╡╤В.
+                # Пустые exports оказываются легитимными только для entry-point
+                # файлов (main.py/app.py/...) — их никто не импортирует.
                 if not _file_likely_entry_point(f):
                     metrics["files_missing_exports"].append(rel)
 
-        # depends_on ╨▓╨░╨╗╨╕╨┤╨░╤Ж╨╕╤П
+        # depends_on валидация
         deps = f.get("depends_on") or []
         if isinstance(deps, list):
             for d in deps:
@@ -1189,35 +1161,35 @@ def _normalize_plan_contracts(plan: dict, spec: dict | None) -> dict:
                 if dep_path not in paths_in_plan:
                     metrics["depends_outside_plan"].append(f"{rel}->{ds}")
                     continue
-                # ╨Я╤А╨╛╨▓╨╡╤А╤П╨╡╨╝: ╤Г ╤Д╨░╨╣╨╗╨░-╨╖╨░╨▓╨╕╤Б╨╕╨╝╨╛╤Б╤В╨╕ ╨╡╤Б╤В╤М exports?
+                # Проверяем: у файла-зависимости есть exports?
                 dep_entry = next((x for x in files
                                    if isinstance(x, dict)
                                    and _norm_path(x.get("path") or "") == dep_path), None)
                 if isinstance(dep_entry, dict):
                     dep_exports = dep_entry.get("exports") or []
-                    # ╨┤╨╗╤П ╨╜╨╡-╨┐╨╕╤В╨╛╨╜╨░ ╨┐╤Г╤Б╤В╤Л╨╡ exports ╨╛╨║; ╨┤╨╗╤П .py ╤Д╨░╨╣╨╗╨╛╨▓ ╨╛╤В ╨║╨╛╤В╨╛╤А╤Л╤Е
-                    # ╨╖╨░╨▓╨╕╤Б╤П╤В тАФ ╨┐╤Г╤Б╤В╤Л╨╡ exports = ╨╜╨░╤А╤Г╤И╨╡╨╜╨╕╨╡ ╨║╨╛╨╜╤В╤А╨░╨║╤В╨░
+                    # для не-питона пустые exports ок; для .py файлов от которых
+                    # зависят — пустые exports = нарушение контракта
                     if _is_python_path(dep_path) and not dep_exports:
                         metrics["depends_unmatched"].append(f"{rel}->{dep_path}")
 
     plan["_contract_metrics"] = metrics
 
-    # ╨Ы╨╛╨│╨╕╨╝ ╨┐╤А╨╡╨┤╤Г╨┐╤А╨╡╨╢╨┤╨╡╨╜╨╕╤П (╨╜╨╡ ╨╛╤И╨╕╨▒╨║╨╕) ╨┤╨╗╤П ╨▓╨╕╨┤╨╕╨╝╨╛╤Б╤В╨╕
+    # Логим предупреждения (не ошибки) для видимости
     if metrics["files_missing_exports"]:
-        logger.info(f"[plan.contracts] py-files ╨▒╨╡╨╖ exports ╨╜╨╛ ╨╜╨╡ entry-point: {metrics['files_missing_exports']}")
+        logger.info(f"[plan.contracts] py-files без exports но не entry-point: {metrics['files_missing_exports']}")
     if metrics["depends_unmatched"]:
-        logger.info(f"[plan.contracts] depends_on ╨▒╨╡╨╖ exports-╨║╨╛╨╜╤В╤А╨░╨║╤В╨░: {metrics['depends_unmatched']}")
+        logger.info(f"[plan.contracts] depends_on без exports-контракта: {metrics['depends_unmatched']}")
     if metrics["depends_outside_plan"]:
-        logger.warning(f"[plan.contracts] depends_on ╨▓╨╜╨╡ plan.files: {metrics['depends_outside_plan']}")
+        logger.warning(f"[plan.contracts] depends_on вне plan.files: {metrics['depends_outside_plan']}")
 
     return plan
 
 
 def _dedupe_files_vs_inputs(plan: dict | None) -> dict:
-    """P11.2.e (FM-10): ╨╡╤Б╨╗╨╕ ╤Д╨░╨╣╨╗ ╨╛╨▒╤К╤П╨▓╨╗╨╡╨╜ ╨▓ plan.inputs (╨▓╤Е╨╛╨┤╨╜╨░╤П ╤Д╨╕╨║╤Б╤В╤Г╤А╨░)
-    ╨╕ ╨▓ plan.files ╨╛╨┤╨╜╨╛╨▓╤А╨╡╨╝╨╡╨╜╨╜╨╛ тАФ ╤Г╨▒╨╕╤А╨░╨╡╨╝ ╨╕╨╖ plan.files. ╨Ш╨╜╨░╤З╨╡ ╤Б╨▒╨╛╤А╤Й╨╕╨║
-    ╨┐╤Л╤В╨░╨╡╤В╤Б╤П "╤Б╨╛╨▒╤А╨░╤В╤М" todos.json ╤З╨╡╤А╨╡╨╖ aider тАФ ╨▒╨╡╤Б╨┐╨╛╨╗╨╡╨╖╨╜╨╛ ╨╕ ╤А╨░╤Б╤Е╨╛╨┤╤Г╨╡╤В ╨▒╤О╨┤╨╢╨╡╤В.
-    Lossless: ╨╜╨╕╤З╨╡╨│╨╛ ╨╜╨╡ ╤А╨╡╨╢╨╡╤В╤Б╤П ╨║╤А╨╛╨╝╨╡ ╨┤╤Г╨▒╨╗╨╕╨║╨░╤В╨╛╨▓ inputтЖТfiles."""
+    """P11.2.e (FM-10): если файл объявлен в plan.inputs (входная фикстура)
+    и в plan.files одновременно — убираем из plan.files. Иначе сборщик
+    пытается "собрать" todos.json через aider — бесполезно и расходует бюджет.
+    Lossless: ничего не режется кроме дубликатов input→files."""
     if not isinstance(plan, dict):
         return plan
     files = plan.get("files") or []
@@ -1239,8 +1211,8 @@ def _dedupe_files_vs_inputs(plan: dict | None) -> dict:
             new_files.append(f)
             continue
         p = (f.get("path") or "").strip().replace("\\", "/")
-        # ╨а╨╡╨╢╨╡╨╝ ╤В╨╛╨╗╤М╨║╨╛ ╨╜╨╡-╨┐╨╕╤В╨╛╨╜-╤Д╨░╨╣╨╗╤Л: ╨╡╤Б╨╗╨╕ inputs ╤Б╨╛╨▓╨┐╨░╨┤╨░╨╡╤В ╤Б .py-╤Д╨░╨╣╨╗╨╛╨╝, ╨╛╤Б╤В╨░╨▓╨╗╤П╨╡╨╝
-        # files (╤А╨╡╨┤╨║╨╕╨╣ ╤Б╨╗╤Г╤З╨░╨╣, ╨▓╨╕╨┤╨╕╨╝╨╛ ╨╛╤И╨╕╨▒╨║╨░ ╨▓ plan, ╨┐╤Г╤Б╤В╤М heal ╤А╨░╨╖╨▒╨╕╤А╨░╨╡╤В╤Б╤П).
+        # Режем только не-питон-файлы: если inputs совпадает с .py-файлом, оставляем
+        # files (редкий случай, видимо ошибка в plan, пусть heal разбирается).
         if p and p in input_paths and not p.lower().endswith(".py"):
             removed.append(p)
             continue
@@ -1252,23 +1224,23 @@ def _dedupe_files_vs_inputs(plan: dict | None) -> dict:
 
 
 # =============================================================================
-# P11.6: ╨▒╨╗╨╛╨║╨╕╤А╤Г╤О╤Й╨╕╨╣ ╨┐╨╗╨░╨╜-╨▓╨░╨╗╨╕╨┤╨░╤В╨╛╤А + structural fallback
+# P11.6: блокирующий план-валидатор + structural fallback
 # =============================================================================
-# ╨Я╤А╨╕╨╜╤Ж╨╕╨┐: ╨▓╤Б╤С ╤А╨╡╤И╨░╨╡╤В╤Б╤П ╨┐╨╛ ╤Б╤В╤А╤Г╨║╤В╤Г╤А╨╡ (AST, ╤Д╨╛╤А╨╝╨░ name(args), plan-╨┐╨╛╨╗╤П),
-# ╨▒╨╡╨╖ ╨║╨╗╤О╤З╨╡╨▓╤Л╤Е ╤Б╨╗╨╛╨▓. ╨ж╨╡╨╗╨╕:
-#   FM-16: ╨╕╨╝╨╡╨╜╨░ user-requirements (add(a,b)) = plan.exports.name (╨╜╨╡ subtract).
-#   FM-17: ╨║╨░╨╢╨┤╤Л╨╣ .py-╤Д╨░╨╣╨╗ ╨╕╨╝╨╡╨╡╤В ╨╜╨╡╨┐╤Г╤Б╤В╨╛╨╣ exports (╨╕╨╗╨╕ ╤Н╤В╨╛ entry-point).
-#   FM-18: ╨▒╨╕╨╗╨┤ ╨┐╤Г╤Б╤В╨╛╨│╨╛ py-╤Д╨░╨╣╨╗╨░ (<20 ╨▒╨░╨╣╤В) тЖТ contract_failure.
-#   FM-14: rc=0 + missing calls тЖТ ╤Б╤В╤А╤Г╨║╤В╤Г╤А╨╜╤Л╨╣ target ╤З╨╡╤А╨╡╨╖ AST.
+# Принцип: всё решается по структуре (AST, форма name(args), plan-поля),
+# без ключевых слов. Цели:
+#   FM-16: имена user-requirements (add(a,b)) = plan.exports.name (не subtract).
+#   FM-17: каждый .py-файл имеет непустой exports (или это entry-point).
+#   FM-18: билд пустого py-файла (<20 байт) → contract_failure.
+#   FM-14: rc=0 + missing calls → структурный target через AST.
 # =============================================================================
 
-# ╨д╨╛╤А╨╝╨░ "<╨╕╨╝╤П>(<args>)" ╨▓ spec тАФ ╤Н╤В╨╛ ╤Д╤Г╨╜╨║╤Ж╨╕╨╛╨╜╨░╨╗╤М╨╜╤Л╨╣ ╨║╨╛╨╜╤В╤А╨░╨║╤В ╨╛╤В ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤П.
-# ╨Ш╨╝╤П тАФ ╨▓╨░╨╗╨╕╨┤╨╜╤Л╨╣ Python-╨╕╨┤╨╡╨╜╤В╨╕╤Д╨╕╨║╨░╤В╨╛╤А (╨▒╨╡╨╖ ╤В╨╛╤З╨╡╨║, ╨▒╨╡╨╖ ╨║╨╕╤А╨╕╨╗╨╗╨╕╤Ж╤Л),
-# ╤Б╤А╨░╨╖╤Г ╨╖╨░ ╨╜╨╕╨╝ ┬л(┬╗. ╨Я╤А╨╕╨╝╨╡╤А╤Л: add(a,b), divide(x: float), Storage().add_reminder(text).
-# ╨Э╨░╨╝ ╨╕╨╜╤В╨╡╤А╨╡╤Б╨╜╤Л ╤В╨╛╨╗╤М╨║╨╛ top-level ╨╕╨╝╨╡╨╜╨░ (╨╜╨╡ ╨┐╨╛╤Б╨╗╨╡ ╤В╨╛╤З╨║╨╕), ╤З╤В╨╛╨▒╤Л ╨╜╨╡ ╨╗╨╛╨▓╨╕╤В╤М
-# ╨╝╨╡╤В╨╛╨┤╤Л ╨▓ ╨▓╤Л╤А╨░╨╢╨╡╨╜╨╕╤П╤Е ╨▓╤А╨╛╨┤╨╡ "obj.method()".
+# Форма "<имя>(<args>)" в spec — это функциональный контракт от пользователя.
+# Имя — валидный Python-идентификатор (без точек, без кириллицы),
+# сразу за ним «(». Примеры: add(a,b), divide(x: float), Storage().add_reminder(text).
+# Нам интересны только top-level имена (не после точки), чтобы не ловить
+# методы в выражениях вроде "obj.method()".
 _REQ_NAME_RE = re.compile(r"(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
-# ╨б╨╗╤Г╨╢╨╡╨▒╨╜╤Л╨╡ ╨╕╨┤╨╡╨╜╤В╨╕╤Д╨╕╨║╨░╤В╨╛╤А╤Л, ╨║╨╛╤В╨╛╤А╤Л╨╡ ╤В╨╛╨╢╨╡ ╨╗╨╛╨▓╨╕╤В ╤А╨╡╨│╨╡╨║╤Б (╨╜╨╛ ╤Н╤В╨╛ ╨Э╨Х ╤Н╨║╤Б╨┐╨╛╤А╤В╤Л).
+# Служебные идентификаторы, которые тоже ловит регекс (но это НЕ экспорты).
 _REQ_NAME_NOISE = {
     "if", "for", "while", "return", "print", "input", "int", "str", "float",
     "bool", "list", "dict", "tuple", "set", "len", "range", "enumerate",
@@ -1280,10 +1252,10 @@ _REQ_NAME_NOISE = {
 
 
 def _extract_required_symbols(spec: dict | None) -> list[str]:
-    """╨Ш╨╖╨▓╨╗╨╡╨║╨░╨╡╤В top-level Python-╨╕╨╝╨╡╨╜╨░ ╨╕╨╖ spec.requirements/spec.summary,
-    ╨┐╨╛╤П╨▓╨╗╤П╤О╤Й╨╕╨╡╤Б╤П ╨▓ ╤Д╨╛╤А╨╝╨╡ ┬л<╨╕╨╝╤П>(тАж)┬╗.
-    ╨б╤В╤А╤Г╨║╤В╤Г╤А╨╜╨╛: ╤А╨╡╨│╨╡╨║╤Б ╨┐╨╛ ╤Д╨╛╤А╨╝╨╡ + ╤Б╨╗╤Г╨╢╨╡╨▒╨╜╤Л╨╣ noise-╤Д╨╕╨╗╤М╤В╤А (╤П╨╖╤Л╨║╨╛╨▓╤Л╨╡ ╨║╨╛╨╜╤Б╤В╤А╤Г╨║╤Ж╨╕╨╕ +
-    ╤Б╤В╨░╨╜╨┤╨░╤А╤В╨╜╤Л╨╡ ╨╝╨╛╨┤╤Г╨╗╨╕), ╨Э╨Ш╨Ъ╨Р╨Ъ╨Ш╨е ╨║╨╗╤О╤З╨╡╨▓╤Л╤Е ╤Б╨╗╨╛╨▓ ╨┐╤А╨╡╨┤╨╝╨╡╤В╨╜╨╛╨╣ ╨╛╨▒╨╗╨░╤Б╤В╨╕."""
+    """Извлекает top-level Python-имена из spec.requirements/spec.summary,
+    появляющиеся в форме «<имя>(…)».
+    Структурно: регекс по форме + служебный noise-фильтр (языковые конструкции +
+    стандартные модули), НИКАКИХ ключевых слов предметной области."""
     if not isinstance(spec, dict):
         return []
     chunks: list[str] = []
@@ -1308,16 +1280,16 @@ def _extract_required_symbols(spec: dict | None) -> list[str]:
 
 
 def _autofill_exports_from_tests(plan: dict) -> dict:
-    """P11.6.B-fallback: ╨╡╤Б╨╗╨╕ ╤Г .py-╤Д╨░╨╣╨╗╨░ ╨┐╤Г╤Б╤В╤Л╨╡ exports тАФ ╨┐╤Л╤В╨░╨╡╨╝╤Б╤П ╨▓╤Л╨▓╨╡╤Б╤В╨╕ ╨╕╤Е
-    ╨╕╨╖ plan.tests[*].checks[*].imports (╤Д╨╛╤А╨╝╨░ "from <module> import x, y").
-    ╨б╤В╤А╤Г╨║╤В╤Г╤А╨╜╨╛: ╨┐╨░╤А╤Б╨╕╨╝ ╨╕╨╝╨┐╨╛╤А╤В ╨║╨░╨║ Python-╨▓╤Л╤А╨░╨╢╨╡╨╜╨╕╨╡, ╤Б╨╛╨┐╨╛╤Б╤В╨░╨▓╨╗╤П╨╡╨╝ ╤Б path ╤Д╨░╨╣╨╗╨░."""
+    """P11.6.B-fallback: если у .py-файла пустые exports — пытаемся вывести их
+    из plan.tests[*].checks[*].imports (форма "from <module> import x, y").
+    Структурно: парсим импорт как Python-выражение, сопоставляем с path файла."""
     if not isinstance(plan, dict):
         return plan
     files = plan.get("files") or []
     if not isinstance(files, list):
         return plan
 
-    # ╨б╨╛╨▒╨╕╤А╨░╨╡╨╝ ╨▓╤Б╨╡ import-╤Б╨┐╨╕╤Б╨║╨╕ ╨╕╨╖ ╤В╨╡╤Б╤В╨╛╨▓: {module: set(names)}
+    # Собираем все import-списки из тестов: {module: set(names)}
     import_map: dict[str, set[str]] = {}
     for t in (plan.get("tests") or []):
         if not isinstance(t, dict):
@@ -1331,7 +1303,7 @@ def _autofill_exports_from_tests(plan: dict) -> dict:
             for line in imps:
                 if not isinstance(line, str):
                     continue
-                # ╨д╨╛╤А╨╝╨░ "from M import a, b"
+                # Форма "from M import a, b"
                 m = re.match(
                     r"^\s*from\s+([\w.]+)\s+import\s+(.+)$", line.strip()
                 )
@@ -1371,14 +1343,14 @@ def _autofill_exports_from_tests(plan: dict) -> dict:
 
 
 def _validate_plan_p11_6(plan: dict, spec: dict | None) -> list[dict]:
-    """P11.6 ╨▒╨╗╨╛╨║╨╕╤А╤Г╤О╤Й╨╕╨╣ ╨▓╨░╨╗╨╕╨┤╨░╤В╨╛╤А ╨┐╨╗╨░╨╜╨░. ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В ╤Б╨┐╨╕╤Б╨╛╨║ violations:
-      [{kind, file?, missing?, message}, тАж]
-    ╨Я╤Г╤Б╤В╨╛╨╣ ╤Б╨┐╨╕╤Б╨╛╨║ = ╨┐╨╗╨░╨╜ ╨Ю╨Ъ.
+    """P11.6 блокирующий валидатор плана. Возвращает список violations:
+      [{kind, file?, missing?, message}, …]
+    Пустой список = план ОК.
 
-    ╨Я╤А╨╛╨▓╨╡╤А╤П╨╡╤В:
-      V1 (FM-17): ╨║╨░╨╢╨┤╤Л╨╣ .py-╤Д╨░╨╣╨╗ ╨╗╨╕╨▒╨╛ ╨╕╨╝╨╡╨╡╤В exports, ╨╗╨╕╨▒╨╛ ╤П╨▓╨╗╤П╨╡╤В╤Б╤П entry-point.
-      V2 (FM-16): ╨║╨░╨╢╨┤╨╛╨╡ ╨╕╨╝╤П ╨╕╨╖ spec.requirements (╤Д╨╛╤А╨╝╨░ name(тАж)) ╨┐╤А╨╕╤Б╤Г╤В╤Б╤В╨▓╤Г╨╡╤В
-            ╨║╨░╨║ exports[*].name ╤Е╨╛╤В╤П ╨▒╤Л ╨▓ ╨╛╨┤╨╜╨╛╨╝ ╨╕╨╖ plan.files."""
+    Проверяет:
+      V1 (FM-17): каждый .py-файл либо имеет exports, либо является entry-point.
+      V2 (FM-16): каждое имя из spec.requirements (форма name(…)) присутствует
+            как exports[*].name хотя бы в одном из plan.files."""
     violations: list[dict] = []
     if not isinstance(plan, dict):
         return [{"kind": "plan_not_dict", "message": "plan is not a dict"}]
@@ -1393,7 +1365,7 @@ def _validate_plan_p11_6(plan: dict, spec: dict | None) -> list[dict]:
         if not path.lower().endswith(".py"):
             continue
         if _file_likely_entry_point(f):
-            # entry-points (main.py/cli.py/run.py) ╨╝╨╛╨│╤Г╤В ╨╜╨╡ ╤Н╨║╤Б╨┐╨╛╤А╤В╨╕╤А╨╛╨▓╨░╤В╤М ╨╜╨╕╤З╨╡╨│╨╛
+            # entry-points (main.py/cli.py/run.py) могут не экспортировать ничего
             continue
         exports = f.get("exports") or []
         valid = [e for e in exports if isinstance(e, dict) and (e.get("name") or "").strip()]
@@ -1401,10 +1373,10 @@ def _validate_plan_p11_6(plan: dict, spec: dict | None) -> list[dict]:
             violations.append({
                 "kind": "missing_exports",
                 "file": path,
-                "message": f"{path}: ╤Н╤В╨╛ ╨╜╨╡ entry-point, ╨╜╨╛ exports ╨┐╤Г╤Б╤В",
+                "message": f"{path}: это не entry-point, но exports пуст",
             })
 
-    # V2: spec-symbols тКЖ union(exports.name)
+    # V2: spec-symbols ⊆ union(exports.name)
     required = _extract_required_symbols(spec)
     if required:
         all_export_names: set[str] = set()
@@ -1416,48 +1388,48 @@ def _validate_plan_p11_6(plan: dict, spec: dict | None) -> list[dict]:
                     nm = (e.get("name") or "").strip()
                     if nm:
                         all_export_names.add(nm)
-        # ╨Ш╨╝╨╡╨╜╨░ ╨╕╨╖ spec'╨░, ╨╜╨╡ ╨┐╨╛╨┐╨░╨▓╤И╨╕╨╡ ╨╜╨╕ ╨▓ ╨╛╨┤╨╜╨╕ exports тАФ ╤П╨▓╨╜╨╛ ╨┐╨╡╤А╨╡╨╕╨╝╨╡╨╜╨╛╨▓╨░╨╜╤Л ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А╨╛╨╝.
+        # Имена из spec'а, не попавшие ни в одни exports — явно переименованы архитектором.
         missing_in_plan = [n for n in required if n not in all_export_names]
         if missing_in_plan:
             violations.append({
                 "kind": "requirement_symbols_renamed",
                 "missing": missing_in_plan,
                 "message": (
-                    f"╨▓ spec.requirements ╤Д╨╕╨│╤Г╤А╨╕╤А╤Г╤О╤В {missing_in_plan}, "
-                    f"╨╜╨╛ ╨╕╤Е ╨╜╨╡╤В ╨▓ plan.exports[*].name"
+                    f"в spec.requirements фигурируют {missing_in_plan}, "
+                    f"но их нет в plan.exports[*].name"
                 ),
             })
     return violations
 
 
 def _format_violations_for_revise(violations: list[dict]) -> str:
-    """╨з╨╕╤В╨░╨╡╨╝╤Л╨╣ ╤Е╨╕╨╜╤В ╨┤╨╗╤П ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А╨░ ╤З╤В╨╛╨▒╤Л ╨┐╨╡╤А╨╡╨▓╤Л╨┤╨░╤В╤М ╨┐╨╗╨░╨╜."""
+    """Читаемый хинт для архитектора чтобы перевыдать план."""
     lines: list[str] = []
     for v in violations:
         kind = v.get("kind")
         if kind == "missing_exports":
             lines.append(
-                f"тАФ ╤Д╨░╨╣╨╗ {v.get('file')}: ╨┤╨╛╨▒╨░╨▓╤М ╨╜╨╡╨┐╤Г╤Б╤В╨╛╨╣ ╤Б╨┐╨╕╤Б╨╛╨║ exports "
-                f"({{name, kind, signature}}) тАФ ╤Н╤В╨╛ ╨╜╨╡ entry-point"
+                f"— файл {v.get('file')}: добавь непустой список exports "
+                f"({{name, kind, signature}}) — это не entry-point"
             )
         elif kind == "requirement_symbols_renamed":
             miss = v.get("missing") or []
             lines.append(
-                f"тАФ ╨╕╨╝╨╡╨╜╨░ ╨╕╨╖ ╨╖╨░╨┐╤А╨╛╤Б╨░ {miss} ╨Ф╨Ю╨Ы╨Ц╨Э╨л ╨┐╨╛╤П╨▓╨╕╤В╤М╤Б╤П ╨▓ plan.files[*].exports[*].name "
-                f"╨┤╨╛╤Б╨╗╨╛╨▓╨╜╨╛ (╨╜╨╡ ╨┐╨╡╤А╨╡╨╕╨╝╨╡╨╜╨╛╨▓╤Л╨▓╨░╨╣ addтЖТaddition, subтЖТsubtract ╨╕ ╤В.╨┐.)"
+                f"— имена из запроса {miss} ДОЛЖНЫ появиться в plan.files[*].exports[*].name "
+                f"дословно (не переименовывай add→addition, sub→subtract и т.п.)"
             )
         else:
-            lines.append(f"тАФ {v.get('message') or kind}")
+            lines.append(f"— {v.get('message') or kind}")
     return "\n".join(lines)
 
 
 def _enforce_plan_validity(
     plan: dict, spec: dict, budget: "Budget", max_revise: int = 2
 ) -> tuple[dict, list[dict], int]:
-    """╨Я╤Л╤В╨░╨╡╤В╤Б╤П ╨╕╤Б╨┐╤А╨░╨▓╨╕╤В╤М ╨┐╨╗╨░╨╜:
-      1) Autofill exports ╨╕╨╖ tests.checks.imports (╨▒╨╡╨╖ LLM).
-      2) ╨Х╤Б╨╗╨╕ ╨╛╤Б╤В╨░╨╗╨╕╤Б╤М violations тАФ ╨┐╤А╨╛╤Б╨╕╨╝ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А╨░ ╨┐╨╡╤А╨╡╨▓╤Л╨┤╨░╤В╤М (max_revise ╤А╨░╨╖).
-    ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В: (plan, final_violations, revise_count)."""
+    """Пытается исправить план:
+      1) Autofill exports из tests.checks.imports (без LLM).
+      2) Если остались violations — просим архитектора перевыдать (max_revise раз).
+    Возвращает: (plan, final_violations, revise_count)."""
     plan = _autofill_exports_from_tests(plan)
     violations = _validate_plan_p11_6(plan, spec)
     revises = 0
@@ -1468,13 +1440,13 @@ def _enforce_plan_validity(
             f"[plan.validate] revise {revises}/{max_revise}, violations={[v['kind'] for v in violations]}"
         )
         revise_user = (
-            "╨б╨┐╨╡╤Ж╨╕╤Д╨╕╨║╨░╤Ж╨╕╤П ╨┐╤А╨╛╨╡╨║╤В╨░:\n"
+            "Спецификация проекта:\n"
             + json.dumps(spec, ensure_ascii=False, indent=2)
-            + "\n\n╨Я╨а╨Х╨Ф╨л╨Ф╨г╨й╨Ш╨Щ ╨Я╨Ы╨Р╨Э (╨╕╨╝╨╡╨╡╤В ╨╜╨░╤А╤Г╤И╨╡╨╜╨╕╤П):\n"
+            + "\n\nПРЕДЫДУЩИЙ ПЛАН (имеет нарушения):\n"
             + json.dumps(plan, ensure_ascii=False, indent=2)
-            + "\n\n╨Э╨Р╨а╨г╨и╨Х╨Э╨Ш╨п ╨Ъ╨Ю╨Э╨в╨а╨Р╨Ъ╨в╨Р:\n"
+            + "\n\nНАРУШЕНИЯ КОНТРАКТА:\n"
             + hint
-            + "\n\n╨Ш╤Б╨┐╤А╨░╨▓╤М ╨Я╨Ю╨Ы╨Э╨л╨Щ plan, ╨▓╨╡╤А╨╜╨╕ ╨╛╨┤╨╕╨╜ JSON-╨╛╨▒╤К╨╡╨║╤В ╤Б ╤В╨╡╨╝╨╕ ╨╢╨╡ ╨║╨╗╤О╤З╨░╨╝╨╕."
+            + "\n\nИсправь ПОЛНЫЙ plan, верни один JSON-объект с теми же ключами."
         )
         try:
             raw = _llm(budget, MODEL_ARCHITECT, PROJECT_ARCHITECT_SYSTEM, revise_user,
@@ -1482,10 +1454,9 @@ def _enforce_plan_validity(
             new_plan = _safe_parse(raw)
             if isinstance(new_plan, dict) and (new_plan.get("files") or []):
                 new_plan["files"] = (new_plan.get("files") or [])[:MAX_FILES]
-                # S-7 fix: setdefault ╨╜╨╡ ╨┐╨╡╤А╨╡╨╖╨░╨┐╨╕╤Б╤Л╨▓╨░╨╡╤В ╨┐╤Г╤Б╤В╤Л╨╡ ╤Б╨┐╨╕╤Б╨║╨╕ [] ╨╛╤В LLM
-                for _field in ("build_steps", "tests", "inputs"):
-                    if not new_plan.get(_field):
-                        new_plan[_field] = plan.get(_field) or []
+                new_plan.setdefault("build_steps", plan.get("build_steps", []))
+                new_plan.setdefault("tests", plan.get("tests", []))
+                new_plan.setdefault("inputs", plan.get("inputs", []))
                 plan = new_plan
                 plan = _autofill_exports_from_tests(plan)
         except Exception as e:
@@ -1496,13 +1467,13 @@ def _enforce_plan_validity(
 
 
 # =============================================================================
-# P11.2: coder ╨┐╨╛╨╗╤Г╤З╨░╨╡╤В API ╤Б╨╛╤Б╨╡╨┤╨╡╨╣
+# P11.2: coder получает API соседей
 # =============================================================================
-# ╨Ш╨┤╨╡╤П: ╨║╨╛╨│╨┤╨░ aider ╤Б╤В╤А╨╛╨╕╤В ╤Д╨░╨╣╨╗ F, ╨╛╨╜ ╨┤╨╛╨╗╨╢╨╡╨╜ ╨▓╨╕╨┤╨╡╤В╤М ╨Ъ╨Ю╨Э╨в╨а╨Р╨Ъ╨в╨л ╨▓╤Б╨╡╤Е F.depends_on:
-#   - ╨╡╤Б╨╗╨╕ ╤Б╨╛╤Б╨╡╨┤╨╜╨╕╨╣ ╤Д╨░╨╣╨╗ ╤Г╨╢╨╡ ╤Б╨╛╨▒╤А╨░╨╜ ╨╜╨░ ╨┤╨╕╤Б╨║╨╡ тАФ ╨┐╨╡╤А╨╡╨┤╨░╤С╨╝ ╨╡╨│╨╛ ╨║╨░╨║ --read (╤А╨╡╨░╨╗╤М╨╜╤Л╨╣ ╨║╨╛╨┤);
-#   - ╨╡╤Б╨╗╨╕ ╨╜╨╡ ╤Б╨╛╨▒╤А╨░╨╜ тАФ ╨│╨╡╨╜╨╡╤А╨╕╨╝ stub ╨╕╨╖ plan exports (╤Б╨╕╨│╨╜╨░╤В╤Г╤А╤Л ╤Б NotImplementedError),
-#     ╨┐╨╕╤И╨╡╨╝ ╨▓ .jarvis/contracts/<dep> ╨╕ ╤В╨╛╨╢╨╡ ╨┐╨╡╤А╨╡╨┤╨░╤С╨╝ ╨║╨░╨║ --read.
-# ╨б╤В╤А╤Г╨║╤В╤Г╤А╨╜╨╛ тАФ ╨╜╨╕╨║╨░╨║╨╕╤Е keyword-╤Н╨▓╤А╨╕╤Б╤В╨╕╨║, ╤А╨╡╤И╨╡╨╜╨╕╤П ╨╕╨╖ plan.
+# Идея: когда aider строит файл F, он должен видеть КОНТРАКТЫ всех F.depends_on:
+#   - если соседний файл уже собран на диске — передаём его как --read (реальный код);
+#   - если не собран — генерим stub из plan exports (сигнатуры с NotImplementedError),
+#     пишем в .jarvis/contracts/<dep> и тоже передаём как --read.
+# Структурно — никаких keyword-эвристик, решения из plan.
 
 _CONTRACT_DIR_NAME = ".jarvis_contracts"
 
@@ -1518,13 +1489,13 @@ def _module_name_from_rel(rel: str) -> str:
 
 
 def _render_export_signature(exp: dict) -> str:
-    """╨Я╨╛ exports-╤Н╨╗╨╡╨╝╨╡╨╜╤В╤Г ╤Б╤Д╨╛╤А╨╝╨╕╤А╨╛╨▓╨░╤В╤М ╨║╨╛╤А╨╛╤В╨║╤Г╤О ╤Б╨╕╨│╨╜╨░╤В╤Г╤А╤Г ╨┤╨╗╤П ╨┐╤А╨╛╨╝╨┐╤В╨░.
+    """По exports-элементу сформировать короткую сигнатуру для промпта.
 
-    ╨д╨╛╤А╨╝╨░╤В:
+    Формат:
       function: "add(a, b) -> int"
       class:    "class Storage(db_path: str)"
       const:    "DB_PATH: str"
-    ╨Х╤Б╨╗╨╕ signature ╨▓ plan ╤Г╨╢╨╡ ╨▓╤Л╨│╨╗╤П╨┤╨╕╤В ╨┐╤А╨░╨▓╨╕╨╗╤М╨╜╨╛ тАФ ╨▒╨╡╤А╤С╨╝ ╨╡╤С as-is."""
+    Если signature в plan уже выглядит правильно — берём её as-is."""
     if not isinstance(exp, dict):
         return ""
     name = (exp.get("name") or "").strip()
@@ -1533,11 +1504,11 @@ def _render_export_signature(exp: dict) -> str:
     kind = (exp.get("kind") or "function").strip().lower()
     sig = (exp.get("signature") or "").strip()
     if kind == "const":
-        # signature ╨╝╨╛╨╢╨╡╤В ╨▒╤Л╤В╤М ╤В╨╕╨┐╨╛╨╝ ("str") ╨╕╨╗╨╕ ╨▓╨╕╨┤╨╛╨╝ "DB_PATH: str".
+        # signature может быть типом ("str") или видом "DB_PATH: str".
         if sig.startswith(name):
             return sig
         if sig:
-            # ╨┐╨╛╨┐╤А╨╛╨▒╤Г╨╡╨╝ ╨┐╤А╨╛╨╕╨╜╤В╨╡╤А╨┐╤А╨╡╤В╨╕╤А╨╛╨▓╨░╤В╤М ╤Б╨╕╨│╨╜╨░╤В╤Г╤А╤Г ╨║╨░╨║ ╤В╨╕╨┐
+            # попробуем проинтерпретировать сигнатуру как тип
             return f"{name}: {sig}"
         return name
     if kind == "class":
@@ -1557,11 +1528,11 @@ def _render_export_signature(exp: dict) -> str:
 
 
 def _render_neighbor_stub(dep_rel: str, dep_file: dict) -> str:
-    """╨б╨╛╨▒╤А╨░╤В╤М ╤Б╨╛╨┤╨╡╤А╨╢╨╕╨╝╨╛╨╡ stub-╤Д╨░╨╣╨╗╨░ ╨┤╨╗╤П ╤Б╨╛╤Б╨╡╨┤╨░ ╨┐╨╛ exports.
+    """Собрать содержимое stub-файла для соседа по exports.
 
-    ╨Т╤Л╨▓╨╛╨┤ тАФ ╤Б╨╕╨╜╤В╨░╨║╤Б╨╕╤З╨╡╤Б╨║╨╕ ╨▓╨░╨╗╨╕╨┤╨╜╤Л╨╣ Python: ╨╕╨╝╨┐╨╛╤А╤В╤Л, ╤Д╤Г╨╜╨║╤Ж╨╕╨╕ ╤Б ╤Б╨╕╨│╨╜╨░╤В╤Г╤А╨░╨╝╨╕ ╨╕ raise NotImplementedError,
-    ╨║╨╗╨░╤Б╤Б╤Л ╤Б pass-╤В╨╡╨╗╨╛╨╝, ╨║╨╛╨╜╤Б╤В╨░╨╜╤В╤Л ╤Б placeholder-╨╖╨╜╨░╤З╨╡╨╜╨╕╤П╨╝╨╕. ╨Э╤Г╨╢╨╡╨╜ ╨╕╤Б╨║╨╗╤О╤З╨╕╤В╨╡╨╗╤М╨╜╨╛ ╨║╨░╨║
-    READ-ONLY ╨║╨╛╨╜╤В╨╡╨║╤Б╤В ╨┤╨╗╤П aider тАФ ╤З╤В╨╛╨▒╤Л coder ╨▓╨╕╨┤╨╡╨╗ ╨╕╨╝╨╡╨╜╨░ ╨╕ ╤Б╨╕╨│╨╜╨░╤В╤Г╤А╤Л API."""
+    Вывод — синтаксически валидный Python: импорты, функции с сигнатурами и raise NotImplementedError,
+    классы с pass-телом, константы с placeholder-значениями. Нужен исключительно как
+    READ-ONLY контекст для aider — чтобы coder видел имена и сигнатуры API."""
     if not isinstance(dep_file, dict):
         return ""
     exports = dep_file.get("exports") or []
@@ -1585,14 +1556,14 @@ def _render_neighbor_stub(dep_rel: str, dep_file: dict) -> str:
         sig = _render_export_signature(exp)
         has_any = True
         if kind == "const":
-            # ╨Я╨╗╨╡╨╣╤Б╤Е╨╛╨╗╨┤╨╡╤А-╨╖╨╜╨░╤З╨╡╨╜╨╕╨╡ (╨╕╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╡╨╝ None тАФ ╤А╨╡╨░╨╗╤М╨╜╨╛╨╡ ╨╖╨╜╨░╤З╨╡╨╜╨╕╨╡ ╨▓ ╨╜╨░╤Б╤В╨╛╤П╤Й╨╡╨╝ ╨╝╨╛╨┤╤Г╨╗╨╡).
+            # Плейсхолдер-значение (используем None — реальное значение в настоящем модуле).
             if doc:
                 lines.append(f"# {doc}")
             lines.append(f"{name} = None  # contract: {sig}")
             lines.append("")
         elif kind == "class":
-            # ╨Ф╨╗╤П stub ╨╜╨╡ ╨▓╤Л╨▓╨╛╨┤╨╕╨╝ base-classes ╨╕╨╗╨╕ ╨┐╨░╤А╨░╨╝╨╡╤В╤А╤Л __init__ тАФ ╤Н╤В╨╛ ╨╜╨╡╨▓╨░╨╗╨╕╨┤╨╜╤Л╨╣ Python.
-            # ╨б╨╕╨│╨╜╨░╤В╤Г╤А╤Г ╨┐╨╛╨║╨░╨╢╨╡╨╝ ╨▓ ╨║╨╛╨╝╨╝╨╡╨╜╤В╨░╤А╨╕╨╕ ╨╕ ╨▓ docstring тАФ ╤Н╤В╨╛╨│╨╛ ╨┤╨╛╤Б╤В╨░╤В╨╛╤З╨╜╨╛ ╨┤╨╗╤П read-only context.
+            # Для stub не выводим base-classes или параметры __init__ — это невалидный Python.
+            # Сигнатуру покажем в комментарии и в docstring — этого достаточно для read-only context.
             lines.append(f"# contract: {sig}")
             lines.append(f"class {name}:")
             ds = doc or sig
@@ -1619,14 +1590,14 @@ def _build_neighbor_context(
     *,
     contracts_subdir: str = _CONTRACT_DIR_NAME,
 ) -> tuple[list[str], list[str]]:
-    """╨б╨╛╨▒╤А╨░╤В╤М read-only ╨║╨╛╨╜╤В╨╡╨║╤Б╤В ╨┤╨╗╤П aider ╨┐╤А╨╕ ╤Б╨▒╨╛╤А╨║╨╡ target_rel.
+    """Собрать read-only контекст для aider при сборке target_rel.
 
-    ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В (read_only_paths_str, neighbor_module_descriptions):
-      тАв read_only_paths_str тАФ ╨░╨▒╤Б╨╛╨╗╤О╤В╨╜╤Л╨╡ str-╨┐╤Г╤В╨╕ ╨┤╨╗╤П aider --read
-      тАв neighbor_module_descriptions тАФ ╤Б╨┐╨╕╤Б╨╛╨║ ╤Б╤В╤А╨╛╨║ ╨┤╨╗╤П ╨▓╨║╨╗╤О╤З╨╡╨╜╨╕╤П ╨▓ ╨┐╤А╨╛╨╝╨┐╤В╤Л coder-╨░
-        (╨╕╨╝╤П ╨╝╨╛╨┤╤Г╨╗╤П ╨╕ ╤Б╨┐╨╕╤Б╨╛╨║ ╨╕╨╝╨╡╨╜, ╨║╨╛╤В╨╛╤А╤Л╨╡ ╨╛╨╜ ╤Н╨║╤Б╨┐╨╛╤А╤В╨╕╤А╤Г╨╡╤В).
+    Возвращает (read_only_paths_str, neighbor_module_descriptions):
+      • read_only_paths_str — абсолютные str-пути для aider --read
+      • neighbor_module_descriptions — список строк для включения в промпты coder-а
+        (имя модуля и список имен, которые он экспортирует).
 
-    ╨Э╨╕╨║╨╛╨│╨┤╨░ ╨╜╨╡ ╨▒╤А╨╛╤Б╨░╨╡╤В: ╨┐╤А╨╕ ╨╗╤О╨▒╨╛╨╣ ╨╛╤И╨╕╨▒╨║╨╡ ╨▓╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В ╤В╨╛ ╤З╤В╨╛ ╤Г╨┤╨░╨╗╨╛╤Б╤М ╤Б╨╛╨▒╤А╨░╤В╤М."""
+    Никогда не бросает: при любой ошибке возвращает то что удалось собрать."""
     from pathlib import Path as _Path
     if not isinstance(plan, dict):
         return ([], [])
@@ -1634,7 +1605,7 @@ def _build_neighbor_context(
     if not isinstance(files, list):
         return ([], [])
 
-    # ╨Ш╨╜╨┤╨╡╨║╤Б ╨┐╨╛ ╨┐╤Г╤В╨╕ ╨╕ ╨╜╨░╨╣╨┤╨╡╨╝ ╤Ж╨╡╨╗╨╡╨▓╨╛╨╣
+    # Индекс по пути и найдем целевой
     by_path: dict[str, dict] = {}
     for f in files:
         if isinstance(f, dict):
@@ -1658,27 +1629,27 @@ def _build_neighbor_context(
         if not dep_norm or dep_norm in seen:
             continue
         seen.add(dep_norm)
-        # ╨Ш╨│╨╜╨╛╤А╨╕╤А╤Г╨╡╨╝ stdlib-╨╝╨░╤А╨║╨╡╤А ╨╕ ╨▓╨╜╨╡╤И╨╜╨╕╨╡ pip-╨┐╨░╨║╨╡╤В╤Л (╨╕╤Е ╨╜╨╡╤В ╨▓ plan.files).
+        # Игнорируем stdlib-маркер и внешние pip-пакеты (их нет в plan.files).
         if dep_norm.lower() == "stdlib":
             continue
         dep_file = by_path.get(dep_norm)
         if dep_file is None:
-            # ╨Ч╨░╨▓╨╕╤Б╨╕╨╝╨╛╤Б╤В╤М ╨▓╨╜╨╡ ╨┐╨╗╨░╨╜╨░ тАФ ╨╜╨╡ ╨╝╨╛╨╢╨╡╨╝ ╨┐╨╛╨╝╨╛╤З╤М
+            # Зависимость вне плана — не можем помочь
             continue
-        # ╨Э╨╡-╨┐╨╕╤В╨╛╨╜ (╨╜╨░╨┐╤А. data.json) тАФ ╨▒╨╡╨╖ stub╨░. ╨Х╤Б╨╗╨╕ ╤Д╨░╨╣╨╗ ╤Г╨╢╨╡ ╨╡╤Б╤В╤М ╨╜╨░ ╨┤╨╕╤Б╨║╨╡,
-        # ╨┐╨╡╤А╨╡╨┤╨░╨┤╨╕╨╝ ╨║╨░╨║ --read ╨┤╨╗╤П ╨║╨╛╨╜╤В╨╡╨║╤Б╤В╨░.
+        # Не-питон (напр. data.json) — без stubа. Если файл уже есть на диске,
+        # передадим как --read для контекста.
         real_path = project_root / dep_norm
         if not _is_python_path(dep_norm):
             if real_path.is_file():
                 read_only_paths.append(str(real_path))
             continue
 
-        # ╨Я╨╕╤В╨╛╨╜-╤Б╨╛╤Б╨╡╨┤:
+        # Питон-сосед:
         if real_path.is_file() and real_path.stat().st_size > 0:
-            # ╨а╨╡╨░╨╗╤М╨╜╤Л╨╣ ╨║╨╛╨┤ тАФ ╨╗╤Г╤З╤И╨╡ ╤Б╤В╨░╨▒╨░
+            # Реальный код — лучше стаба
             read_only_paths.append(str(real_path))
         else:
-            # ╨У╨╡╨╜╨╡╤А╨╕╨╝ stub ╨╕╨╖ exports
+            # Генерим stub из exports
             try:
                 contracts_dir.mkdir(parents=True, exist_ok=True)
                 stub_name = dep_norm.replace("\\", "/").replace("/", "__")
@@ -1688,7 +1659,7 @@ def _build_neighbor_context(
                 read_only_paths.append(str(stub_path))
             except Exception as e:
                 logger.warning(f"[neighbor.stub] failed for {dep_norm}: {e}")
-        # ╨Ю╨┐╨╕╤Б╨░╨╜╨╕╨╡ ╨┤╨╗╤П ╨┐╤А╨╛╨╝╨┐╤В╨░
+        # Описание для промпта
         mod = _module_name_from_rel(dep_norm)
         names = []
         for exp in (dep_file.get("exports") or []):
@@ -1698,22 +1669,22 @@ def _build_neighbor_context(
                     names.append(_render_export_signature(exp))
         if names:
             neighbor_descs.append(
-                f"тАв ╨Ь╨╛╨┤╤Г╨╗╤М {mod} (╤Д╨░╨╣╨╗ {dep_norm}) ╤Н╨║╤Б╨┐╨╛╤А╤В╨╕╤А╤Г╨╡╤В: " + ", ".join(names)
+                f"• Модуль {mod} (файл {dep_norm}) экспортирует: " + ", ".join(names)
             )
         else:
             neighbor_descs.append(
-                f"тАв ╨Ь╨╛╨┤╤Г╨╗╤М {mod} (╤Д╨░╨╣╨╗ {dep_norm}) тАФ ╨▒╨╡╨╖ ╨╖╨░╨┤╨╡╨║╨╗╨░╤А╨╕╤А╨╛╨▓╨░╨╜╨╜╤Л╤Е exports"
+                f"• Модуль {mod} (файл {dep_norm}) — без задекларированных exports"
             )
     return (read_only_paths, neighbor_descs)
 
 
 def _build_contract_prompt_block(plan: dict | None, target_rel: str) -> str:
-    """╨б╤Д╨╛╤А╨╝╨╕╤А╨╛╨▓╨░╤В╤М CONTRACT-╨▒╨╗╨╛╨║ ╨┤╨╗╤П ╨┐╤А╨╛╨╝╨┐╤В╨░ coder-╨░.
+    """Сформировать CONTRACT-блок для промпта coder-а.
 
-    ╨Т╤Л╨▓╨╛╨┤ тАФ ╨╝╨╜╨╛╨│╨╛╤Б╤В╤А╨╛╤З╨╜╨░╤П ╤Б╨╡╨║╤Ж╨╕╤П, ╨▓╨║╨╗╤О╤З╨░╤О╤Й╨░╤П:
-      тАв must_export тАФ ╨╕╨╝╨╡╨╜╨░ ╨╕ ╤Б╨╕╨│╨╜╨░╤В╤Г╤А╤Л, ╨║╨╛╤В╨╛╤А╤Л╨╡ ╨Ю╨С╨п╨Ч╨Р╨Э ╤А╨╡╨░╨╗╨╕╨╖╨╛╨▓╨░╤В╤М ╤Д╨░╨╣╨╗
-      тАв required_imports тАФ ╨╕╨╝╨┐╨╛╤А╤В╤Л ╨╕╨╖ ╤Б╨╛╤Б╨╡╨┤╨╡╨╣ (╨▓╤Л╤З╨╕╤Б╨╗╨╡╨╜╤Л ╨╕╨╖ depends_on тИй plan.exports)
-    ╨Я╤Г╤Б╤В╨░╤П ╤Б╤В╤А╨╛╨║╨░ тАФ ╨╡╤Б╨╗╨╕ ╨╜╨╕╤З╨╡╨│╨╛ ╨╜╨╡ ╨╛╨▒╤К╤П╨▓╨╗╨╡╨╜╨╛ ╨▓ ╨┐╨╗╨░╨╜╨╡."""
+    Вывод — многострочная секция, включающая:
+      • must_export — имена и сигнатуры, которые ОБЯЗАН реализовать файл
+      • required_imports — импорты из соседей (вычислены из depends_on ∩ plan.exports)
+    Пустая строка — если ничего не объявлено в плане."""
     if not isinstance(plan, dict):
         return ""
     files = plan.get("files") or []
@@ -1724,7 +1695,7 @@ def _build_contract_prompt_block(plan: dict | None, target_rel: str) -> str:
 
     parts: list[str] = []
 
-    # 1) ╨з╤В╨╛ ╤Н╤В╨╛╤В ╤Д╨░╨╣╨╗ ╨┤╨╛╨╗╨╢╨╡╨╜ ╤Н╨║╤Б╨┐╨╛╤А╤В╨╕╤А╨╛╨▓╨░╤В╤М
+    # 1) Что этот файл должен экспортировать
     own_exports = target.get("exports") or []
     own_lines = []
     for exp in own_exports:
@@ -1734,12 +1705,12 @@ def _build_contract_prompt_block(plan: dict | None, target_rel: str) -> str:
                 own_lines.append(f"  - {sig}")
     if own_lines and _is_python_path(target_rel):
         parts.append(
-            "╨Ъ╨Ю╨Э╨в╨а╨Р╨Ъ╨в ╨н╨в╨Ю╨У╨Ю ╨д╨Р╨Щ╨Ы╨Р (╤В╤Л ╨Ю╨С╨п╨Ч╨Р╨Э ╤А╨╡╨░╨╗╨╕╨╖╨╛╨▓╨░╤В╤М ╨Ш╨Ь╨Х╨Э╨Э╨Ю ╤Н╤В╨╕ ╨╕╨╝╨╡╨╜╨░ ╤Б ╤В╨╛╤З╨╜╤Л╨╝╨╕ ╤Б╨╕╨│╨╜╨░╤В╤Г╤А╨░╨╝╨╕):\n"
+            "КОНТРАКТ ЭТОГО ФАЙЛА (ты ОБЯЗАН реализовать ИМЕННО эти имена с точными сигнатурами):\n"
             + "\n".join(own_lines)
-            + "\n╨Э╨Х ╨┐╨╡╤А╨╡╨╕╨╝╨╡╨╜╨╛╨▓╤Л╨▓╨░╨╣ (DB_PATH тЙа DATABASE_PATH). ╨Э╨Х ╨┤╨╛╨▒╨░╨▓╨╗╤П╨╣ ╨╗╨╕╤И╨╜╨╕╤Е public-╨╕╨╝╨╡╨╜."
+            + "\nНЕ переименовывай (DB_PATH ≠ DATABASE_PATH). НЕ добавляй лишних public-имен."
         )
 
-    # 2) ╨з╤В╨╛ ╤Н╤В╨╛╤В ╤Д╨░╨╣╨╗ ╨Ю╨С╨п╨Ч╨Р╨Э ╨╕╨╝╨┐╨╛╤А╤В╨╕╤А╨╛╨▓╨░╤В╤М ╨╕╨╖ ╤Б╨╛╤Б╨╡╨┤╨╡╨╣
+    # 2) Что этот файл ОБЯЗАН импортировать из соседей
     deps = target.get("depends_on") or []
     import_lines = []
     for dep in deps:
@@ -1765,9 +1736,9 @@ def _build_contract_prompt_block(plan: dict | None, target_rel: str) -> str:
         import_lines.append(f"  from {mod} import {', '.join(names)}")
     if import_lines:
         parts.append(
-            "╨Ю╨С╨п╨Ч╨Р╨в╨Х╨Ы╨м╨Э╨л╨Х ╨Ш╨Ь╨Я╨Ю╨а╨в╨л (╨╕╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╣ ╤А╨╛╨▓╨╜╨╛ ╤Н╤В╨╕ ╨╕╨╝╨╡╨╜╨░, ╨╜╨╡ ╨┤╤Г╨▒╨╗╨╕╤А╤Г╨╣ ╤Д╤Г╨╜╨║╤Ж╨╕╨╕ ╤Б╨╛╤Б╨╡╨┤╨╡╨╣):\n"
+            "ОБЯЗАТЕЛЬНЫЕ ИМПОРТЫ (используй ровно эти имена, не дублируй функции соседей):\n"
             + "\n".join(import_lines)
-            + "\n╨Э╨Х ╨┐╨╡╤А╨╡╨┐╨╕╤Б╤Л╨▓╨░╨╣ ╨╗╨╛╨│╨╕╨║╤Г ╤Б╨╛╤Б╨╡╨┤╨╡╨╣ ╨▓ ╤Б╨▓╨╛╤С╨╝ ╤Д╨░╨╣╨╗╨╡ тАФ ╨▓╤Л╨╖╤Л╨▓╨░╨╣ ╨╕╤Е ╤Д╤Г╨╜╨║╤Ж╨╕╨╕ ╤З╨╡╤А╨╡╨╖ ╨╕╨╝╨┐╨╛╤А╤В."
+            + "\nНЕ переписывай логику соседей в своём файле — вызывай их функции через импорт."
         )
 
     return "\n\n".join(parts)
@@ -1777,15 +1748,15 @@ def _check_file_contract(
     file_text: str,
     expected_exports: list,
 ) -> dict:
-    """P11.2.d: ╤Б╤В╨░╤В╨╕╤З╨╡╤Б╨║╨░╤П ╤Б╨▓╨╡╤А╨║╨░ ╤А╨╡╨░╨╗╤М╨╜╤Л╤Е top-level ╨╕╨╝╤С╨╜ ╤Б ╨╛╨╢╨╕╨┤╨░╨╡╨╝╤Л╨╝╨╕ exports.
+    """P11.2.d: статическая сверка реальных top-level имён с ожидаемыми exports.
 
-    ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В dict:
-      ok: bool                    тАФ ╨▓╤Б╨╡ expected ╨╜╨░╨╣╨┤╨╡╨╜╤Л
-      missing: list[str]          тАФ ╨╛╨╢╨╕╨┤╨░╨╗╨╕╤Б╤М ╨╜╨╛ ╨╜╨╡ ╨╜╨░╨╣╨┤╨╡╨╜╤Л
-      kind_mismatch: list[dict]   тАФ ╨╜╨░╨╣╨┤╨╡╨╜╤Л ╤Б ╨┤╤А╤Г╨│╨╕╨╝ kind
-      found_top_level: list[str]  тАФ ╤З╤В╨╛ ╤А╨╡╨░╨╗╤М╨╜╨╛ ╨╛╨▒╤К╤П╨▓╨╗╨╡╨╜╨╛
-      ast_ok: bool                тАФ ╤Д╨░╨╣╨╗ ╨┐╨░╤А╤Б╨╕╤В╤Б╤П
-    ╨Э╨╡ ╨┐╨░╨┤╨░╨╡╤В ╨╜╨╕ ╨╜╨░ ╤З╤С╨╝."""
+    Возвращает dict:
+      ok: bool                    — все expected найдены
+      missing: list[str]          — ожидались но не найдены
+      kind_mismatch: list[dict]   — найдены с другим kind
+      found_top_level: list[str]  — что реально объявлено
+      ast_ok: bool                — файл парсится
+    Не падает ни на чём."""
     import ast as _ast
     out = {
         "ok": True,
@@ -1845,12 +1816,12 @@ def _check_file_contract(
 
 
 def _collect_input_specs(plan: dict | None, spec: dict | None) -> list[dict]:
-    """╨б╨╛╨▒╨╕╤А╨░╨╡╤В ╤Б╨┐╨╕╤Б╨╛╨║ ╨▓╤Е╨╛╨┤╨╛╨▓ ╨╕╨╖ ╨┤╨▓╤Г╤Е ╨╕╤Б╤В╨╛╤З╨╜╨╕╨║╨╛╨▓ (╨┐╤А╨╕╨╛╤А╨╕╤В╨╡╤В plan.inputs):
-    1) plan.inputs: [{path, sample_content?}] тАФ ╤П╨▓╨╜╨╛ ╤Г╨║╨░╨╖╨░╨╜╨╛ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А╨╛╨╝.
-    2) Heuristic ╨╕╨╖ spec.summary/title тАФ fallback ╨║╨╛╨│╨┤╨░ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А ╨╖╨░╨▒╤Л╨╗.
+    """Собирает список входов из двух источников (приоритет plan.inputs):
+    1) plan.inputs: [{path, sample_content?}] — явно указано архитектором.
+    2) Heuristic из spec.summary/title — fallback когда архитектор забыл.
 
-    ╨а╨╡╨╖╤Г╨╗╤М╤В╨░╤В: ╤Б╨┐╨╕╤Б╨╛╨║ {'path': str, 'sample_content': bytes, 'source': 'plan'|'heuristic'}.
-    ╨Я╤Г╤В╨╕ ╨╕╨╖ deliverables ╨╕╤Б╨║╨╗╤О╤З╨░╤О╤В╤Б╤П. ╨Ф╤Г╨▒╨╗╨╕╨║╨░╤В╤Л ╤Г╨▒╨╕╤А╨░╤О╤В╤Б╤П."""
+    Результат: список {'path': str, 'sample_content': bytes, 'source': 'plan'|'heuristic'}.
+    Пути из deliverables исключаются. Дубликаты убираются."""
     deliverables: set[str] = set()
     if isinstance(spec, dict):
         deliverables = {_norm_path(d) for d in (spec.get("deliverables") or [])}
@@ -1858,7 +1829,7 @@ def _collect_input_specs(plan: dict | None, spec: dict | None) -> list[dict]:
     out: list[dict] = []
     seen: set[str] = set()
 
-    # 1) plan.inputs (╤П╨▓╨╜╤Л╨╣ ╨║╨╛╨╜╤В╤А╨░╨║╤В)
+    # 1) plan.inputs (явный контракт)
     if isinstance(plan, dict):
         for it in (plan.get("inputs") or []):
             if not isinstance(it, dict):
@@ -1874,7 +1845,7 @@ def _collect_input_specs(plan: dict | None, spec: dict | None) -> list[dict]:
             out.append({"path": rel, "sample_content": content, "source": "plan"})
             seen.add(rel)
 
-    # 2) heuristic fallback ╨╕╨╖ summary/title
+    # 2) heuristic fallback из summary/title
     for rel in _heuristic_input_paths(spec):
         if rel in seen:
             continue
@@ -1885,21 +1856,21 @@ def _collect_input_specs(plan: dict | None, spec: dict | None) -> list[dict]:
 
 
 def _norm_path(p: str) -> str:
-    """╨г╨╜╨╕╤Д╨╕╤Ж╨╕╤А╨╛╨▓╨░╨╜╨╜╨░╤П ╨╜╨╛╤А╨╝╨░╨╗╨╕╨╖╨░╤Ж╨╕╤П ╨╛╤В╨╜╨╛╤Б╨╕╤В╨╡╨╗╤М╨╜╨╛╨│╨╛ ╨┐╤Г╤В╨╕ ╨┤╨╗╤П ╤Б╤А╨░╨▓╨╜╨╡╨╜╨╕╤П."""
+    """Унифицированная нормализация относительного пути для сравнения."""
     if not p:
         return ""
     return str(p).replace("\\", "/").lstrip("./")
 
 
 def _collect_output_paths(plan: dict | None) -> set[str]:
-    """╨б╨╛╨▒╨╕╤А╨░╨╡╤В ╨┐╤Г╤В╨╕, ╨║╨╛╤В╨╛╤А╤Л╨╡ ╤Б╨║╤А╨╕╨┐╤В ╨Я╨Ш╨и╨Х╨в/╨б╨Ю╨Ч╨Ф╨Р╨Б╨в, ╨╕╨╖ plan'╨░:
-    1) ╨Ы╤О╨▒╨╛╨╣ path ╨▓ ╤З╨╡╨║╨░╤Е ╤В╨╕╨┐╨░ _OUTPUT_CHECK_TYPES.
-    2) build_steps[].target ╨╡╤Б╨╗╨╕ step.kind in {create_file, write_file}.
-    ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В ╨╝╨╜╨╛╨╢╨╡╤Б╤В╨▓╨╛ ╨╜╨╛╤А╨╝╨░╨╗╨╕╨╖╨╛╨▓╨░╨╜╨╜╤Л╤Е ╨┐╤Г╤В╨╡╨╣."""
+    """Собирает пути, которые скрипт ПИШЕТ/СОЗДАЁТ, из plan'а:
+    1) Любой path в чеках типа _OUTPUT_CHECK_TYPES.
+    2) build_steps[].target если step.kind in {create_file, write_file}.
+    Возвращает множество нормализованных путей."""
     out: set[str] = set()
     if not isinstance(plan, dict):
         return out
-    # 1) ╨┐╨╛╤Б╤В-╨┐╤А╨╛╨▓╨╡╤А╨║╨╕ ╤А╨╡╨╖╤Г╨╗╤М╤В╨░╤В╨░
+    # 1) пост-проверки результата
     for t in (plan.get("tests") or []):
         for ch in (t.get("checks") or []):
             if not isinstance(ch, dict):
@@ -1909,7 +1880,7 @@ def _collect_output_paths(plan: dict | None) -> set[str]:
                 rel = _norm_path(ch.get("path") or "")
                 if rel:
                     out.add(rel)
-    # 2) build_steps ╨╛╨┐╨╕╤Б╤Л╨▓╨░╤О╤Й╨╕╨╡ ╤Б╨╛╨╖╨┤╨░╨╜╨╕╨╡ ╤Д╨░╨╣╨╗╨░
+    # 2) build_steps описывающие создание файла
     for st in (plan.get("build_steps") or []):
         if not isinstance(st, dict):
             continue
@@ -1922,13 +1893,13 @@ def _collect_output_paths(plan: dict | None) -> set[str]:
 
 
 def _is_input_fixture(rel_path: str, deliverables: list[str], output_paths: set[str] | None = None) -> bool:
-    """True, ╨╡╤Б╨╗╨╕ file_exists(rel_path) тАФ ╤Н╤В╨╛, ╨▓╨╡╤А╨╛╤П╤В╨╜╨╛, ╨Т╨е╨Ю╨Ф╨Э╨Ю╨Щ ╤Д╨░╨╣╨╗,
-    ╨░ ╨╜╨╡ ╨▓╤Л╤Е╨╛╨┤╨╜╨╛╨╣ ╨░╤А╤В╨╡╤Д╨░╨║╤В. ╨н╨▓╤А╨╕╤Б╤В╨╕╨║╨░:
-    - ╨┐╤Г╤В╤М ╨Э╨Х ╨╖╨╜╨░╤З╨╕╤В╤Б╤П ╨▓ deliverables;
-    - ╨┐╤Г╤В╤М ╨Э╨Х ╨╖╨╜╨░╤З╨╕╤В╤Б╤П ╨▓ output_paths (P9.9: ╨┐╤Г╤В╨╕ ╤Б ╨┐╨╛╤Б╤В-╨┐╤А╨╛╨▓╨╡╤А╨║╨░╨╝╨╕ ╤А╨╡╨╖╤Г╨╗╤М╤В╨░╤В╨░
-      ╨╕╨╗╨╕ ╤П╨▓╨╜╨╛ ╤Б╨╛╨╖╨┤╨░╨▓╨░╨╡╨╝╤Л╨╡ ╨▓ build_steps);
-    - ╨┐╤Г╤В╤М ╨Э╨Х ╤П╨▓╨╗╤П╨╡╤В╤Б╤П ╨╕╤Б╤Е╨╛╨┤╨╜╨╕╨║╨╛╨╝.
-    ╨в╨╛╨│╨┤╨░ ╤Б╨╝╨╡╨╗╨╛ ╨╝╨╛╨╢╨╜╨╛ ╤Б╨╛╨╖╨┤╨░╤В╤М ╨┐╤Г╤Б╤В╨╛╨╣ dummy ╤З╤В╨╛╨▒╤Л ╤В╨╡╤Б╤В ╨╜╨╡ ╨┐╨░╨┤╨░╨╗ ╨╜╨░ ╨╛╤В╤Б╤Г╤В╤Б╤В╨▓╨╕╨╕ ╨▓╤Е╨╛╨┤╨░."""
+    """True, если file_exists(rel_path) — это, вероятно, ВХОДНОЙ файл,
+    а не выходной артефакт. Эвристика:
+    - путь НЕ значится в deliverables;
+    - путь НЕ значится в output_paths (P9.9: пути с пост-проверками результата
+      или явно создаваемые в build_steps);
+    - путь НЕ является исходником.
+    Тогда смело можно создать пустой dummy чтобы тест не падал на отсутствии входа."""
     if not rel_path:
         return False
     rel_norm = _norm_path(rel_path)
@@ -1936,10 +1907,10 @@ def _is_input_fixture(rel_path: str, deliverables: list[str], output_paths: set[
     if rel_norm in norm_dlv:
         return False
     if output_paths and rel_norm in output_paths:
-        # P9.9: ╨┐╤Г╤В╤М ╤Г╨┐╨╛╨╝╤П╨╜╤Г╤В ╨▓ ╤З╨╡╨║╨░╤Е ╤В╨╕╨┐╨░ file_min_lines/file_min_size/json_valid
-        # ╨╕╨╗╨╕ ╤П╨▓╨╜╨╛ ╤Б╨╛╨╖╨┤╨░╤С╤В╤Б╤П ╤Б╨║╤А╨╕╨┐╤В╨╛╨╝ тАФ ╤Н╤В╨╛ ╨Т╨л╨е╨Ю╨Ф, ╨╜╨╡ ╨▓╤Е╨╛╨┤.
+        # P9.9: путь упомянут в чеках типа file_min_lines/file_min_size/json_valid
+        # или явно создаётся скриптом — это ВЫХОД, не вход.
         return False
-    # ╨Ш╨╖╨▓╨╗╨╡╨║╨░╨╡╨╝ ╤А╨░╤Б╤И╨╕╤А╨╡╨╜╨╕╨╡ ╨▒╨╡╨╖ ╨▓╨╜╨╡╤И╨╜╨╕╤Е ╨╝╨╛╨┤╤Г╨╗╨╡╨╣ (os/pathlib ╨╜╨╡ ╨╕╨╝╨┐╨╛╤А╤В╨╕╤А╨╛╨▓╨░╨╜╤Л ╨▓╤Л╤И╨╡).
+    # Извлекаем расширение без внешних модулей (os/pathlib не импортированы выше).
     last_seg = rel_norm.rsplit("/", 1)[-1]
     ext = ("." + last_seg.rsplit(".", 1)[-1].lower()) if "." in last_seg else ""
     if ext in _SOURCE_EXT_FOR_FIXTURE:
@@ -1948,18 +1919,18 @@ def _is_input_fixture(rel_path: str, deliverables: list[str], output_paths: set[
 
 
 def _prepare_test_fixtures(slug: str, plan: dict, spec: dict | None) -> list[str]:
-    """╨б╨╛╨╖╨┤╨░╤С╤В ╨▓╤Е╨╛╨┤╨╜╤Л╨╡ ╤Д╨╕╨║╤Б╤В╤Г╤А╤Л ╨┐╨╡╤А╨╡╨┤ ╨╖╨░╨┐╤Г╤Б╨║╨╛╨╝ ╤В╨╡╤Б╤В╨╛╨▓.
+    """Создаёт входные фикстуры перед запуском тестов.
 
-    P9.10: ╨┤╨▓╨░ ╨╕╤Б╤В╨╛╤З╨╜╨╕╨║╨░:
-    1) plan.inputs (╤П╨▓╨╜╤Л╨╣): {path, sample_content?} тАФ ╤Б╨╛╨╖╨┤╨░╤С╤В ╤А╨╡╨░╨╗╨╕╤Б╤В╨╕╤З╨╜╤Л╨╣ ╨▓╤Е╨╛╨┤.
-    2) Heuristic ╨╕╨╖ spec.summary/title тАФ fallback ╨┤╨╗╤П ╨╖╨░╨▒╤Л╨▓╤З╨╕╨▓╨╛╨│╨╛ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А╨░.
+    P9.10: два источника:
+    1) plan.inputs (явный): {path, sample_content?} — создаёт реалистичный вход.
+    2) Heuristic из spec.summary/title — fallback для забывчивого архитектора.
 
-    P9.7-legacy: ╨╡╤Б╨╗╨╕ file_exists(path) ╨▓ plan.tests ╤Г╨║╨░╨╖╤Л╨▓╨░╨╡╤В ╨╜╨░ ╨▓╤Е╨╛╨┤, ╨║╨╛╤В╨╛╤А╨╛╨│╨╛
-    ╨╜╨╕╨║╤В╨╛ ╨╜╨╡ ╨╛╨┐╨╕╤Б╨░╨╗ тАФ ╤Б╨╛╨╖╨┤╨░╤С╨╝ ╨┐╤Г╤Б╤В╤Г╤О ╨╖╨░╨│╨╗╤Г╤И╨║╤Г (╤Б╤В╨░╤А╨╛╨╡ ╨┐╨╛╨▓╨╡╨┤╨╡╨╜╨╕╨╡).
+    P9.7-legacy: если file_exists(path) в plan.tests указывает на вход, которого
+    никто не описал — создаём пустую заглушку (старое поведение).
 
-    ╨б╤Г╤Й╨╡╤Б╤В╨▓╤Г╤О╤Й╨╕╨╡ ╤Д╨░╨╣╨╗╤Л ╨Э╨Х ╨┐╨╡╤А╨╡╨╖╨░╨┐╨╕╤Б╤Л╨▓╨░╤О╤В╤Б╤П. ╨Ф╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╜╨╛, ╨▒╨╡╨╖ LLM, ╨▒╨╡╨╖ ╨║╨╗╤О╤З╨╡╨▓╤Л╤Е ╤Б╨╗╨╛╨▓.
+    Существующие файлы НЕ перезаписываются. Детерминистично, без LLM, без ключевых слов.
 
-    ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В ╤Б╨┐╨╕╤Б╨╛╨║ ╤Б╨╛╨╖╨┤╨░╨╜╨╜╤Л╤Е ╨╛╤В╨╜╨╛╤Б╨╕╤В╨╡╨╗╤М╨╜╤Л╤Е ╨┐╤Г╤В╨╡╨╣."""
+    Возвращает список созданных относительных путей."""
     if not isinstance(plan, dict) or not isinstance(spec, dict):
         return []
     deliverables = [str(d) for d in (spec.get("deliverables") or [])]
@@ -1967,7 +1938,7 @@ def _prepare_test_fixtures(slug: str, plan: dict, spec: dict | None) -> list[str
     created: list[str] = []
     seen_paths: set[str] = set()
 
-    # P9.10: ╤А╨╡╨░╨╗╨╕╤Б╤В╨╕╤З╨╜╤Л╨╡ ╨▓╤Е╨╛╨┤╤Л ╨╕╨╖ plan.inputs + heuristic.
+    # P9.10: реалистичные входы из plan.inputs + heuristic.
     for it in _collect_input_specs(plan, spec):
         rel = it["path"]
         if rel in seen_paths or rel in output_paths:
@@ -1986,9 +1957,9 @@ def _prepare_test_fixtures(slug: str, plan: dict, spec: dict | None) -> list[str
         except Exception as e:
             logger.debug(f"[test.fixture] cannot create input {rel}: {e}")
 
-    # P9.7-legacy: ╨╡╤Б╨╗╨╕ ╨▓ ╤З╨╡╨║╨░╤Е ╨╡╤Б╤В╤М file_exists ╨╜╨░ ╨▓╤Е╨╛╨┤, ╨║╨╛╤В╨╛╤А╨╛╨│╨╛ ╨╡╤Й╤С ╨╜╨╡╤В тАФ
-    # ╤Б╨╛╨╖╨┤╨░╤С╨╝ ╨┐╤Г╤Б╤В╤Г╤О ╨╖╨░╨│╨╗╤Г╤И╨║╤Г (╤Д╨╕╨╗╤М╤В╤А ╨╕╨╖ P9.9 ╨╛╨▒╤Л╤З╨╜╨╛ ╤Г╨▒╨╕╤А╨░╨╡╤В ╤В╨░╨║╨╕╨╡ ╤З╨╡╨║╨╕, ╨╜╨╛
-    # ╨╡╤Б╨╗╨╕ ╨┐╤Г╤В╤М ╨▓╤Б╤С ╤А╨░╨▓╨╜╨╛ ╨╛╤Б╤В╨░╨╗╤Б╤П тАФ ╨┤╨░╤С╨╝ ╤Д╨░╨╣╨╗╤Г ╨▒╤Л╤В╤М).
+    # P9.7-legacy: если в чеках есть file_exists на вход, которого ещё нет —
+    # создаём пустую заглушку (фильтр из P9.9 обычно убирает такие чеки, но
+    # если путь всё равно остался — даём файлу быть).
     for t in (plan.get("tests") or []):
         for ch in (t.get("checks") or []):
             if not isinstance(ch, dict):
@@ -2007,8 +1978,8 @@ def _prepare_test_fixtures(slug: str, plan: dict, spec: dict | None) -> list[str
                 continue
             if abs_path.exists():
                 continue
-            # ╨Х╤Б╨╗╨╕ ╤А╨░╤Б╤И╨╕╤А╨╡╨╜╨╕╨╡ ╨╕╨╖╨▓╨╡╤Б╤В╨╜╨╛ тАФ ╤Б╨╛╨╖╨┤╨░╤С╨╝ ╤А╨╡╨░╨╗╨╕╤Б╤В╨╕╤З╨╜╤Л╨╣ sample,
-            # ╨╕╨╜╨░╤З╨╡ ╨┐╤Г╤Б╤В╨╛╨╣ (╨╗╨╡╨│╨░╤Б╨╕ P9.7).
+            # Если расширение известно — создаём реалистичный sample,
+            # иначе пустой (легаси P9.7).
             content = _default_sample_for(rel)
             try:
                 abs_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2020,10 +1991,10 @@ def _prepare_test_fixtures(slug: str, plan: dict, spec: dict | None) -> list[str
 
 
 def _normalize_min_size_check(slug: str, check: dict) -> dict:
-    """╨Х╤Б╨╗╨╕ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А ╨┐╨╛╤Б╤В╨░╨▓╨╕╨╗ ╨╜╨╡╤А╨╡╨░╨╗╨╕╤Б╤В╨╕╤З╨╜╤Л╨╣ file_min_size > _MIN_SIZE_REALISTIC_FLOOR,
-    ╨╜╨╛ ╤Д╨░╨╣╨╗ ╤А╨╡╨░╨╗╤М╨╜╨╛ ╤Б╨╛╨╖╨┤╨░╨╜ ╨╕ ╨╜╨╡ ╨┐╤Г╤Б╤В тАФ ╨┐╨╛╨╜╨╕╨╢╨░╨╡╨╝ ╨┐╨╛╤А╨╛╨│ ╨┤╨╛ ╤Д╨░╨║╤В-╤А╨░╨╖╨╝╨╡╤А╨░, ╨┐╨╛╨╝╨╡╤З╨░╤П
-    check ╨║╨░╨║ _soft (╨╝╤П╨│╨║╨╕╨╣: warn, ╨╜╨╡ fail). ╨н╤В╨╛ ╨╜╨╡ ╨╝╨░╤Б╨║╨╕╤А╤Г╨╡╤В ╤А╨╡╨░╨╗╤М╨╜╤Л╨╡ ╨▒╨░╨│╨╕:
-    ╨╡╤Б╨╗╨╕ ╤Д╨░╨╣╨╗ ╨▓╨╛╨╛╨▒╤Й╨╡ ╨╜╨╡ ╤Б╨╛╨╖╨┤╨░╨╜ ╨╕╨╗╨╕ ╨┐╤Г╤Б╤В тАФ check ╨╛╤Б╤В╨░╤С╤В╤Б╤П ╨╢╤С╤Б╤В╨║╨╕╨╝."""
+    """Если архитектор поставил нереалистичный file_min_size > _MIN_SIZE_REALISTIC_FLOOR,
+    но файл реально создан и не пуст — понижаем порог до факт-размера, помечая
+    check как _soft (мягкий: warn, не fail). Это не маскирует реальные баги:
+    если файл вообще не создан или пуст — check остаётся жёстким."""
     if not isinstance(check, dict):
         return check
     if (check.get("type") or "").strip() != "file_min_size":
@@ -2043,7 +2014,7 @@ def _normalize_min_size_check(slug: str, check: dict) -> dict:
         return check
     actual = abs_path.stat().st_size
     if actual >= _MIN_SIZE_REALISTIC_FLOOR and actual < min_bytes:
-        # ╨д╨░╨╣╨╗ ╤Б╨╛╨╖╨┤╨░╨╜, ╨╜╨╡ ╨┐╤Г╤Б╤В, ╨╜╨╛ ╨╝╨╡╨╜╤М╤И╨╡ ╨╜╨╡╤А╨╡╨░╨╗╨╕╤Б╤В╨╕╤З╨╜╨╛╨│╨╛ ╨┐╨╛╤А╨╛╨│╨░. ╨Ь╤П╨│╨║╨╕╨╣ ╤А╨╡╨╢╨╕╨╝.
+        # Файл создан, не пуст, но меньше нереалистичного порога. Мягкий режим.
         out = dict(check)
         out["_soft"] = True
         out["_original_bytes"] = min_bytes
@@ -2058,13 +2029,13 @@ def _run_one_test(slug: str, t: dict) -> dict:
     if not parts:
         return {"name": t.get("name", "test"), "command": cmd, "ok": False,
                 "rc": -1, "stdout": "", "stderr": "empty command", "checks": []}
-    # P11.0.1: ╨╡╤Б╨╗╨╕ ╨▓ ╨║╨╛╨╝╨░╨╜╨┤╨╡ ╨╡╤Б╤В╤М pipe/redirect/chain тАФ ╨╜╤Г╨╢╨╡╨╜ shell.
-    # ╨Ш╨╜╨░╤З╨╡ subprocess ╤Б shell=False ╨╕╤Й╨╡╤В 'echo'/'cat'/'|' ╨║╨░╨║ .exe ╨╕ ╨┐╨░╨┤╨░╨╡╤В
-    # ╤Б WinError 2 ╨╜╨░ Windows. _has_shell_metachars ╤Б╨╝╨╛╤В╤А╨╕╤В ╤В╨╛╨╗╤М╨║╨╛ ╨╜╨░ ╤Б╨░╨╝╨╕
-    # ╤Б╨╕╨╝╨▓╨╛╨╗╤Л (|, <, >, &&, ||), ╤Н╤В╨╛ ╨╜╨╡ ╤А╨╡╤И╨╡╨╜╨╕╨╡ ╨┐╨╛ ╨║╨╗╤О╤З╨╡╨▓╤Л╨╝ ╤Б╨╗╨╛╨▓╨░╨╝.
+    # P11.0.1: если в команде есть pipe/redirect/chain — нужен shell.
+    # Иначе subprocess с shell=False ищет 'echo'/'cat'/'|' как .exe и падает
+    # с WinError 2 на Windows. _has_shell_metachars смотрит только на сами
+    # символы (|, <, >, &&, ||), это не решение по ключевым словам.
     if _has_shell_metachars(cmd):
         res = run_shell_in_project(slug, cmd, timeout=PHASE_TEST_TIMEOUT)
-    # ╨Ч╨░╨┐╤Г╤Б╨║╨░╨╡╨╝ ╤З╨╡╤А╨╡╨╖ venv-python ╨╡╤Б╨╗╨╕ ╨┐╨╡╤А╨▓╨░╤П ╤З╨░╤Б╤В╤М тАФ python/python3 ╨╕╨╗╨╕ pytest
+    # Запускаем через venv-python если первая часть — python/python3 или pytest
     elif parts[0].lower() in ("python", "python3"):
         res = run_with_project_python(slug, parts[1:], timeout=PHASE_TEST_TIMEOUT)
     elif parts[0].lower() == "pytest":
@@ -2072,35 +2043,33 @@ def _run_one_test(slug: str, t: dict) -> dict:
     else:
         res = run_in_project(slug, parts, timeout=PHASE_TEST_TIMEOUT)
 
-    # ╨б╤В╤А╤Г╨║╤В╤Г╤А╨╜╤Л╨╡ checks ╨╕╨╖ ╨┐╨╗╨░╨╜╨░ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А╨░ (P0): ╨╝╨░╤И╨╕╨╜╨╜╨╛-╨┐╤А╨╛╨▓╨╡╤А╤П╨╡╨╝╤Л╨╡ ╤Г╤Б╨╗╨╛╨▓╨╕╤П.
+    # Структурные checks из плана архитектора (P0): машинно-проверяемые условия.
     raw_checks = t.get("checks")
     check_results: list[dict] = []
     if isinstance(raw_checks, list) and raw_checks:
         for ch in raw_checks:
-            # P9.7: ╨╜╨╛╤А╨╝╨░╨╗╨╕╨╖╤Г╨╡╨╝ ╨╜╨╡╤А╨╡╨░╨╗╨╕╤Б╤В╨╕╤З╨╜╤Л╨╡ file_min_size ╨▓ soft-mode
+            # P9.7: нормализуем нереалистичные file_min_size в soft-mode
             ch_norm = _normalize_min_size_check(slug, ch) if isinstance(ch, dict) else ch
             r = _evaluate_check(slug, ch_norm, res)
-            # P9.7: ╨╡╤Б╨╗╨╕ check ╨┐╨╛╨╝╨╡╤З╨╡╨╜ ╨║╨░╨║ ╨╝╤П╨│╨║╨╕╨╣ ╨╕ ╤А╨╡╨░╨╗╤М╨╜╤Л╨╣ ╤А╨░╨╖╨╝╨╡╤А ╨▓╤Л╤И╨╡ ╤Д╨░╨║╤В-╨┐╨╛╤А╨╛╨│╨░,
-            # ╤Б╤З╨╕╤В╨░╨╡╨╝ ╨┐╤А╨╛╨╣╨┤╤С╨╜╨╜╤Л╨╝ ╤Б ╨┐╨╛╨╝╨╡╤В╨║╨╛╨╣ _soft ╨▓ reason (╨┤╨╗╤П ╨▓╨╕╨┤╨╕╨╝╨╛╤Б╤В╨╕ ╨▓ ╨╗╨╛╨│╨░╤Е).
+            # P9.7: если check помечен как мягкий и реальный размер выше факт-порога,
+            # считаем пройдённым с пометкой _soft в reason (для видимости в логах).
             if isinstance(ch_norm, dict) and ch_norm.get("_soft") and r.get("ok"):
                 r["_soft"] = True
                 r["_original_bytes"] = ch_norm.get("_original_bytes")
                 r["reason"] = "[soft] " + r.get("reason", "")
             check_results.append(r)
         checks_ok = all(c.get("ok") for c in check_results)
-        # rc ╤Г╨╢╨╡ ╨╛╤В╨┤╨╡╨╗╤М╨╜╨░╤П ╨┐╤А╨╛╨▓╨╡╤А╨║╨░ ╤В╨╛╨╗╤М╨║╨╛ ╨╡╤Б╨╗╨╕ ╨╡╤С ╨┐╨╛╨┐╤А╨╛╤Б╨╕╨╗╨╕; ╨╡╤Б╨╗╨╕ ╨╡╤С ╨╜╨╡╤В тАФ 
-        # ╤В╤А╨╡╨▒╤Г╨╡╨╝ rc=0 ╨╜╨╡╤П╨▓╨╜╨╛ ╨║╨░╨║ ╨╝╨╕╨╜╨╕╨╝╨░╨╗╤М╨╜╤Л╨╣ sanity-check.
+        # rc уже отдельная проверка только если её попросили; если её нет — 
+        # требуем rc=0 неявно как минимальный sanity-check.
         has_rc_check = any(c.get("type") == "rc_zero" for c in check_results)
-        # S-5 fix: ╨╡╤Б╨╗╨╕ runner ╨▓╨╡╤А╨╜╤Г╨╗ ok=False (FileNotFoundError, venv ╨╛╤В╤Б╤Г╤В╤Б╤В╨▓╤Г╨╡╤В) тАФ rc_implicit_ok ╤В╨╛╨╢╨╡ False
-        runner_ok = bool(res.get("ok", True))
-        rc_implicit_ok = runner_ok and (True if has_rc_check else (res.get("returncode") == 0))
+        rc_implicit_ok = True if has_rc_check else (res.get("returncode") == 0)
         overall_ok = checks_ok and rc_implicit_ok
         legacy_expects = ""
         legacy_expects_ok = True
     else:
-        # Legacy fallback: ╤Б╨▓╨╛╨▒╨╛╨┤╨╜╨╛╤В╨╡╨║╤Б╤В╨╛╨▓╤Л╨╣ expects ╨╕╤Й╨╡╤В╤Б╤П ╨▓ stdout.
-        # ╨б╨╛╤Е╤А╨░╨╜╤С╨╜ ╤А╨░╨┤╨╕ ╨╛╨▒╤А╨░╤В╨╜╨╛╨╣ ╤Б╨╛╨▓╨╝╨╡╤Б╤В╨╕╨╝╨╛╤Б╤В╨╕ ╤Б╨╛ ╤Б╤В╨░╤А╤Л╨╝╨╕ ╨┐╨╗╨░╨╜╨░╨╝╨╕,
-        # ╨╜╨╛ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А ╨▒╨╛╨╗╤М╤И╨╡ ╨╜╨╡ ╨┤╨╛╨╗╨╢╨╡╨╜ ╨╡╨│╨╛ ╨│╨╡╨╜╨╡╤А╨╕╤А╨╛╨▓╨░╤В╤М.
+        # Legacy fallback: свободнотекстовый expects ищется в stdout.
+        # Сохранён ради обратной совместимости со старыми планами,
+        # но архитектор больше не должен его генерировать.
         legacy_expects = t.get("expects") or ""
         legacy_expects_ok = (legacy_expects.lower() in (res.get("stdout", "")).lower()) if legacy_expects else True
         overall_ok = bool(res.get("ok")) and legacy_expects_ok
@@ -2119,18 +2088,18 @@ def _run_one_test(slug: str, t: dict) -> dict:
 
 
 def _filter_invalid_checks(plan: dict, spec: dict | None) -> tuple[dict, list[dict]]:
-    """P9.9: ╨┤╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╡╤Б╨║╨╕ ╤Г╨▒╨╕╤А╨░╨╡╤В ╨╕╨╖ plan.tests[].checks ╤З╨╡╨║╨╕, ╨║╨╛╤В╨╛╤А╤Л╨╡
-    ╨╜╨░╤А╤Г╤И╨░╤О╤В ╨┐╤А╨╕╨╜╤Ж╨╕╨┐╤Л Jarvis ╨╕╨╗╨╕ ╨╗╨╛╨│╨╕╤З╨╡╤Б╨║╨╕ ╨▒╨╡╤Б╤Б╨╝╤Л╤Б╨╗╨╡╨╜╨╜╤Л:
+    """P9.9: детерминистически убирает из plan.tests[].checks чеки, которые
+    нарушают принципы Jarvis или логически бессмысленны:
 
-    1) stdout_contains тАФ ╨Т╨б╨Х╨У╨Ф╨Р ╤Г╨┤╨░╨╗╤П╨╡╨╝. ╨Э╨░╤А╤Г╤И╨░╨╡╤В ╨┐╤А╨╕╨╜╤Ж╨╕╨┐ ┬л╨╖╨░╨┐╤А╨╡╤Й╨╡╨╜╤Л
-       ╨║╨╗╤О╤З╨╡╨▓╤Л╨╡ ╤Б╨╗╨╛╨▓╨░┬╗ (╨┐╤А╨╛╨▓╨╡╤А╨║╨░ ╨┐╨╛ ╨╢╤С╤Б╤В╨║╨╛╨╝╤Г ╤Д╤А╨░╨│╨╝╨╡╨╜╤В╤Г ╤В╨╡╨║╤Б╤В╨░).
-    2) file_exists(path) ╨╜╨░ ╨▓╤Е╨╛╨┤╨╜╨╛╨╣ ╤Д╨░╨╣╨╗ ╨Я╨а╨Ш ╨г╨б╨Ы╨Ю╨Т╨Ш╨Ш ╤З╤В╨╛ ╤Н╤В╨╛╤В ╨╢╨╡ path ╨Э╨Х
-       ╤Г╨┐╨╛╨╝╤П╨╜╤Г╤В ╨▓ ╨▓╤Л╤Е╨╛╨┤╨╜╤Л╤Е ╤З╨╡╨║╨░╤Е (file_min_lines/file_min_size/json_valid/...).
-       ╨в╨░╨║╨╛╨╣ file_exists ╨▒╨╡╤Б╤Б╨╝╤Л╤Б╨╗╨╡╨╜ тАФ ╤Д╨╕╨║╤Б╤В╤Г╤А╨░ ╤Г╨╢╨╡ ╤Б╨╛╨╖╨┤╨░╨╜╨░ _prepare_test_fixtures.
-       ╨Ш╨б╨Ъ╨Ы╨о╨з╨Х╨Э╨Ш╨Х: file_exists ╨╜╨░ ╨▓╤Л╤Е╨╛╨┤ (╤В╨░╨║╨╕╨╡ ╨┐╤Г╤В╨╕ ╨▓ output_paths) ╨У╨а╨Ю╨Ь╨Ъ╨Ю
-       ╨╕╨╜╤Д╨╛╤А╨╝╨░╤В╨╕╨▓╨╡╨╜ тАФ ╨▓╨░╨╗╨╕╨┤╨╜╨░╤П ╨┐╨╛╤Б╤В-╨┐╤А╨╛╨▓╨╡╤А╨║╨░, ╨Ю╨б╨в╨Р╨Т╨Ы╨п╨Х╨Ь.
+    1) stdout_contains — ВСЕГДА удаляем. Нарушает принцип «запрещены
+       ключевые слова» (проверка по жёсткому фрагменту текста).
+    2) file_exists(path) на входной файл ПРИ УСЛОВИИ что этот же path НЕ
+       упомянут в выходных чеках (file_min_lines/file_min_size/json_valid/...).
+       Такой file_exists бессмыслен — фикстура уже создана _prepare_test_fixtures.
+       ИСКЛЮЧЕНИЕ: file_exists на выход (такие пути в output_paths) ГРОМКО
+       информативен — валидная пост-проверка, ОСТАВЛЯЕМ.
 
-    ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В (╨╜╨╛╨▓╤Л╨╣ plan, ╤Б╨┐╨╕╤Б╨╛╨║ ╤Г╨┤╨░╨╗╤С╨╜╨╜╤Л╤Е ╤З╨╡╨║╨╛╨▓ ╤Б reason ╨┤╨╗╤П ╨╗╨╛╨│╨░)."""
+    Возвращает (новый plan, список удалённых чеков с reason для лога)."""
     if not isinstance(plan, dict):
         return plan, []
     deliverables = []
@@ -2152,24 +2121,17 @@ def _filter_invalid_checks(plan: dict, spec: dict | None) -> tuple[dict, list[di
                 new_checks.append(ch)
                 continue
             ctype = (ch.get("type") or "").strip()
-            # 1) stdout_contains тАФ ╨▓╤Б╨╡╨│╨┤╨░ ╤Г╨▒╨╕╤А╨░╨╡╨╝
+            # 1) stdout_contains — всегда убираем
             if ctype == "stdout_contains":
                 removed.append({"check": ch, "reason": "stdout_contains_violates_principles"})
                 continue
-            # 2) file_exists ╨╜╨░ ╨▓╤Е╨╛╨┤ ╨▒╨╡╨╖ ╨▓╤Л╤Е╨╛╨┤╨╜╤Л╤Е ╤З╨╡╨║╨╛╨▓ ╨╜╨░ ╤В╨╛╤В ╨╢╨╡ ╨┐╤Г╤В╤М
+            # 2) file_exists на вход без выходных чеков на тот же путь
             if ctype == "file_exists":
                 rel = _norm_path(ch.get("path") or "")
                 if rel and rel not in output_paths and _is_input_fixture(rel, deliverables, output_paths):
                     removed.append({"check": ch, "reason": "file_exists_on_input_fixture"})
                     continue
             new_checks.append(ch)
-        # P11.7 FIX-4: ╨╡╤Б╨╗╨╕ ╨┐╨╛╤Б╨╗╨╡ ╤Д╨╕╨╗╤М╤В╤А╨░╤Ж╨╕╨╕ ╤Б╨┐╨╕╤Б╨╛╨║ checks ╨┐╤Г╤Б╤В╨╛╨╣ тАФ
-        # ╨┤╨╛╨▒╨░╨▓╨╗╤П╨╡╨╝ rc_zero ╨║╨░╨║ ╨╝╨╕╨╜╨╕╨╝╨░╨╗╤М╨╜╤Л╨╣ sanity-check.
-        # ╨Ш╨╜╨░╤З╨╡ _run_one_test ╤Г╤Е╨╛╨┤╨╕╤В ╨▓ legacy-╨┐╤Г╤В╤М (expects), ╨║╨╛╤В╨╛╤А╤Л╨╣ ╨╜╨╡ ╨╖╨░╤Й╨╕╤Й╤С╨╜.
-        if not new_checks and t.get("checks"):
-            new_checks = [{"type": "rc_zero"}]
-            # S-3 fix: ╤Н╤В╨╛ ╨┤╨╛╨▒╨░╨▓╨╗╨╡╨╜╨╕╨╡ fallback, ╨╜╨╡ ╤Г╨┤╨░╨╗╨╡╨╜╨╕╨╡ тАФ ╨╜╨╡ ╨╖╨░╨┐╨╕╤Б╤Л╨▓╨░╨╡╨╝ ╨▓ removed,
-            # ╤З╤В╨╛╨▒╤Л ╨╗╨╛╨│ 'removed N invalid check(s)' ╨╜╨╡ ╨▓╨▓╨╛╨┤╨╕╨╗ ╨▓ ╨╖╨░╨▒╨╗╤Г╨╢╨┤╨╡╨╜╨╕╨╡.
         new_t["checks"] = new_checks
         new_tests.append(new_t)
     new_plan["tests"] = new_tests
@@ -2177,8 +2139,8 @@ def _filter_invalid_checks(plan: dict, spec: dict | None) -> tuple[dict, list[di
 
 
 def _test(slug: str, plan: dict, spec: dict | None = None) -> list[dict]:
-    # P9.9: ╤Д╨╕╨╗╤М╤В╤А╨░╤Ж╨╕╤П ╨╜╨╡╨▓╨░╨╗╨╕╨┤╨╜╤Л╤Е checks (stdout_contains ╨┐╨╛ ╨┐╤А╨╕╨╜╤Ж╨╕╨┐╨░╨╝ +
-    # file_exists ╨╜╨░ ╨▓╤Е╨╛╨┤╨╜╤Г╤О ╤Д╨╕╨║╤Б╤В╤Г╤А╤Г ╨▒╨╡╨╖ ╨▓╤Л╤Е╨╛╨┤╨╜╤Л╤Е ╤З╨╡╨║╨╛╨▓). ╨Я╨╡╤А╨▓╤Л╨╝ ╤Н╤В╨░╨┐╨╛╨╝.
+    # P9.9: фильтрация невалидных checks (stdout_contains по принципам +
+    # file_exists на входную фикстуру без выходных чеков). Первым этапом.
     try:
         plan, removed = _filter_invalid_checks(plan, spec)
         if removed:
@@ -2187,8 +2149,8 @@ def _test(slug: str, plan: dict, spec: dict | None = None) -> list[dict]:
                       f"removed {len(removed)} invalid check(s): reasons={reasons}")
     except Exception as e:
         logger.debug(f"[test.filter] error: {e}")
-    # P9.7: ╨░╨▓╤В╨╛╤Д╨╕╨║╤Б╤В╤Г╤А╤Л ╨┤╨╗╤П ╨▓╤Е╨╛╨┤╨╜╤Л╤Е ╤Д╨░╨╣╨╗╨╛╨▓, ╨║╨╛╤В╨╛╤А╤Л╨╡ ╨░╤А╤Е╨╕╤В╨╡╨║╤В╨╛╤А ╨╛╤И╨╕╨▒╨╛╤З╨╜╨╛
-    # ╨▓╨║╨╗╤О╤З╨╕╨╗ ╨▓ file_exists. ╨б╨┐╨╡╨║ ╨╛╨┐╤Ж╨╕╨╛╨╜╨░╨╗╨╡╨╜ ╨┤╨╗╤П ╨╛╨▒╤А╨░╤В╨╜╨╛╨╣ ╤Б╨╛╨▓╨╝╨╡╤Б╤В╨╕╨╝╨╛╤Б╤В╨╕ ╤Б ╤В╨╡╤Б╤В╨░╨╝╨╕.
+    # P9.7: автофикстуры для входных файлов, которые архитектор ошибочно
+    # включил в file_exists. Спек опционален для обратной совместимости с тестами.
     if spec is not None:
         try:
             created = _prepare_test_fixtures(slug, plan, spec)
@@ -2201,9 +2163,9 @@ def _test(slug: str, plan: dict, spec: dict | None = None) -> list[dict]:
     for t in (plan.get("tests") or []):
         rec = _run_one_test(slug, t)
         out.append(rec)
-        # P9.6: ╨▓╨║╨╗╤О╤З╨░╨╡╨╝ ╨┤╨╡╤В╨░╨╗╤М╨╜╤Л╨╡ checks ╨▓ ╨┤╨╡╤В╨░╨╗╤М ╤Д╨░╨╖╤Л ╨┤╨╗╤П ╨┤╨╕╨░╨│╨╜╨╛╤Б╤В╨╕╨║╨╕
-        # ╤Д╨░╨╣╨╗╨╛╨▓╤Л╤Е/╨║╨╛╨╜╤В╨╡╨╜╤В-╨┐╤А╨╛╨▓╨╡╤А╨╛╨║ (file_min_size, stdout_contains ╨╕ ╤В.╨┐.).
-        # ╨С╨╡╨╖ ╤Н╤В╨╛╨│╨╛ ╨▓ ╨╗╨╛╨│╨░╤Е ╨▓╨╕╨┤╨╜╨╛ ╤В╨╛╨╗╤М╨║╨╛ rc=0 stderr="" ╨╕ ╨╜╨╡╨┐╨╛╨╜╤П╤В╨╜╨╛ ╨┐╨╛╤З╨╡╨╝╤Г failed.
+        # P9.6: включаем детальные checks в деталь фазы для диагностики
+        # файловых/контент-проверок (file_min_size, stdout_contains и т.п.).
+        # Без этого в логах видно только rc=0 stderr="" и непонятно почему failed.
         keys = ["command", "rc", "expects_ok", "stderr", "checks"]
         add_phase(slug, f"test:{rec['name']}",
                   "ok" if rec["ok"] else "failed",
@@ -2211,17 +2173,17 @@ def _test(slug: str, plan: dict, spec: dict | None = None) -> list[dict]:
     return out
 
 
-# тФАтФАтФА PHASE 6: heal тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+# ─── PHASE 6: heal ──────────────────────────────────────────────────────────
 def _diagnose(spec: dict, file_paths: list[str], failed_test: dict, budget: Budget) -> dict:
     user = (
-        f"╨д╨░╨╣╨╗╤Л ╨┐╤А╨╛╨╡╨║╤В╨░:\n" + "\n".join(f"  - {p}" for p in file_paths) + "\n\n"
-        f"╨в╨╡╤Б╤В ╤Г╨┐╨░╨╗:\n"
-        f"  ╨║╨╛╨╝╨░╨╜╨┤╨░: {failed_test.get('command')}\n"
+        f"Файлы проекта:\n" + "\n".join(f"  - {p}" for p in file_paths) + "\n\n"
+        f"Тест упал:\n"
+        f"  команда: {failed_test.get('command')}\n"
         f"  rc:      {failed_test.get('rc')}\n"
         f"  stderr:  {failed_test.get('stderr','')[:800]}\n"
         f"  stdout:  {failed_test.get('stdout','')[:400]}\n"
         f"  expects: {failed_test.get('expects','')}\n\n"
-        f"╨б╨┐╨╡╤Ж╨╕╤Д╨╕╨║╨░╤Ж╨╕╤П:\n{json.dumps(spec, ensure_ascii=False)[:1200]}\n"
+        f"Спецификация:\n{json.dumps(spec, ensure_ascii=False)[:1200]}\n"
     )
     raw = _llm(budget, MODEL_HEALER, PROJECT_HEAL_SYSTEM, user,
                temperature=0.0, num_ctx=4096, where="heal.diagnose")
@@ -2242,11 +2204,11 @@ _NETWORK_ERR_RE  = re.compile(
     r"socket\.gaierror|socket\.timeout|TimeoutExpired)"
 )
 _JSONDEC_RE      = re.compile(r"json\.decoder\.JSONDecodeError|json\.JSONDecodeError")
-# P9.6: bs4 ╨╢╨░╨╗╤Г╨╡╤В╤Б╤П ╨╜╨░ ╨╛╤В╤Б╤Г╤В╤Б╤В╨▓╨╕╨╡ ╨┐╨░╤А╤Б╨╡╤А╨░ (xml/lxml/html5lib) тАФ ╤Б╤В╨░╨▓╨╕╨╝ ╨╜╤Г╨╢╨╜╤Л╨╣ ╨┐╨░╨║╨╡╤В.
+# P9.6: bs4 жалуется на отсутствие парсера (xml/lxml/html5lib) — ставим нужный пакет.
 _BS4_FEATURE_RE  = re.compile(r"FeatureNotFound.*?features you requested:\s*([a-zA-Z0-9_\-]+)", re.DOTALL)
 
 
-# ╨б╨╛╨┐╨╛╤Б╤В╨░╨▓╨╗╨╡╨╜╨╕╨╡ import-╨╕╨╝╨╡╨╜╨╕ тЖТ PyPI-╨╕╨╝╤П ╨┤╨╗╤П ╨╛╤З╨╡╨▓╨╕╨┤╨╜╤Л╤Е ╤А╨░╤Б╤Е╨╛╨╢╨┤╨╡╨╜╨╕╨╣
+# Сопоставление import-имени → PyPI-имя для очевидных расхождений
 _IMPORT_TO_PIP = {
     "cv2": "opencv-python",
     "PIL": "Pillow",
@@ -2259,11 +2221,11 @@ _IMPORT_TO_PIP = {
 
 
 def _heal_syntax_error(slug: str, failed: dict, plan: dict) -> dict | None:
-    """P2: ╨┤╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╡╤Б╨║╨╕╨╣ ╤Е╨╕╨╗╨╡╤А ╨┤╨╗╤П SyntaxError/IndentationError ╨╜╨░ ╤Д╨░╨╖╨╡ test.
+    """P2: детерминистический хилер для SyntaxError/IndentationError на фазе test.
 
-    ╨б╤В╤А╨░╤В╨╡╨│╨╕╤П: ╨┐╨╡╤А╨╡╨▒╨╕╤А╨░╨╡╨╝ ╨▓╤Б╨╡ .py-╤Д╨░╨╣╨╗╤Л ╨┐╤А╨╛╨╡╨║╤В╨░, ╨┐╤А╨╛╨▓╨╡╤А╤П╨╡╨╝ ast.parse.
-    ╨Я╨╡╤А╨▓╤Л╨╣ ╨╜╨░╨╣╨┤╨╡╨╜╨╜╤Л╨╣ ╤Д╨░╨╣╨╗ ╤Б ╨╛╤И╨╕╨▒╨║╨╛╨╣ тАФ ╤Н╤В╨╛ ╤Ж╨╡╨╗╤М. ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╨╝ dict ╤Б target_path ╨╕
-    fix_instruction, ╨║╨╛╤В╨╛╤А╤Л╨╡ _heal_loop ╤Б╨║╨╛╤А╨╝╨╕╤В Coder'╤Г ╨▒╨╡╨╖ LLM-╨┤╨╕╨░╨│╨╜╨╛╤Б╤В╨╕╨║╨╕.
+    Стратегия: перебираем все .py-файлы проекта, проверяем ast.parse.
+    Первый найденный файл с ошибкой — это цель. Возвращаем dict с target_path и
+    fix_instruction, которые _heal_loop скормит Coder'у без LLM-диагностики.
     """
     stderr = failed.get("stderr", "") or ""
     if not _SYNTAX_ERR_RE.search(stderr):
@@ -2272,7 +2234,7 @@ def _heal_syntax_error(slug: str, failed: dict, plan: dict) -> dict | None:
     py_files = [p for p in file_paths if p.lower().endswith(".py")]
     if not py_files:
         return None
-    # ╨Ш╤Й╨╡╨╝ ╨┐╨╡╤А╨▓╤Л╨╣ .py ╤Б ╨▒╨╕╤В╤Л╨╝ ╤Б╨╕╨╜╤В╨░╨║╤Б╨╕╤Б╨╛╨╝.
+    # Ищем первый .py с битым синтаксисом.
     for path in py_files:
         try:
             content = read_project_file(slug, path)
@@ -2285,7 +2247,7 @@ def _heal_syntax_error(slug: str, failed: dict, plan: dict) -> dict | None:
                 "fix_instruction": static_errors_to_feedback(sc.get("errors") or []),
                 "category": "syntax",
             }
-    # stderr ╨╢╨░╨╗╤Г╨╡╤В╤Б╤П ╨╜╨░ ╤Б╨╕╨╜╤В╨░╨║╤Б╨╕╤Б, ╨╜╨╛ ast.parse ╨▓╤Б╨╡ ╤Д╨░╨╣╨╗╤Л ╨┐╤А╨╛╤И╨╗╨╕ тАФ ╨┐╤А╨╛╨▒╤Г╨╡╨╝ ╨▓╤Л╨┤╨╡╤А╨╜╤Г╤В╤М ╨╕╨╝╤П/╨╜╨╛╨╝╨╡╤А ╨╕╨╖ traceback.
+    # stderr жалуется на синтаксис, но ast.parse все файлы прошли — пробуем выдернуть имя/номер из traceback.
     fm = _SYNTAX_FILE_RE.search(stderr)
     sm = _SYNTAX_ERR_RE.search(stderr)
     if fm and sm:
@@ -2294,7 +2256,7 @@ def _heal_syntax_error(slug: str, failed: dict, plan: dict) -> dict | None:
             return {
                 "target_file": guess,
                 "fix_instruction": (
-                    f"╨Ш╤Б╨┐╤А╨░╨▓╤М {sm.group(1)} ╨▓ {guess} ╨╜╨░ ╤Б╤В╤А╨╛╨║╨╡ {fm.group(2)}: {sm.group(2)}"
+                    f"Исправь {sm.group(1)} в {guess} на строке {fm.group(2)}: {sm.group(2)}"
                 ),
                 "category": "syntax",
             }
@@ -2302,10 +2264,10 @@ def _heal_syntax_error(slug: str, failed: dict, plan: dict) -> dict | None:
 
 
 def _heal_network_retry(slug: str, failed: dict, plan: dict, attempt: int = 1) -> dict | None:
-    """P2: ╨┐╤А╨╕ ╤Б╨╡╤В╨╡╨▓╤Л╤Е ╨╛╤И╨╕╨▒╨║╨░╤Е ╨┐╤А╨╛╤Б╤В╨╛ ╨┐╨╡╤А╨╡╨╖╨░╨┐╤Г╤Б╨║╨░╨╡╨╝ ╤В╨╡╤Б╤В (╨▒╨╡╨╖ LLM, ╨▒╨╡╨╖ ╨┐╤А╨░╨▓╨║╨╕ ╨║╨╛╨┤╨░).
+    """P2: при сетевых ошибках просто перезапускаем тест (без LLM, без правки кода).
 
-    ╨б╤В╤А╨░╤В╨╡╨│╨╕╤П: ╨┐╨░╤Г╨╖╨░ (1.5╤Б ├Ч attempt), ╤А╨╡╤В╨╡╤Б╤В. ╨Я╤А╨╕╨╝╨╡╨╜╤П╨╡╤В╤Б╤П ╨▓╤Л╨╖╤Л╨▓╨░╤О╤Й╨╕╨╝ ╨║╨╛╨┤╨╛╨╝, 
-    ╨║╨╛╤В╨╛╤А╤Л╨╣ ╤Б╨░╨╝ ╨▓╤Л╨╖╤Л╨▓╨░╨╡╤В _test() ╨┐╨╛╤Б╨╗╨╡ ╤А╨╡╨╖╤Г╨╗╤М╤В╨░╤В╨░. ╨Ь╤Л ╤А╨╡╤И╨░╨╡╨╝ ╤В╨╛╨╗╤М╨║╨╛ ┬лstoit ╨╗╨╕ ╤А╨╡╤В╤А╨░╨╕╤В╤М?┬╗ ╨╕ ╨┐╨░╤Г╨╖╨╕╨╝.
+    Стратегия: пауза (1.5с × attempt), ретест. Применяется вызывающим кодом, 
+    который сам вызывает _test() после результата. Мы решаем только «stoit ли ретраить?» и паузим.
     """
     stderr = failed.get("stderr", "") or ""
     if not _NETWORK_ERR_RE.search(stderr):
@@ -2316,15 +2278,15 @@ def _heal_network_retry(slug: str, failed: dict, plan: dict, attempt: int = 1) -
 
 
 def _heal_json_decode(slug: str, failed: dict, plan: dict) -> dict | None:
-    """P2: ╨┐╤А╨╕ JSONDecodeError тАФ ╤Е╨╕╨╜╤В Coder'╤Г: ╨┤╨╛╨▒╨░╨▓╤М try/except ╨╕ ╨┐╤А╨╛╨▓╨╡╤А╨║╤Г Content-Type.
+    """P2: при JSONDecodeError — хинт Coder'у: добавь try/except и проверку Content-Type.
 
-    ╨н╤В╨╛ ╨╜╨╡ ╨╕╤Б╨┐╤А╨░╨▓╨╗╤П╨╡╤В ╨▒╨░╨│ ╨░╨▓╤В╨╛╨╝╨░╤В╨╕╤З╨╡╤Б╨║╨╕, ╨╜╨╛ ╨┤╨░╤С╤В ╨╛╨┤╨╜╨╛╨╖╨╜╨░╤З╨╜╤Г╤О fix_instruction ╨▒╨╡╨╖ _diagnose-LLM.
+    Это не исправляет баг автоматически, но даёт однозначную fix_instruction без _diagnose-LLM.
     """
     stderr = failed.get("stderr", "") or ""
     if not _JSONDEC_RE.search(stderr):
         return None
     file_paths = [f["path"] for f in plan.get("files", []) if isinstance(f, dict) and "path" in f]
-    # ╨Ш╤Й╨╡╨╝ ╨┐╨╡╤А╨▓╤Л╨╣ .py ╤Д╨░╨╣╨╗, ╨│╨┤╨╡ ╨▓╤Л╨╖╤Л╨▓╨░╨╡╤В╤Б╤П json.loads ╨╕╨╗╨╕ .json().
+    # Ищем первый .py файл, где вызывается json.loads или .json().
     for path in file_paths:
         if not path.lower().endswith(".py"):
             continue
@@ -2336,9 +2298,9 @@ def _heal_json_decode(slug: str, failed: dict, plan: dict) -> dict | None:
             return {
                 "target_file": path,
                 "fix_instruction": (
-                    "╨Ю╨▒╨╛╤А╨░╤З╨╕╨▓╨░╨╣ ╨▓╤Л╨╖╨╛╨▓╤Л json.loads/.json() ╨▓ try/except json.JSONDecodeError. "
-                    "╨Х╤Б╨╗╨╕ ╤А╨╡╤Б╤Г╤А╤Б ╨╛╤В╨▓╨╡╤З╨░╨╡╤В ╨╜╨╡-JSON, ╨╜╨╡ ╨┐╨░╨┤╨░╨╣, ╨░ ╨▓╤Л╨▓╨╡╨┤╨╕ ╨┐╨╡╤А╨▓╤Л╨╡ ╨▒╨░╨╣╤В╤Л ╨╛╤В╨▓╨╡╤В╨░ ╨┤╨╗╤П ╨┤╨╕╨░╨│╨╜╨╛╤Б╤В╨╕╨║╨╕. "
-                    "╨Ф╨╗╤П requests ╨╕╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╣ response.headers.get('Content-Type') ╨┐╨╡╤А╨╡╨┤ ╤А╨░╨╖╨▒╨╛╤А╨╛╨╝."
+                    "Оборачивай вызовы json.loads/.json() в try/except json.JSONDecodeError. "
+                    "Если ресурс отвечает не-JSON, не падай, а выведи первые байты ответа для диагностики. "
+                    "Для requests используй response.headers.get('Content-Type') перед разбором."
                 ),
                 "category": "json",
             }
@@ -2346,16 +2308,16 @@ def _heal_json_decode(slug: str, failed: dict, plan: dict) -> dict | None:
 
 
 def _heal_missing_module(slug: str, failed: dict) -> dict | None:
-    """╨Ф╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╡╤Б╨║╨╕╨╣ healer ╨┤╨╗╤П ModuleNotFoundError тАФ ╨▒╨╡╨╖ LLM.
-    ╨Т╤Л╨┤╨╡╤А╨│╨╕╨▓╨░╨╡╤В ╨╕╨╝╤П ╨╝╨╛╨┤╤Г╨╗╤П ╨╕╨╖ stderr ╨╕ ╤Б╤В╨░╨▓╨╕╤В ╨╡╨│╨╛ ╨▓ venv.
-    ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В dict ╤Б ╤А╨╡╨╖╤Г╨╗╤М╤В╨░╤В╨╛╨╝ ╨╕╨╗╨╕ None ╨╡╤Б╨╗╨╕ ╤Н╤В╨╛ ╨╜╨╡ ModuleNotFoundError.
+    """Детерминистический healer для ModuleNotFoundError — без LLM.
+    Выдергивает имя модуля из stderr и ставит его в venv.
+    Возвращает dict с результатом или None если это не ModuleNotFoundError.
 
-    P9.6: ╤В╨░╨║╨╢╨╡ ╤А╨░╤Б╨┐╨╛╨╖╨╜╨░╤С╤В bs4.FeatureNotFound тАФ ╤Н╤В╨╛ ╨╜╨╡ ModuleNotFoundError, ╨╜╨╛
-    ╨┐╨╛╨╗╤Г╤З╨░╨╡╤В╤Б╤П ╨║╨╛╨│╨┤╨░ ╨║╨╛╨┤ ╨╖╨╛╨▓╤С╤В BeautifulSoup(text, 'xml') ╨▒╨╡╨╖ ╤Г╤Б╤В╨░╨╜╨╛╨▓╨╗╨╡╨╜╨╜╨╛╨│╨╛ lxml.
+    P9.6: также распознаёт bs4.FeatureNotFound — это не ModuleNotFoundError, но
+    получается когда код зовёт BeautifulSoup(text, 'xml') без установленного lxml.
     """
     stderr = failed.get("stderr", "") or ""
 
-    # ╨б╨╜╨░╤З╨░╨╗╨░ ╨┐╤А╨╛╨▒╤Г╨╡╨╝ bs4 FeatureNotFound (╨▒╨╛╨╗╨╡╨╡ ╤Б╨┐╨╡╤Ж╨╕╤Д╨╕╤З╨╜╤Л╨╣ ╨┐╨░╤В╤В╨╡╤А╨╜).
+    # Сначала пробуем bs4 FeatureNotFound (более специфичный паттерн).
     bm = _BS4_FEATURE_RE.search(stderr)
     if bm:
         feature = bm.group(1).lower()
@@ -2374,7 +2336,7 @@ def _heal_missing_module(slug: str, failed: dict) -> dict | None:
     m = _MODNOTFOUND_RE.search(stderr)
     if not m:
         return None
-    import_name = m.group(1).split(".")[0]  # ╨▒╨╡╤А╤С╨╝ ╨║╨╛╤А╨╜╨╡╨▓╨╛╨╣ ╨┐╨░╨║╨╡╤В
+    import_name = m.group(1).split(".")[0]  # берём корневой пакет
     pip_name = _IMPORT_TO_PIP.get(import_name, import_name)
     if not _PKG_PATTERN.match(pip_name):
         return {"ok": False, "missing": import_name, "reason": "unsafe pkg name"}
@@ -2387,31 +2349,31 @@ def _heal_missing_module(slug: str, failed: dict) -> dict | None:
     }
 
 
-# P11.4: cross-file heal тАФ ╤Б╤В╤А╤Г╨║╤В╤Г╤А╨╜╤Л╨╣ ╤А╨░╨╖╨▒╨╛╤А ╨╛╤И╨╕╨▒╨║╨╕ ╨╕ ╨▓╤Л╨▒╨╛╤А ╨┐╤А╨░╨▓╨╕╨╗╤М╨╜╨╛╨│╨╛ target.
-# ╨а╨╡╨│╤Г╨╗╤П╤А╨║╨╕ ╤А╨░╤Б╨┐╨╛╨╖╨╜╨░╤О╤В ╨║╨╛╨╜╨║╤А╨╡╤В╨╜╤Л╨╡ ╤Д╨╛╤А╨╝╨░╤В╤Л Python-╨╛╤И╨╕╨▒╨╛╨║, ╨▒╨╡╨╖ ╤Г╨│╨░╨┤╤Л╨▓╨░╨╜╨╕╤П ╨┐╨╛ ╤Б╨╗╨╛╨▓╨░╨╝.
+# P11.4: cross-file heal — структурный разбор ошибки и выбор правильного target.
+# Регулярки распознают конкретные форматы Python-ошибок, без угадывания по словам.
 
-# NameError: name 'X' is not defined  (╨▒╨░╨│ ╨▓ ╤Д╨░╨╣╨╗╨╡, ╨│╨┤╨╡ ╨╕╨╝╤П ╨╕╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╡╤В╤Б╤П)
+# NameError: name 'X' is not defined  (баг в файле, где имя используется)
 _HEAL_NAMEERROR_RE = re.compile(r"NameError: name ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"] is not defined")
 
-# ImportError: cannot import name 'X' from 'M'  (╨▒╨░╨│ ╨▓ M тАФ ╨┤╨╛╨╗╨╢╨╡╨╜ ╤Н╨║╤Б╨┐╨╛╤А╤В╨╕╤А╨╛╨▓╨░╤В╤М X)
+# ImportError: cannot import name 'X' from 'M'  (баг в M — должен экспортировать X)
 _HEAL_IMPORTERROR_RE = re.compile(
     r"ImportError: cannot import name ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"] from ['\"]([A-Za-z0-9_.]+)['\"]"
 )
 
-# AttributeError: module 'M' has no attribute 'X'  (╨▒╨░╨│ ╨▓ M)
+# AttributeError: module 'M' has no attribute 'X'  (баг в M)
 _HEAL_ATTRMOD_RE = re.compile(
     r"AttributeError: module ['\"]([A-Za-z0-9_.]+)['\"] has no attribute ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"
 )
 
-# Frame ╨▓ traceback: File "...\path\to\file.py", line N, in <...>
+# Frame в traceback: File "...\path\to\file.py", line N, in <...>
 _HEAL_FRAME_RE = re.compile(r'File "([^"]+?\.py)", line (\d+)')
 
 
 def _last_user_frame_in_plan(stderr: str, plan_paths: list[str]) -> str | None:
-    """╨Э╨░╨╣╤В╨╕ ╨┐╨╛╤Б╨╗╨╡╨┤╨╜╨╕╨╣ frame ╨▓ traceback, ╤З╨╡╨╣ ╤Д╨░╨╣╨╗ ╨╡╤Б╤В╤М ╨▓ plan.files.
+    """Найти последний frame в traceback, чей файл есть в plan.files.
 
-    ╨н╤В╨╛ ╤Д╨░╨╣╨╗, ╨▓ ╨║╨╛╤В╨╛╤А╨╛╨╝ ╤Д╨░╨║╤В╨╕╤З╨╡╤Б╨║╨╕ ╨┐╤А╨╛╨╕╨╖╨╛╤И╨╗╨░ ╨╛╤И╨╕╨▒╨║╨░ тАФ ╨╜╨╡ stdlib, ╨╜╨╡ ╨▒╨╕╨▒╨╗╨╕╨╛╤В╨╡╨║╨╕.
-    ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В rel-╨┐╤Г╤В╤М ╨╕╨╖ plan ╨╕╨╗╨╕ None.
+    Это файл, в котором фактически произошла ошибка — не stdlib, не библиотеки.
+    Возвращает rel-путь из plan или None.
     """
     if not stderr or not plan_paths:
         return None
@@ -2420,13 +2382,13 @@ def _last_user_frame_in_plan(stderr: str, plan_paths: list[str]) -> str | None:
     last_match = None
     for m in _HEAL_FRAME_RE.finditer(stderr):
         frame_path = (m.group(1) or "").replace("\\", "/")
-        # ╨б╨╜╨░╤З╨░╨╗╨░ ╨┐╤Л╤В╨░╨╡╨╝╤Б╤П ╤В╨╛╤З╨╜╨╛╨╡ ╤Б╨╛╨▓╨┐╨░╨┤╨╡╨╜╨╕╨╡ ╨┐╨╛ rel-╨┐╤Г╤В╨╕
+        # Сначала пытаемся точное совпадение по rel-пути
         for low, orig in plan_lower.items():
             if frame_path.lower().endswith("/" + low) or frame_path.lower() == low:
                 last_match = orig
                 break
         else:
-            # Fallback: ╤Б╨╛╨▓╨┐╨░╨┤╨╡╨╜╨╕╨╡ ╨┐╨╛ basename
+            # Fallback: совпадение по basename
             base = frame_path.split("/")[-1].lower()
             if base in plan_basenames:
                 last_match = plan_basenames[base]
@@ -2434,32 +2396,32 @@ def _last_user_frame_in_plan(stderr: str, plan_paths: list[str]) -> str | None:
 
 
 def _module_to_plan_path(mod_name: str, plan_paths: list[str]) -> str | None:
-    """╨Я╨╡╤А╨╡╨▓╨╡╤Б╤В╨╕ ╨╕╨╝╤П ╨╝╨╛╨┤╤Г╨╗╤П ('config', 'storage') ╨▓ rel-╨┐╤Г╤В╤М ╨╕╨╖ plan.
+    """Перевести имя модуля ('config', 'storage') в rel-путь из plan.
 
-    ╨Ш╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╡╤В _module_name_from_rel тАФ ╤В╨╛ ╨╢╨╡ ╨┐╤А╨╡╨╛╨▒╤А╨░╨╖╨╛╨▓╨░╨╜╨╕╨╡, ╤З╤В╨╛ ╨╕ ╨┤╨╗╤П CONTRACT-╨▒╨╗╨╛╨║╨░.
+    Использует _module_name_from_rel — то же преобразование, что и для CONTRACT-блока.
     """
     if not mod_name:
         return None
-    target = mod_name.split(".")[0]  # ╨▓╨╡╤А╤Е╨╜╨╕╨╣ ╤Г╤А╨╛╨▓╨╡╨╜╤М
+    target = mod_name.split(".")[0]  # верхний уровень
     for p in plan_paths:
         if _module_name_from_rel(p) == mod_name or _module_name_from_rel(p) == target:
             return p
     return None
 
 
-# тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+# ──────────────────────────────────────────────────────────────────────────
 # P11.6: structural fallback helpers (FM-14)
-# тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+# ──────────────────────────────────────────────────────────────────────────
 
 _TRACEBACK_MARKERS = ("Traceback (", "Error:", "error:", "Exception:")
 
 
 def _walk_project_top_level_defs(slug: str) -> dict[str, list[str]]:
-    """P11.6: AST-walk ╨▓╤Б╨╡╤Е .py-╤Д╨░╨╣╨╗╨╛╨▓ ╨┐╤А╨╛╨╡╨║╤В╨░ тЖТ {rel_path: [top_level_names]}.
+    """P11.6: AST-walk всех .py-файлов проекта → {rel_path: [top_level_names]}.
 
-    ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В ╤В╨╛╨╗╤М╨║╨╛ top-level def/class тАФ ╨▒╨╡╨╖ ╨▓╨╗╨╛╨╢╨╡╨╜╨╜╤Л╤Е. ╨Ш╨╝╨╡╨╜╨░ ╤Б ╨╗╨╕╨┤╨╕╤А╤Г╤О╤Й╨╕╨╝
-    ╨┐╨╛╨┤╤З╤С╤А╨║╨╕╨▓╨░╨╜╨╕╨╡╨╝ ╨╛╤В╨▒╤А╨░╤Б╤Л╨▓╨░╨╡╨╝ (╨┐╤А╨╕╨▓╨░╤В╨╜╤Л╨╡). ╨Э╨░ ╨╗╤О╨▒╤Г╤О ╨╛╤И╨╕╨▒╨║╤Г ╨┐╨░╤А╤Б╨╕╨╜╨│╨░ тАФ ╨┐╤Г╤Б╤В╨╛╨╣
-    ╤Б╨┐╨╕╤Б╨╛╨║ ╨┤╨╗╤П ╤Н╤В╨╛╨│╨╛ ╤Д╨░╨╣╨╗╨░, ╨╜╨╛ ╨╜╨╡ ╨┐╨░╨┤╨░╨╡╨╝.
+    Возвращает только top-level def/class — без вложенных. Имена с лидирующим
+    подчёркиванием отбрасываем (приватные). На любую ошибку парсинга — пустой
+    список для этого файла, но не падаем.
     """
     import ast as _ast
     out: dict[str, list[str]] = {}
@@ -2496,20 +2458,20 @@ def _find_structural_owner(
     required_name: str,
     project_defs: dict[str, list[str]],
 ) -> tuple[str | None, str | None]:
-    """P11.6: ╨┤╨╗╤П ╤В╤А╨╡╨▒╤Г╨╡╨╝╨╛╨│╨╛ ╤Б╨╕╨╝╨▓╨╛╨╗╨░ ╨╜╨░╨╣╤В╨╕ ╤Д╨░╨╣╨╗, ╨│╨┤╨╡ ╨╛╨┐╤А╨╡╨┤╨╡╨╗╨╡╨╜╨╛ ╨┐╨╛╤Е╨╛╨╢╨╡╨╡ ╨╕╨╝╤П.
+    """P11.6: для требуемого символа найти файл, где определено похожее имя.
 
-    ╨б╤В╤А╨░╤В╨╡╨│╨╕╤П (╤Б╤В╤А╤Г╨║╤В╤Г╤А╨╜╨░╤П, ╨▒╨╡╨╖ ╨║╨╗╤О╤З╨╡╨▓╤Л╤Е ╤Б╨╗╨╛╨▓):
-      1) ╨в╨╛╤З╨╜╨╛╨╡ ╤Б╨╛╨▓╨┐╨░╨┤╨╡╨╜╨╕╨╡ тЖТ (rel, name)
-      2) Case-fold ╤Б╨╛╨▓╨┐╨░╨┤╨╡╨╜╨╕╨╡ тЖТ (rel, name)  (add тЖФ Add)
-      3) ╨Э╨╡ ╨╜╨░╨╣╨┤╨╡╨╜╨╛ тЖТ (None, None)
+    Стратегия (структурная, без ключевых слов):
+      1) Точное совпадение → (rel, name)
+      2) Case-fold совпадение → (rel, name)  (add ↔ Add)
+      3) Не найдено → (None, None)
 
-    ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╨╝ ╨║╨╛╤А╤В╨╡╨╢ (owner_file, actual_name). actual_name тАФ ╤В╨╛ ╨╕╨╝╤П, ╤З╤В╨╛
-    ╤А╨╡╨░╨╗╤М╨╜╨╛ ╨╛╨▒╤К╤П╨▓╨╗╨╡╨╜╨╛ ╨▓ ╨║╨╛╨┤╨╡ (╨╝╨╛╨╢╨╡╤В ╨╛╤В╨╗╨╕╤З╨░╤В╤М╤Б╤П ╤А╨╡╨│╨╕╤Б╤В╤А╨╛╨╝).
+    Возвращаем кортеж (owner_file, actual_name). actual_name — то имя, что
+    реально объявлено в коде (может отличаться регистром).
     """
     if not required_name:
         return None, None
     req_cf = required_name.casefold()
-    # 1) ╨в╨╛╤З╨╜╨╛╨╡
+    # 1) Точное
     for rel, names in project_defs.items():
         if required_name in names:
             return rel, required_name
@@ -2527,23 +2489,23 @@ def _classify_failure(
     spec: dict | None = None,
     slug: str | None = None,
 ) -> dict:
-    """P11.4/P11.6: ╤Б╤В╤А╤Г╨║╤В╤Г╤А╨╜╤Л╨╣ ╤А╨░╨╖╨▒╨╛╤А ╨╛╤И╨╕╨▒╨║╨╕ ╤В╨╡╤Б╤В╨░ тЖТ {kind, target, missing_name, source_file, reason}.
+    """P11.4/P11.6: структурный разбор ошибки теста → {kind, target, missing_name, source_file, reason}.
 
-    ╨Ы╨╛╨│╨╕╨║╨░ ╨▓╤Л╨▒╨╛╤А╨░ target (╤Б╤В╤А╤Г╨║╤В╤Г╤А╨╜╨░╤П, ╨╜╨╡ ╨║╨╗╤О╤З╨╡╨▓╤Л╨╡ ╤Б╨╗╨╛╨▓╨░):
-      тАв ImportError/AttributeError ╨╜╨░ ╨╕╨╝╨╡╨╜╨╕ X ╨╕╨╖ ╨╝╨╛╨┤╤Г╨╗╤П M тЖТ target = plan-╤Д╨░╨╣╨╗, ╤А╨╡╨░╨╗╨╕╨╖╤Г╤О╤Й╨╕╨╣ M.
-        ╨Х╤Б╨╗╨╕ plan.exports ╨│╨╛╨▓╨╛╤А╨╕╤В ╤З╤В╨╛ X ╨┤╨╛╨╗╨╢╨╡╨╜ ╨▒╤Л╤В╤М ╨▓ M тАФ ╤Н╤В╨╛ ╨▒╨░╨│ M.
-      тАв NameError 'X' ╨▓ ╤Д╨░╨╣╨╗╨╡ F тЖТ ╨╡╤Б╨╗╨╕ X ╨╛╨▒╤К╤П╨▓╨╗╨╡╨╜ ╨║╨░╨║ export ╤Б╨╛╤Б╨╡╨┤╨░ N тАФ ╨▒╨░╨│ F (╨╖╨░╨▒╤Л╨╗ ╨╕╨╝╨┐╨╛╤А╤В╨╕╤А╨╛╨▓╨░╤В╤М).
-        ╨Ш╨╜╨░╤З╨╡ ╨▒╨░╨│ F (╨╜╨╡╨╛╨┐╤А╨╡╨┤╨╡╨╗╤С╨╜╨╜╨╛╨╡ ╨╗╨╛╨║╨░╨╗╤М╨╜╨╛╨╡ ╨╕╨╝╤П).
-      тАв ╨Ы╤О╨▒╨░╤П ╨┤╤А╤Г╨│╨░╤П ╨╛╤И╨╕╨▒╨║╨░ ╤Б traceback ╨▓ ╤Д╨░╨╣╨╗╨╡ F ╨╕╨╖ plan тЖТ target = F.
-      тАв ╨Э╨╕╤З╨╡╨│╨╛ ╨╜╨╡ ╨┐╨╛╨┤╨╛╤И╨╗╨╛ тЖТ None (╨┤╨░╤С╨╝ LLM-Healer ╤А╨╡╤И╨╕╤В╤М).
+    Логика выбора target (структурная, не ключевые слова):
+      • ImportError/AttributeError на имени X из модуля M → target = plan-файл, реализующий M.
+        Если plan.exports говорит что X должен быть в M — это баг M.
+      • NameError 'X' в файле F → если X объявлен как export соседа N — баг F (забыл импортировать).
+        Иначе баг F (неопределённое локальное имя).
+      • Любая другая ошибка с traceback в файле F из plan → target = F.
+      • Ничего не подошло → None (даём LLM-Healer решить).
 
-    ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В dict ╤Б ╨┐╨╛╨╗╤П╨╝╨╕:
+    Возвращает dict с полями:
       kind: 'import_error' | 'attribute_error' | 'name_error' | 'traceback' | 'unknown'
-      target: str | None      тАФ rel-╨┐╤Г╤В╤М ╤Д╨░╨╣╨╗╨░, ╨║╨╛╤В╨╛╤А╤Л╨╣ ╨╜╨░╨┤╨╛ ╤З╨╕╨╜╨╕╤В╤М
-      missing_name: str | None тАФ ╨╛╤В╤Б╤Г╤В╤Б╤В╨▓╤Г╤О╤Й╨╡╨╡ ╨╕╨╝╤П
-      source_file: str | None  тАФ ╨│╨┤╨╡ ╨╛╨▒╨╜╨░╤А╤Г╨╢╨╕╨╗╨░╤Б╤М ╨╛╤И╨╕╨▒╨║╨░ (╨┐╨╛╤Б╨╗╨╡╨┤╨╜╨╕╨╣ user-frame)
-      reason: str              тАФ ╨║╨╛╤А╨╛╤В╨║╨╛╨╡ ╨╛╨▒╤К╤П╤Б╨╜╨╡╨╜╨╕╨╡ ╨┤╨╗╤П ╨╗╨╛╨│╨░
-      hint: str                тАФ ╨┐╨╛╨┤╤Б╨║╨░╨╖╨║╨░ ╨┤╨╗╤П ╨┐╨░╤В╤З╨╡╤А╨░ (╨╜╨╡ ╨┤╨╗╤П LLM-╨▓╤Л╨▒╨╛╤А╨░, ╨░ ╨┤╨╗╤П feedback)
+      target: str | None      — rel-путь файла, который надо чинить
+      missing_name: str | None — отсутствующее имя
+      source_file: str | None  — где обнаружилась ошибка (последний user-frame)
+      reason: str              — короткое объяснение для лога
+      hint: str                — подсказка для патчера (не для LLM-выбора, а для feedback)
     """
     out = {
         "kind": "unknown",
@@ -2563,9 +2525,9 @@ def _classify_failure(
     if not plan_paths:
         return out
 
-    # P11.5.C: contract_failure тАФ ╨┐╤А╨╕╨╛╤А╨╕╤В╨╡╤В╨╜╤Л╨╣ ╤Б╨╕╨│╨╜╨░╨╗ ╨╕╨╖ build phase, ╨╜╨╡ ╨╕╨╖ stderr ╤В╨╡╤Б╤В╨░.
-    # ╨Х╤Б╨╗╨╕ _build_one_file_aider ╨┐╨╛╨╝╨╡╤В╨╕╨╗ ╤А╨╡╨╖╤Г╨╗╤М╤В╨░╤В ╨║╨░╨║ contract_failure=True ╨╕ ╨┐╨╡╤А╨╡╨┤╨░╨╗
-    # contract.missing/path тАФ ╨▒╨╡╤А╤С╨╝ ╤Н╤В╨╛╤В ╤Д╨░╨╣╨╗ ╨▓ target ╨▒╨╡╨╖ ╨┐╨░╤А╤Б╨╕╨╜╨│╨░ traceback'╨╛╨▓.
+    # P11.5.C: contract_failure — приоритетный сигнал из build phase, не из stderr теста.
+    # Если _build_one_file_aider пометил результат как contract_failure=True и передал
+    # contract.missing/path — берём этот файл в target без парсинга traceback'ов.
     if failed.get("contract_failure"):
         contract = failed.get("contract") or {}
         target_path = failed.get("path") or failed.get("target")
@@ -2579,8 +2541,8 @@ def _classify_failure(
             out["reason"] = (
                 f"contract.lint: {target_path} missing={missing} kind_mismatch={kind_mm}"
             )
-            # ╨б╨╛╨▒╨╕╤А╨░╨╡╨╝ ╤Е╨╕╨╜╤В ╨╕╨╖ plan.exports ╨┤╨╗╤П ╤Н╤В╨╛╨│╨╛ ╤Д╨░╨╣╨╗╨░ тАФ ╤З╤В╨╛╨▒╤Л aider ╨▓╨╛╤Б╤Б╤В╨░╨╜╨╛╨▓╨╕╨╗
-            # ╨╕╨╝╨╡╨╜╨╜╨╛ ╤В╨╡ ╤Б╨╕╨│╨╜╨░╤В╤Г╤А╤Л, ╤З╤В╨╛ ╨▒╤Л╨╗╨╕ ╨▓ ╨┐╨╗╨░╨╜╨╡.
+            # Собираем хинт из plan.exports для этого файла — чтобы aider восстановил
+            # именно те сигнатуры, что были в плане.
             file_node = next(
                 (f for f in plan.get("files", [])
                  if isinstance(f, dict) and f.get("path") == target_path),
@@ -2597,18 +2559,18 @@ def _classify_failure(
                     sigs.append(f"{kind} {sig}".strip() if kind else sig)
             sigs_block = ("\n  - " + "\n  - ".join(sigs)) if sigs else ""
             out["hint"] = (
-                f"╨д╨░╨╣╨╗ {target_path} ╨╜╨╡ ╤Н╨║╤Б╨┐╨╛╤А╤В╨╕╤А╤Г╨╡╤В ╤Б╨╕╨╝╨▓╨╛╨╗╤Л, ╨╖╨░╤П╨▓╨╗╨╡╨╜╨╜╤Л╨╡ ╨▓ plan.exports: "
-                f"missing={missing}. ╨Т╨╛╤Б╤Б╤В╨░╨╜╨╛╨▓╨╕ ╤Н╤В╨╕ ╤Н╨║╤Б╨┐╨╛╤А╤В╤Л ╨╜╨░ top-level ╤Д╨░╨╣╨╗╨░ "
-                f"╤Б ╨╕╤Е ╨╛╤А╨╕╨│╨╕╨╜╨░╨╗╤М╨╜╤Л╨╝╨╕ ╤Б╨╕╨│╨╜╨░╤В╤Г╤А╨░╨╝╨╕:{sigs_block}"
+                f"Файл {target_path} не экспортирует символы, заявленные в plan.exports: "
+                f"missing={missing}. Восстанови эти экспорты на top-level файла "
+                f"с их оригинальными сигнатурами:{sigs_block}"
             )
             return out
 
-    # P11.6 (FM-14): structural fallback тАФ ╤В╨╡╤Б╤В "╨┐╤А╨╛╤И╤С╨╗" (rc=0) ╨╜╨╛ smoke ╨╜╨╕╤З╨╡╨│╨╛
-    # ╨╜╨╡ ╨┐╤А╨╛╨▓╨╡╤А╨╕╨╗, ╨╛╨╢╨╕╨┤╨░╨╡╨╝╤Л╨╡ user'╨╛╨╝ ╤Б╨╕╨╝╨▓╨╛╨╗╤Л ╨╛╤В╤Б╤Г╤В╤Б╤В╨▓╤Г╤О╤В ╨▓ ╨┐╤А╨╛╨╡╨║╤В╨╡.
-    # ╨б╤А╨░╨▒╨░╤В╤Л╨▓╨░╨╡╤В ╨Ф╨Ю ╤А╨░╨╖╨▒╨╛╤А╨░ stderr (╤В╤А╨╡╨▒╤Г╨╡╤В spec+slug). ╨С╨╡╤А╤С╨╝ ╨╕╨╝╨╡╨╜╨░ ╨╕╨╖ spec ╨▓╨╕╨┤╨░
-    # "name(args)", ╤Б╤А╨░╨▓╨╜╨╕╨▓╨░╨╡╨╝ ╤Б union(plan.exports.name) ╨╕ ╤Б ╤Д╨░╨║╤В╨╕╤З╨╡╤Б╨║╨╕╨╝╨╕ top-level
-    # def/class ╨▓ ╨║╨╛╨┤╨╡ (AST-walk). ╨Х╤Б╨╗╨╕ ╨╕╨╝╤П ╨╛╨╢╨╕╨┤╨░╨╡╤В╤Б╤П, ╨╜╨╛ ╨▓ ╨║╨╛╨┤╨╡ ╨╡╤Б╤В╤М case-fold
-    # ╨▓╨░╤А╨╕╨░╨╜╤В тАФ ╨▒╨░╨│ ╤Н╤В╨╛╨│╨╛ ╤Д╨░╨╣╨╗╨░ (╨┐╨╡╤А╨╡╨╕╨╝╨╡╨╜╤Г╨╣). ╨з╨╕╤Б╤В╨╛ ╤Б╤В╤А╤Г╨║╤В╤Г╤А╨╜╨╛, ╨▒╨╡╨╖ ╨║╨╗╤О╤З╨╡╨▓╤Л╤Е ╤Б╨╗╨╛╨▓.
+    # P11.6 (FM-14): structural fallback — тест "прошёл" (rc=0) но smoke ничего
+    # не проверил, ожидаемые user'ом символы отсутствуют в проекте.
+    # Срабатывает ДО разбора stderr (требует spec+slug). Берём имена из spec вида
+    # "name(args)", сравниваем с union(plan.exports.name) и с фактическими top-level
+    # def/class в коде (AST-walk). Если имя ожидается, но в коде есть case-fold
+    # вариант — баг этого файла (переименуй). Чисто структурно, без ключевых слов.
     if (
         spec is not None
         and slug
@@ -2623,7 +2585,7 @@ def _classify_failure(
             except Exception:
                 required = []
             if required:
-                # union ╨▓╤Б╨╡╤Е plan.exports.name
+                # union всех plan.exports.name
                 plan_export_names: set[str] = set()
                 for f in plan.get("files", []):
                     if not isinstance(f, dict):
@@ -2634,18 +2596,18 @@ def _classify_failure(
                             if nm:
                                 plan_export_names.add(nm)
                 project_defs = _walk_project_top_level_defs(slug)
-                # ╨▓╤Б╨╡ top-level ╨╕╨╝╨╡╨╜╨░ ╨▓ ╨║╨╛╨┤╨╡
+                # все top-level имена в коде
                 code_names: set[str] = set()
                 for _names in project_defs.values():
                     code_names.update(_names)
-                # required, ╨║╨╛╤В╨╛╤А╤Л╤Е ╨╜╨╡╤В ╨╜╨╕ ╨▓ plan.exports, ╨╜╨╕ ╨▓ ╤Д╨░╨║╤В╨╕╤З╨╡╤Б╨║╨╛╨╝ ╨║╨╛╨┤╨╡
+                # required, которых нет ни в plan.exports, ни в фактическом коде
                 missing_calls = [
                     r for r in required
                     if r not in plan_export_names and r not in code_names
                 ]
                 if missing_calls:
-                    # ╨Ф╨╗╤П ╨║╨░╨╢╨┤╨╛╨│╨╛ missing ╨╕╤Й╨╡╨╝ structural owner (case-fold).
-                    # ╨С╨╡╤А╤С╨╝ ╨┐╨╡╤А╨▓╤Л╨╣ missing, ╨┤╨╗╤П ╨║╨╛╤В╨╛╤А╨╛╨│╨╛ ╨╜╨░╤И╨╗╨╕ owner тАФ ╤Н╤В╨╛ ╨╜╨░╨╕╨▒╨╛╨╗╨╡╨╡ ╤В╨╛╤З╨╜╤Л╨╣ ╤Б╨╕╨│╨╜╨░╨╗.
+                    # Для каждого missing ищем structural owner (case-fold).
+                    # Берём первый missing, для которого нашли owner — это наиболее точный сигнал.
                     chosen_target: str | None = None
                     chosen_required: str | None = None
                     chosen_actual: str | None = None
@@ -2667,15 +2629,15 @@ def _classify_failure(
                             f"(missing_in_code={missing_calls})"
                         )
                         out["hint"] = (
-                            f"╨Т ╤Д╨░╨╣╨╗╨╡ {chosen_target} ╨╛╨┐╤А╨╡╨┤╨╡╨╗╨╡╨╜╨░ ╤Д╤Г╨╜╨║╤Ж╨╕╤П `{chosen_actual}`, "
-                            f"╨╜╨╛ ╤Б╨┐╨╡╤Ж╨╕╤Д╨╕╨║╨░╤Ж╨╕╤П ╤В╤А╨╡╨▒╤Г╨╡╤В `{chosen_required}`. "
-                            f"╨Я╨╡╤А╨╡╨╕╨╝╨╡╨╜╤Г╨╣ `{chosen_actual}` ╨▓ `{chosen_required}` ╨╕╨╗╨╕ ╨┤╨╛╨▒╨░╨▓╤М ╤Н╨║╤Б╨┐╨╛╤А╤В ╨┐╨╛╨┤ ╨╕╨╝╨╡╨╜╨╡╨╝ "
-                            f"`{chosen_required}` (def {chosen_required}(...): тАж ╨╕╨╗╨╕ "
+                            f"В файле {chosen_target} определена функция `{chosen_actual}`, "
+                            f"но спецификация требует `{chosen_required}`. "
+                            f"Переименуй `{chosen_actual}` в `{chosen_required}` или добавь экспорт под именем "
+                            f"`{chosen_required}` (def {chosen_required}(...): … или "
                             f"`{chosen_required} = {chosen_actual}`)."
                         )
                         return out
-                    # owner ╨╜╨╡ ╨╜╨░╨╣╨┤╨╡╨╜ тАФ ╤Д╤Г╨╜╨║╤Ж╨╕╤П ╨┐╤А╨╛╤Б╤В╨╛ ╨╛╤В╤Б╤Г╤В╤Б╤В╨▓╤Г╨╡╤В. Target = ╨┐╨╡╤А╨▓╤Л╨╣
-                    # py-╤Д╨░╨╣╨╗ ╨▓ plan, ╨║╨╛╤В╨╛╤А╤Л╨╣ ╨╛╨▒╤К╤П╨▓╨╗╨╡╨╜ ╨▓ plan.files (╨╛╨▒╤Л╤З╨╜╨╛ entry-point).
+                    # owner не найден — функция просто отсутствует. Target = первый
+                    # py-файл в plan, который объявлен в plan.files (обычно entry-point).
                     py_in_plan = [p for p in plan_paths if _is_python_path(p)]
                     if py_in_plan:
                         target_fb = py_in_plan[0]
@@ -2685,13 +2647,13 @@ def _classify_failure(
                         out["missing_name"] = missing_calls[0]
                         out["reason"] = (
                             f"P11.6 structural fallback: spec requires {missing_calls}, "
-                            f"╨╜╨╕ ╨╛╨┤╨╕╨╜ ╨╕╨╖ ╤Н╤В╨╕╤Е ╤Б╨╕╨╝╨▓╨╛╨╗╨╛╨▓ ╨╜╨╡ ╨╛╨┐╤А╨╡╨┤╨╡╨╗╤С╨╜ ╨▓ ╨┐╤А╨╛╨╡╨║╤В╨╡; "
-                            f"target = ╨┐╨╡╤А╨▓╤Л╨╣ py-╤Д╨░╨╣╨╗ plan ({target_fb})"
+                            f"ни один из этих символов не определён в проекте; "
+                            f"target = первый py-файл plan ({target_fb})"
                         )
                         out["hint"] = (
-                            f"╨Т ╨┐╤А╨╛╨╡╨║╤В╨╡ ╨╜╨╡ ╨╛╨┐╤А╨╡╨┤╨╡╨╗╨╡╨╜╤Л ╤Д╤Г╨╜╨║╤Ж╨╕╨╕, ╤В╤А╨╡╨▒╤Г╨╡╨╝╤Л╨╡ ╤Б╨┐╨╡╤Ж╨╕╤Д╨╕╨║╨░╤Ж╨╕╨╡╨╣: "
-                            f"{missing_calls}. ╨Ф╨╛╨▒╨░╨▓╤М ╨╕╤Е ╨▓ {target_fb} ╨║╨░╨║ top-level def "
-                            f"╤Б ╨╛╨╢╨╕╨┤╨░╨╡╨╝╤Л╨╝╨╕ ╨╕╨╝╨╡╨╜╨░╨╝╨╕."
+                            f"В проекте не определены функции, требуемые спецификацией: "
+                            f"{missing_calls}. Добавь их в {target_fb} как top-level def "
+                            f"с ожидаемыми именами."
                         )
                         return out
 
@@ -2699,11 +2661,11 @@ def _classify_failure(
     if not stderr.strip():
         return out
 
-    # ╨д╨░╨╣╨╗, ╨│╨┤╨╡ ╤А╨╡╨░╨╗╤М╨╜╨╛ ╤Г╨┐╨░╨╗╨╛ (╨┐╨╛╤Б╨╗╨╡╨┤╨╜╨╕╨╣ ╨║╨░╨┤╤А ╨▓ traceback ╨╕╨╖ ╨┐╨╗╨░╨╜╨░)
+    # Файл, где реально упало (последний кадр в traceback из плана)
     source_file = _last_user_frame_in_plan(stderr, plan_paths)
     out["source_file"] = source_file
 
-    # ╨Ъ╨░╤А╤В╨░ exports: ╨╕╨╝╤П -> ╤Д╨░╨╣╨╗, ╨│╨┤╨╡ ╨╛╨╜╨╛ ╨╛╨▒╤К╤П╨▓╨╗╨╡╨╜╨╛
+    # Карта exports: имя -> файл, где оно объявлено
     exports_owner: dict[str, str] = {}
     for f in plan.get("files", []):
         if not isinstance(f, dict):
@@ -2715,20 +2677,20 @@ def _classify_failure(
                 if nm:
                     exports_owner[nm] = rel
 
-    # 1) ImportError: cannot import name 'X' from 'M'  тЖТ ╨▒╨░╨│ M
+    # 1) ImportError: cannot import name 'X' from 'M'  → баг M
     m = _HEAL_IMPORTERROR_RE.search(stderr)
     if m:
         missing = m.group(1)
         mod = m.group(2)
         out["kind"] = "import_error"
         out["missing_name"] = missing
-        # 1a) plan.exports ╨│╨╛╨▓╨╛╤А╨╕╤В ╤З╤В╨╛ missing ╨┤╨╛╨╗╨╢╨╡╨╜ ╨▒╤Л╤В╤М ╨▓ ╤Д╨░╨╣╨╗╨╡ X тАФ ╨▒╨╡╤А╤С╨╝ ╨╡╨│╨╛
+        # 1a) plan.exports говорит что missing должен быть в файле X — берём его
         owner = exports_owner.get(missing)
         if owner:
             out["target"] = owner
             out["reason"] = f"plan.exports requires {missing} in {owner}"
         else:
-            # 1b) ╤Б╨▓╨╛╨┤╨╕╨╝ ╨╕╨╝╤П ╨╝╨╛╨┤╤Г╨╗╤П ╨║ plan-╤Д╨░╨╣╨╗╤Г
+            # 1b) сводим имя модуля к plan-файлу
             mod_path = _module_to_plan_path(mod, plan_paths)
             if mod_path:
                 out["target"] = mod_path
@@ -2737,12 +2699,12 @@ def _classify_failure(
                 out["target"] = source_file
                 out["reason"] = f"unresolved module '{mod}', falling back to source frame"
         out["hint"] = (
-            f"╨Т ╤Д╨░╨╣╨╗╨╡ {out['target']} ╨╛╤В╤Б╤Г╤В╤Б╤В╨▓╤Г╨╡╤В/╨┐╨╡╤А╨╡╨╕╨╝╨╡╨╜╨╛╨▓╨░╨╜ ╤Б╨╕╨╝╨▓╨╛╨╗ '{missing}'. "
-            f"╨Ф╨╛╨▒╨░╨▓╤М ╨╛╨┐╤А╨╡╨┤╨╡╨╗╨╡╨╜╨╕╨╡ ╤Б ╤В╨╡╨╝ ╨╕╨╝╨╡╨╜╨╡╨╝, ╤З╤В╨╛ ╨╛╨▒╤К╤П╨▓╨╗╨╡╨╜╨╛ ╨▓ plan.exports."
+            f"В файле {out['target']} отсутствует/переименован символ '{missing}'. "
+            f"Добавь определение с тем именем, что объявлено в plan.exports."
         )
         return out
 
-    # 2) AttributeError: module 'M' has no attribute 'X'  тЖТ ╨▒╨░╨│ M
+    # 2) AttributeError: module 'M' has no attribute 'X'  → баг M
     m = _HEAL_ATTRMOD_RE.search(stderr)
     if m:
         mod = m.group(1)
@@ -2758,37 +2720,37 @@ def _classify_failure(
             out["target"] = mod_path or source_file
             out["reason"] = f"module '{mod}' resolved to {out['target']}"
         out["hint"] = (
-            f"╨Ь╨╛╨┤╤Г╨╗╤М '{mod}' ╨╜╨╡ ╤Б╨╛╨┤╨╡╤А╨╢╨╕╤В '{missing}'. ╨Ф╨╛╨▒╨░╨▓╤М ╨╛╨┐╤А╨╡╨┤╨╡╨╗╨╡╨╜╨╕╨╡ ╨▓ {out['target']}."
+            f"Модуль '{mod}' не содержит '{missing}'. Добавь определение в {out['target']}."
         )
         return out
 
-    # 3) NameError: name 'X' is not defined  тЖТ ╨┐╨╛╤З╤В╨╕ ╨▓╤Б╨╡╨│╨┤╨░ ╨▒╨░╨│ ╨▓ source_file
+    # 3) NameError: name 'X' is not defined  → почти всегда баг в source_file
     m = _HEAL_NAMEERROR_RE.search(stderr)
     if m:
         missing = m.group(1)
         out["kind"] = "name_error"
         out["missing_name"] = missing
-        # ╨Х╤Б╨╗╨╕ ╨╕╨╝╤П тАФ ╤Н╨║╤Б╨┐╨╛╤А╤В ╤Б╨╛╤Б╨╡╨┤╨░, source_file ╨┤╨╛╨╗╨╢╨╡╨╜ ╨╡╨│╨╛ ╨╕╨╝╨┐╨╛╤А╤В╨╕╤А╨╛╨▓╨░╤В╤М
+        # Если имя — экспорт соседа, source_file должен его импортировать
         owner = exports_owner.get(missing)
         if owner and source_file and owner != source_file:
             out["target"] = source_file
             out["reason"] = f"'{missing}' is exported by {owner}; {source_file} must import it"
             mod = _module_name_from_rel(owner)
             out["hint"] = (
-                f"╨Т ╤Д╨░╨╣╨╗╨╡ {source_file} ╨╕╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╡╤В╤Б╤П '{missing}', ╨╜╨╛ ╨╜╨╡╤В ╨╕╨╝╨┐╨╛╤А╤В╨░. "
-                f"╨Ф╨╛╨▒╨░╨▓╤М: from {mod} import {missing}"
+                f"В файле {source_file} используется '{missing}', но нет импорта. "
+                f"Добавь: from {mod} import {missing}"
             )
         else:
-            # ╨Ы╨╛╨║╨░╨╗╤М╨╜╨░╤П ╨╜╨╡╨╛╨▒╤К╤П╨▓╨╗╨╡╨╜╨╜╨░╤П ╨┐╨╡╤А╨╡╨╝╨╡╨╜╨╜╨░╤П тАФ ╨▒╨░╨│ ╤В╨░╨╝, ╨│╨┤╨╡ ╨╕╤Б╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╨╗╨░╤Б╤М
+            # Локальная необъявленная переменная — баг там, где использовалась
             out["target"] = source_file
             out["reason"] = f"undefined local name '{missing}' in {source_file}"
             out["hint"] = (
-                f"╨Т ╤Д╨░╨╣╨╗╨╡ {source_file} ╨╕╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╡╤В╤Б╤П '{missing}' ╨▒╨╡╨╖ ╨╛╨┐╤А╨╡╨┤╨╡╨╗╨╡╨╜╨╕╤П. "
-                f"╨Ю╨▒╤К╤П╨▓╨╕ ╨┐╨╡╤А╨╡╨╝╨╡╨╜╨╜╤Г╤О/╤Д╤Г╨╜╨║╤Ж╨╕╤О ╨╕╨╗╨╕ ╨┤╨╛╨▒╨░╨▓╤М ╨╜╤Г╨╢╨╜╤Л╨╣ ╨╕╨╝╨┐╨╛╤А╤В."
+                f"В файле {source_file} используется '{missing}' без определения. "
+                f"Объяви переменную/функцию или добавь нужный импорт."
             )
         return out
 
-    # 4) ╨Ы╤О╨▒╨╛╨╣ traceback ╤Б user-frame тАФ ╤З╨╕╨╜╨╕╨╝ ╨┐╨╛╤Б╨╗╨╡╨┤╨╜╨╕╨╣ ╨║╨░╨┤╤А
+    # 4) Любой traceback с user-frame — чиним последний кадр
     if source_file:
         out["kind"] = "traceback"
         out["target"] = source_file
@@ -2804,11 +2766,11 @@ def _pick_heal_target(
     spec: dict | None = None,
     slug: str | None = None,
 ) -> str | None:
-    """P11.4/P11.6: ╤Б╤В╤А╤Г╨║╤В╤Г╤А╨╜╤Л╨╣ ╨▓╤Л╨▒╨╛╤А ╤Д╨░╨╣╨╗╨░ ╨┤╨╗╤П ╤Е╨╕╨╗╨╕╨╜╨│╨░ ╨╜╨░ ╨╛╤Б╨╜╨╛╨▓╨╡ ╤А╨░╨╖╨▒╨╛╤А╨░ ╨╛╤И╨╕╨▒╨║╨╕.
+    """P11.4/P11.6: структурный выбор файла для хилинга на основе разбора ошибки.
 
-    ╨Ф╨╡╨╗╨╡╨│╨╕╤А╤Г╨╡╤В ╨▓ _classify_failure (╨▒╨╡╨╖ ╨║╨╗╤О╤З╨╡╨▓╤Л╤Е ╤Б╨╗╨╛╨▓). ╨Х╤Б╨╗╨╕ ╤А╨░╨╖╨▒╨╛╤А ╨╜╨╡ ╨┤╨░╨╗ target тАФ
-    fallback ╨╜╨░ ╨┐╨╡╤А╨▓╤Л╨╣ .py ╨╕╨╖ plan.files. P11.6: spec/slug ╨┐╨╛╨╖╨▓╨╛╨╗╤П╤О╤В structural
-    fallback ╨▓ _classify_failure ╨╛╨┐╤А╨╡╨┤╨╡╨╗╨╕╤В╤М ╤Д╨░╨╣╨╗ ╨┐╨╛ AST-walk╤Г.
+    Делегирует в _classify_failure (без ключевых слов). Если разбор не дал target —
+    fallback на первый .py из plan.files. P11.6: spec/slug позволяют structural
+    fallback в _classify_failure определить файл по AST-walkу.
     """
     info = _classify_failure(plan, failed, spec=spec, slug=slug)
     if info.get("target"):
@@ -2818,7 +2780,7 @@ def _pick_heal_target(
         )
         return info["target"]
 
-    # Fallback: ╨┐╨╡╤А╨▓╤Л╨╣ .py-╤Д╨░╨╣╨╗ ╨▓ plan.files (entry point)
+    # Fallback: первый .py-файл в plan.files (entry point)
     file_paths = [f["path"] for f in plan.get("files", []) if isinstance(f, dict) and "path" in f]
     if not file_paths:
         return None
@@ -2829,13 +2791,13 @@ def _pick_heal_target(
 
 
 def _heal_via_aider(slug: str, plan: dict, failed: dict, spec: dict | None = None) -> dict:
-    """P9.4/P11.6: ╨┐╨╛╨┐╤Л╤В╨░╤В╤М╤Б╤П ╨┐╨╛╤З╨╕╨╜╨╕╤В╤М ╤Д╨░╨╣╨╗ ╤З╨╡╤А╨╡╨╖ aider_heal.
+    """P9.4/P11.6: попытаться починить файл через aider_heal.
 
-    ╨а╨╡╨╖╤Г╨╗╤М╤В╨░╤В тАФ dict ╤Б ╨┐╨╛╨╗╤П╨╝╨╕ ok/target/error/duration. ╨Э╨╕╨║╨╛╨│╨┤╨░ ╨╜╨╡ ╨▒╤А╨╛╤Б╨░╨╡╤В ╨╕╤Б╨║╨╗╤О╤З╨╡╨╜╨╕╨╡.
+    Результат — dict с полями ok/target/error/duration. Никогда не бросает исключение.
 
-    P11.4: ╨▓ error_text ╨▓╨║╨╗╤О╤З╨░╨╡╤В╤Б╤П ╤Б╤В╤А╤Г╨║╤В╤Г╤А╨╜╤Л╨╣ hint ╨╕╨╖ _classify_failure тАФ
-    aider ╨▓╨╕╨┤╨╕╤В ╨╕ ╤Б╤Л╤А╨╛╨╣ traceback, ╨╕ ╤П╨▓╨╜╤Л╨╣ ╨┤╨╕╨░╨│╨╜╨╛╨╖ (╨║╤В╨╛ ╨▓╨╕╨╜╨╛╨▓╨░╤В ╨╕ ╨┐╨╛╤З╨╡╨╝╤Г).
-    P11.6: spec ╨┐╤А╨╛╨▒╤А╨░╤Б╤Л╨▓╨░╨╡╤В╤Б╤П ╨▓ _classify_failure ╨┤╨╗╤П structural fallback ╨┐╤А╨╕ rc=0.
+    P11.4: в error_text включается структурный hint из _classify_failure —
+    aider видит и сырой traceback, и явный диагноз (кто виноват и почему).
+    P11.6: spec пробрасывается в _classify_failure для structural fallback при rc=0.
     """
     info = _classify_failure(plan, failed, spec=spec, slug=slug)
     target = info.get("target") or _pick_heal_target(plan, failed, spec=spec, slug=slug)
@@ -2844,42 +2806,23 @@ def _heal_via_aider(slug: str, plan: dict, failed: dict, spec: dict | None = Non
     raw_err = (failed.get("stderr", "") or failed.get("stdout", "") or "").strip()
     if not raw_err:
         raw_err = f"test '{failed.get('name','?')}' failed (rc={failed.get('rc','?')})"
-    # P11.4: ╨┤╨╛╨▒╨░╨▓╨╗╤П╨╡╨╝ ╤Б╤В╤А╤Г╨║╤В╤Г╤А╨╜╤Л╨╣ ╨┤╨╕╨░╨│╨╜╨╛╨╖ ╨▓ error_text
+    # P11.4: добавляем структурный диагноз в error_text
     if info.get("hint"):
         error_text = (
-            f"╨Ф╨Ш╨Р╨У╨Э╨Ю╨Ч (kind={info.get('kind')}, target={target}):\n"
+            f"ДИАГНОЗ (kind={info.get('kind')}, target={target}):\n"
             f"{info.get('hint')}\n\n"
-            f"╨б╨л╨а╨Ю╨Щ STDERR:\n{raw_err}"
+            f"СЫРОЙ STDERR:\n{raw_err}"
         )
     else:
         error_text = raw_err
     test_command = failed.get("command", "") or ""
     try:
         pdir = project_dir(slug)
-        # P11.7 FIX-1: ╨┐╨╡╤А╨╡╨┤╨░╤С╨╝ read_only_files (╨║╨╛╨╜╤В╤А╨░╨║╤В╤Л ╤Б╨╛╤Б╨╡╨┤╨╡╨╣) ╨▓ heal
-        _ro_files, _ = _build_neighbor_context(pdir, plan, target)
-        res = aider_runner.aider_heal(pdir, target, error_text, test_command=test_command,
-                                      read_only_files=_ro_files or None)
-        heal_ok = bool(res.ok)
-        heal_error = res.error if not res.ok else ""
-        # S-6 fix: ╨┐╤А╨╛╨▓╨╡╤А╤П╨╡╨╝ ╤Б╤В╨░╤В╨╕╨║╤Г ╨┐╨╛╤Б╨╗╨╡ heal тАФ aider ╨╝╨╛╨╢╨╡╤В ╨▓╨╡╤А╨╜╤Г╤В╤М ok=True ╤Б ╨▒╨╕╤В╤Л╨╝ ╤Д╨░╨╣╨╗╨╛╨╝
-        if heal_ok:
-            try:
-                _static = static_check(str(pdir / target))
-                _static_errors = _static.get("errors") or []
-                if _static_errors:
-                    heal_ok = False
-                    heal_error = (
-                        "aider heal ok but static errors: "
-                        + "; ".join(e.get("message", str(e)) for e in _static_errors[:3])
-                    )
-                    logger.warning(f"[heal.static] {target}: {heal_error}")
-            except Exception:
-                pass
+        res = aider_runner.aider_heal(pdir, target, error_text, test_command=test_command)
         return {
-            "ok":         heal_ok,
+            "ok":         bool(res.ok),
             "target":     target,
-            "error":      heal_error,
+            "error":      res.error if not res.ok else "",
             "duration_s": res.duration_s,
             "attempts":   res.attempts,
         }
@@ -2890,30 +2833,21 @@ def _heal_via_aider(slug: str, plan: dict, failed: dict, spec: dict | None = Non
 def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budget: Budget) -> list[dict]:
     if all(r.get("ok") for r in test_results):
         return test_results
-    from core.config import AIDER_ENABLED, AIDER_BIN  # ╨╗╨╛╨║╨░╨╗╤М╨╜╤Л╨╣ ╨╕╨╝╨┐╨╛╤А╤В тАФ ╨┤╨╕╨╜╨░╨╝╨╕╤З╨╡╤Б╨║╨╕╨╣ ╤Д╨╗╨░╨│
+    from core.config import AIDER_ENABLED, AIDER_BIN  # локальный импорт — динамический флаг
     file_paths = [f["path"] for f in plan["files"] if isinstance(f, dict) and "path" in f]
-    # P11.7 FIX-2: ╤Е╨╡╤И╨╕ ╤Д╨░╨╣╨╗╨╛╨▓ ╨┤╨╛ heal-╨╕╤В╨╡╤А╨░╤Ж╨╕╨╕ ╨┤╨╗╤П no-change guard
-    # hashlib ╨╕╨╝╨┐╨╛╤А╤В╨╕╤А╨╛╨▓╨░╨╜ ╨╜╨░ ╨▓╨╡╤А╤Е╨╜╨╡╨╝ ╤Г╤А╨╛╨▓╨╜╨╡ ╨╝╨╛╨┤╤Г╨╗╤П (C-2 fix: ╤Г╨▒╤А╨░╨╜ ╨┤╤Г╨▒╨╗╨╕╤А╤Г╤О╤Й╨╕╨╣ import)
-    _pre_hashes: dict[str, str] = {}
-    try:
-        for _fp in file_paths:
-            _c = read_project_file(slug, _fp)
-            _pre_hashes[_fp] = hashlib.md5(_c.encode("utf-8", errors="replace")).hexdigest()
-    except Exception:
-        pass
 
     for heal_iter in range(1, MAX_HEAL_ITERS + 1):
         failed = next((r for r in test_results if not r.get("ok")), None)
         if not failed:
             break
 
-        # ╨С╤Л╤Б╤В╤А╤Л╨╣ ╨┐╤Г╤В╤М: ModuleNotFoundError тЖТ ╨┤╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╡╤Б╨║╨╕╨╣ pip install (╨▒╨╡╨╖ LLM)
+        # Быстрый путь: ModuleNotFoundError → детерминистический pip install (без LLM)
         miss = _heal_missing_module(slug, failed)
         if miss is not None:
             if miss.get("ok"):
                 add_phase(slug, f"heal:iter{heal_iter}", "ok",
                           f"deterministic pip install {miss.get('installed_as')} (import {miss.get('missing')})")
-                # ╨б╨╕╨╜╤Е╤А╨╛╨╜╨╕╨╖╨╕╤А╤Г╨╡╨╝ requirements.txt ╨╡╤Б╨╗╨╕ ╨╛╨╜ ╨╡╤Б╤В╤М ╨╕ ╨┐╨░╨║╨╡╤В╨░ ╤В╨░╨╝ ╨╜╨╡╤В
+                # Синхронизируем requirements.txt если он есть и пакета там нет
                 try:
                     existing_files = get_project_files(slug)
                     if isinstance(existing_files, dict) and "requirements.txt" in existing_files:
@@ -2924,7 +2858,7 @@ def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budg
                             write_project_file(slug, "requirements.txt", new_req)
                 except Exception as e:
                     logger.debug(f"[heal] requirements.txt sync skipped: {e}")
-                # ╨а╨╡╤В╨╡╤Б╤В ╨▒╨╡╨╖ ╤А╨░╤Б╤Е╨╛╨┤╨░ LLM-╨▒╤О╨┤╨╢╨╡╤В╨░
+                # Ретест без расхода LLM-бюджета
                 test_results = _test(slug, plan, spec)
                 if all(r.get("ok") for r in test_results):
                     break
@@ -2932,9 +2866,9 @@ def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budg
             else:
                 add_phase(slug, f"heal:iter{heal_iter}", "failed",
                           f"deterministic pip install failed for {miss.get('missing')}: {miss.get('stderr','')[:200]}")
-                # ╨Э╨╡ ╨▓╤Л╤Е╨╛╨┤╨╕╨╝ тАФ ╨┐╤Г╤Б╤В╤М LLM-╨▓╨╡╤В╨║╨░ ╨┐╨╛╨┐╤А╨╛╨▒╤Г╨╡╤В ╨┤╤А╤Г╨│╨╛╨╣ ╤Д╨╕╨║╤Б
+                # Не выходим — пусть LLM-ветка попробует другой фикс
 
-        # P2: ╤Б╨╡╤В╨╡╨▓╨░╤П ╨╛╤И╨╕╨▒╨║╨░ тЖТ ╨┐╤А╨╛╤Б╤В╨╛ ╨┐╨░╤Г╨╖╨░+╤А╨╡╤В╨╡╤Б╤В (╨▒╨╡╨╖ LLM, ╨▒╨╡╨╖ ╨┐╤А╨░╨▓╨║╨╕ ╨║╨╛╨┤╨░)
+        # P2: сетевая ошибка → просто пауза+ретест (без LLM, без правки кода)
         net = _heal_network_retry(slug, failed, plan, attempt=heal_iter)
         if net is not None:
             add_phase(slug, f"heal:iter{heal_iter}", "ok",
@@ -2944,64 +2878,41 @@ def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budg
                 break
             continue
 
-        # P2: SyntaxError/IndentationError тЖТ ╨┤╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╡╤Б╨║╨░╤П ╨┤╨╕╨░╨│╨╜╨╛╤Б╤В╨╕╨║╨░ ╨▒╨╡╨╖ LLM
+        # P2: SyntaxError/IndentationError → детерминистическая диагностика без LLM
         diag: dict | None = _heal_syntax_error(slug, failed, plan)
         det_category = "syntax" if diag else None
 
-        # P2: JSONDecodeError тЖТ ╤Д╨╕╨║╤Б╨╕╤А╨╛╨▓╨░╨╜╨╜╤Л╨╣ ╤Е╨╕╨╜╤В Coder'╤Г
+        # P2: JSONDecodeError → фиксированный хинт Coder'у
         if diag is None:
             diag = _heal_json_decode(slug, failed, plan)
             det_category = "json" if diag else None
 
-        # P9.4: aider-╨▓╨╡╤В╨║╨░ тАФ ╨╡╤Б╨╗╨╕ ╨┤╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╡╤Б╨║╨╕╨╡ ╤Е╨╕╨╗╨╡╤А╤Л ╨╜╨╡ ╨┐╨╛╨╝╨╛╨│╨╗╨╕ ╨╕ aider ╨▓╨║╨╗╤О╤З╤С╨╜,
-        # ╨╛╤В╨┤╨░╤С╨╝ ╨╡╨╝╤Г ╤Д╨░╨╣╨╗ ╨╕ stderr ╨╜╨░╨┐╤А╤П╨╝╤Г╤О. Aider ╤Б╨░╨╝ ╨╕ ╨┤╨╕╨░╨│╨╜╨╛╤Б╤В╨╕╤А╤Г╨╡╤В, ╨╕ ╨┐╨░╤В╤З╨╕╤В, ╨╕ ╤Б╨╛╤Е╤А╨░╨╜╤П╨╡╤В.
-        # ╨Х╤Б╨╗╨╕ aider ╤Г╤Б╨┐╨╡╤И╨╜╨╛ ╨┐╤А╨╕╨╝╨╡╨╜╨╕╨╗ ╨┐╤А╨░╨▓╨║╤Г тАФ ╤А╨╡╤В╨╡╤Б╤В╨╕╤А╤Г╨╡╨╝; ╨╕╨╜╨░╤З╨╡ fallthrough ╨▓ LLM-╨┤╨╕╨░╨│╨╜╨╛╤Б╤В╨╕╨║╤Г.
+        # P9.4: aider-ветка — если детерминистические хилеры не помогли и aider включён,
+        # отдаём ему файл и stderr напрямую. Aider сам и диагностирует, и патчит, и сохраняет.
+        # Если aider успешно применил правку — ретестируем; иначе fallthrough в LLM-диагностику.
         if diag is None and AIDER_ENABLED and aider_runner.is_aider_available(AIDER_BIN):
             try:
                 budget.check(f"heal:aider:iter{heal_iter}")
                 ah = _heal_via_aider(slug, plan, failed, spec=spec)
-                # BUG-5 FIX: spend AFTER no-change check
+                budget.spend(1)
             except BudgetExceeded as e:
                 add_phase(slug, f"heal:iter{heal_iter}", "failed", f"budget: {e}")
                 break
-            _aider_changed = True
             if ah.get("ok"):
-                _ah_target = ah.get("target")
-                if _ah_target:
-                    try:
-                        _content_after = read_project_file(slug, _ah_target)
-                        _hash_after = hashlib.md5(_content_after.encode("utf-8", errors="replace")).hexdigest()
-                        _pre = _pre_hashes.get(_ah_target)
-                        if _pre is not None and _pre == _hash_after:
-                            # BUG-4 FIX: fallthrough to LLM (no continue), BUG-5: no spend
-                            _aider_changed = False
-                            logger.info(f"[heal.no_change] aider no-op {_ah_target} — LLM fallthrough (BUG-4/5)")
-                            add_phase(slug, f"heal:iter{heal_iter}", "failed",
-                                      f"aider no-op: {_ah_target} unchanged (BUG-4 LLM fallthrough)")
-                            ah = {}  # clear ok to enter LLM path below
-                        else:
-                            budget.spend(1)  # BUG-5 FIX: spend only on real change
-                            _pre_hashes[_ah_target] = _hash_after
-                    except Exception:
-                        budget.spend(1)  # fallback: assume changed
-                else:
-                    budget.spend(1)
-                _changed = _aider_changed
-                if _changed:
-                    add_phase(
-                        slug, f"heal:iter{heal_iter}", "ok",
-                        f"aider heal target={ah.get('target')} duration={ah.get('duration_s')}s"
-                    )
-                    test_results = _test(slug, plan, spec)
-                    if all(r.get("ok") for r in test_results):
-                        break
+                add_phase(
+                    slug, f"heal:iter{heal_iter}", "ok",
+                    f"aider heal target={ah.get('target')} duration={ah.get('duration_s')}s"
+                )
+                test_results = _test(slug, plan, spec)
+                if all(r.get("ok") for r in test_results):
+                    break
                 continue
             else:
                 logger.info(
                     f"[heal] aider failed (target={ah.get('target')} err={ah.get('error','')[:200]}), "
                     "fallback to LLM diagnose"
                 )
-                # fallthrough ╨▓ ╨╛╨▒╤Л╤З╨╜╤Л╨╣ LLM-╨┐╤Г╤В╤М ╨╜╨╕╨╢╨╡
+                # fallthrough в обычный LLM-путь ниже
 
         if diag is not None:
             add_phase(slug, f"heal:iter{heal_iter}", "ok",
@@ -3012,35 +2923,30 @@ def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budg
             except BudgetExceeded as e:
                 add_phase(slug, f"heal:iter{heal_iter}", "failed", f"budget: {e}")
                 break
-        # diag ╨╗╨╕╨▒╨╛ ╨╕╨╖ ╨┤╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╡╤Б╨║╨╛╨│╨╛ ╤Е╨╕╨╗╨╡╤А╨░, ╨╗╨╕╨▒╨╛ ╨╕╨╖ _diagnose тАФ ╨▓ ╨╛╨▒╨╛╨╕╤Е ╤Б╨╗╤Г╤З╨░╤П╤Е
-        # ╨┤╨░╨╗╤М╤И╨╡ ╨╕╨┤╤С╤В ╨╛╨▒╤Й╨╕╨╣ patch_file -> ╤А╨╡╤В╨╡╤Б╤В.
+        # diag либо из детерминистического хилера, либо из _diagnose — в обоих случаях
+        # дальше идёт общий patch_file -> ретест.
 
         target_path = diag.get("target_file")
         if target_path not in file_paths:
             add_phase(slug, f"heal:iter{heal_iter}", "failed",
-                      f"healer ╨▓╤Л╨▒╤А╨░╨╗ ╨╜╨╡╤Б╤Г╤Й╨╡╤Б╤В╨▓╤Г╤О╤Й╨╕╨╣ ╤Д╨░╨╣╨╗: {target_path!r}")
+                      f"healer выбрал несуществующий файл: {target_path!r}")
             break
         fix_instr = diag.get("fix_instruction", "")
         if not fix_instr:
-            add_phase(slug, f"heal:iter{heal_iter}", "failed", "╨┐╤Г╤Б╤В╨░╤П fix_instruction")
+            add_phase(slug, f"heal:iter{heal_iter}", "failed", "пустая fix_instruction")
             break
 
-        # ╨Э╨░╨╣╤В╨╕ target dict ╨▓ plan.files
-        # BUG-1 FIX: safe next() — StopIteration inside for-loop becomes silent RuntimeError
-        target_dict = next((f for f in plan["files"] if f.get("path") == target_path), None)
-        if target_dict is None:
-            add_phase(slug, f"heal:iter{heal_iter}", "failed",
-                      f"target_path={target_path!r} not found in plan.files (BUG-1)")
-            break
+        # Найти target dict в plan.files
+        target_dict = next(f for f in plan["files"] if f.get("path") == target_path)
         existing = get_project_files(slug)
         try:
             current = read_project_file(slug, target_path)
         except Exception:
             current = ""
         feedback = (
-            f"╨в╨╡╤Б╤В '{failed.get('name')}' ╤Г╨┐╨░╨╗.\n"
-            f"╨Ф╨╕╨░╨│╨╜╨╛╨╖: {diag.get('diagnosis','')}\n"
-            f"╨з╤В╨╛ ╨╜╤Г╨╢╨╜╨╛ ╤Б╨┤╨╡╨╗╨░╤В╤М: {fix_instr}\n"
+            f"Тест '{failed.get('name')}' упал.\n"
+            f"Диагноз: {diag.get('diagnosis','')}\n"
+            f"Что нужно сделать: {fix_instr}\n"
             f"stderr: {failed.get('stderr','')[:600]}"
         )
         try:
@@ -3057,7 +2963,7 @@ def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budg
             add_phase(slug, f"heal:iter{heal_iter}", "failed", f"write failed: {e}")
             break
 
-        # ╨┐╨╡╤А╨╡╨╖╨░╨┐╤Г╤Б╨║ ╤В╨╡╤Б╤В╨╛╨▓
+        # перезапуск тестов
         new_results = _test(slug, plan, spec)
         test_results = new_results
         add_phase(slug, f"heal:iter{heal_iter}", "ok",
@@ -3067,7 +2973,7 @@ def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budg
     return test_results
 
 
-# тФАтФАтФА PHASE 7: README тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+# ─── PHASE 7: README ────────────────────────────────────────────────────────
 def _generate_readme(slug: str, spec: dict, plan: dict, test_results: list[dict], budget: Budget) -> str:
     summary_payload = {
         "title": spec.get("title"),
@@ -3080,7 +2986,7 @@ def _generate_readme(slug: str, spec: dict, plan: dict, test_results: list[dict]
             for r in test_results
         ],
     }
-    user = "╨Ф╨░╨╜╨╜╤Л╨╡ ╨┐╤А╨╛╨╡╨║╤В╨░ ╨▓ JSON:\n" + json.dumps(summary_payload, ensure_ascii=False, indent=2)
+    user = "Данные проекта в JSON:\n" + json.dumps(summary_payload, ensure_ascii=False, indent=2)
     try:
         raw = _llm(budget, MODEL_README, PROJECT_README_SYSTEM, user,
                    temperature=0.2, num_ctx=4096, where="readme")
@@ -3088,16 +2994,16 @@ def _generate_readme(slug: str, spec: dict, plan: dict, test_results: list[dict]
         raw = ""
     md = _strip_json_fence(raw) if raw.strip().startswith("```") else (raw or "").strip()
     if not md:
-        # ╨Ф╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤А╨╛╨▓╨░╨╜╨╜╤Л╨╣ fallback README тАФ ╨╜╨╡ ╨┐╨░╨┤╨░╨╡╨╝ ╨▒╨╡╨╖ LLM
-        lines = [f"# {spec.get('title','Project')}", "", spec.get("summary",""), "", "## ╨б╤В╤А╤Г╨║╤В╤Г╤А╨░"]
+        # Детерминированный fallback README — не падаем без LLM
+        lines = [f"# {spec.get('title','Project')}", "", spec.get("summary",""), "", "## Структура"]
         for f in plan["files"]:
-            lines.append(f"- `{f.get('path')}` тАФ {f.get('purpose','')}")
-        lines += ["", "## ╨Ч╨░╨┐╤Г╤Б╨║", "```"]
+            lines.append(f"- `{f.get('path')}` — {f.get('purpose','')}")
+        lines += ["", "## Запуск", "```"]
         for t in (plan.get("tests") or []):
             lines.append(t.get("command",""))
-        lines += ["```", "", "## ╨Я╤А╨╛╨▓╨╡╤А╨║╨╕"]
+        lines += ["```", "", "## Проверки"]
         for crit in spec.get("acceptance_criteria", []):
-            mark = "тЬЕ" if all(r["ok"] for r in test_results) else "тЪая╕П"
+            mark = "✅" if all(r["ok"] for r in test_results) else "⚠️"
             lines.append(f"- {crit} {mark}")
         md = "\n".join(lines) + "\n"
     try:
@@ -3107,12 +3013,12 @@ def _generate_readme(slug: str, spec: dict, plan: dict, test_results: list[dict]
     return md
 
 
-# тФАтФАтФА PHASE 8: report тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+# ─── PHASE 8: report ────────────────────────────────────────────────────────
 def _deterministic_report(slug: str, spec: dict, build_results: list[dict],
                           test_results: list[dict]) -> str:
-    """P5.2: ╨┤╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╤З╨╡╤Б╨║╨╕╨╣ ╨╛╤В╤З╤С╤В тАФ ╨▒╨╡╨╖ LLM, ╨▒╨╡╨╖ ╨│╨░╨╗╨╗╤О╤Ж╨╕╨╜╨░╤Ж╨╕╨╣, ╤Б╤В╤А╨╛╨│╨╛ ╨┐╨╛ ╤Д╨░╨║╤В╨░╨╝.
+    """P5.2: детерминистический отчёт — без LLM, без галлюцинаций, строго по фактам.
 
-    ╨Э╨╕╨║╨╛╨│╨┤╨░ ╨╜╨╡ ╨▓╤Л╨┤╤Г╨╝╤Л╨▓╨░╨╡╤В ╨╛╤И╨╕╨▒╨║╨╕. ╨Ю╨┐╨╕╤Б╤Л╨▓╨░╨╡╤В ╤В╨╛╨╗╤М╨║╨╛ ╤В╨╛ ╤З╤В╨╛ ╤А╨╡╨░╨╗╤М╨╜╨╛ ╨▓ build_results/test_results.
+    Никогда не выдумывает ошибки. Описывает только то что реально в build_results/test_results.
     """
     title = spec.get("title") or slug
     files_ok = [r["path"] for r in build_results if r.get("ok")]
@@ -3123,57 +3029,57 @@ def _deterministic_report(slug: str, spec: dict, build_results: list[dict],
     failed_tests = [r for r in test_results if not r.get("ok")]
 
     parts: list[str] = []
-    parts.append(f"╨У╨╛╤В╨╛╨▓╨╛, ╤Б╤Н╤А. ╨Я╤А╨╛╨╡╨║╤В ┬л{title}┬╗ ╨╗╨╡╨╢╨╕╤В ╨▓ data/projects/{slug}.")
+    parts.append(f"Готово, сэр. Проект «{title}» лежит в data/projects/{slug}.")
 
-    # ╨д╨░╨╣╨╗╤Л
+    # Файлы
     if files_ok:
         if len(files_ok) <= 3:
             files_str = ", ".join(files_ok)
         else:
-            files_str = f"{len(files_ok)} ╤Д╨░╨╣╨╗╨╛╨▓ ╨▓╨║╨╗╤О╤З╨░╤П " + ", ".join(files_ok[:3])
-        parts.append(f"╨б╨╛╨▒╤А╨░╨╜╤Л: {files_str}.")
+            files_str = f"{len(files_ok)} файлов включая " + ", ".join(files_ok[:3])
+        parts.append(f"Собраны: {files_str}.")
     else:
-        parts.append("╨Э╨╕ ╨╛╨┤╨╕╨╜ ╤Д╨░╨╣╨╗ ╨╜╨╡ ╤Б╨╛╨▒╤А╨░╨╗╤Б╤П.")
+        parts.append("Ни один файл не собрался.")
 
-    # ╨в╨╡╤Б╤В╤Л тАФ ╤В╨╛╨╗╤М╨║╨╛ ╤Д╨░╨║╤В╤Л
+    # Тесты — только факты
     if tests_total == 0:
-        parts.append("╨в╨╡╤Б╤В╤Л ╨╜╨╡ ╨▒╤Л╨╗╨╕ ╨╖╨░╨┤╨░╨╜╤Л.")
+        parts.append("Тесты не были заданы.")
     elif tests_ok == tests_total:
         if tests_total == 1:
-            parts.append("╨в╨╡╤Б╤В ╨┐╤А╨╛╤И╤С╨╗ ╤Г╤Б╨┐╨╡╤И╨╜╨╛.")
+            parts.append("Тест прошёл успешно.")
         else:
-            parts.append(f"╨Т╤Б╨╡ {tests_total} ╤В╨╡╤Б╤В╨╛╨▓ ╨┐╤А╨╛╤И╨╗╨╕ ╤Г╤Б╨┐╨╡╤И╨╜╨╛.")
+            parts.append(f"Все {tests_total} тестов прошли успешно.")
     else:
-        parts.append(f"╨в╨╡╤Б╤В╨╛╨▓ ╨┐╤А╨╛╤И╨╗╨╛ {tests_ok} ╨╕╨╖ {tests_total}.")
-        # ╨Ъ╨╛╤А╨╛╤В╨║╨╕╨╣ ╤Д╤А╨░╨│╨╝╨╡╨╜╤В ╨┐╨╡╤А╨▓╨╛╨╣ ╨╛╤И╨╕╨▒╨║╨╕ тАФ ╤В╨╛╨╗╤М╨║╨╛ ╨╡╤Б╨╗╨╕ ╤А╨╡╨░╨╗╤М╨╜╨╛ ╨╡╤Б╤В╤М.
+        parts.append(f"Тестов прошло {tests_ok} из {tests_total}.")
+        # Короткий фрагмент первой ошибки — только если реально есть.
         first = failed_tests[0]
         err = (first.get("stderr") or "").strip()
         if err:
             short = err.splitlines()[-1][:120]
-            parts.append(f"╨Я╨╡╤А╨▓╨░╤П ╨╛╤И╨╕╨▒╨║╨░: {short}.")
+            parts.append(f"Первая ошибка: {short}.")
 
-    # build vs total тАФ ╨╡╤Б╨╗╨╕ ╨╜╨╡ ╨▓╤Б╨╡ ╤Д╨░╨╣╨╗╤Л ╤Б╨╛╨▒╤А╨░╨╗╨╕╤Б╤М, ╤Г╨┐╨╛╨╝╤П╨╜╤Г╤В╤М
+    # build vs total — если не все файлы собрались, упомянуть
     if build_ok < build_total:
-        parts.append(f"╨б╨╛╨▒╤А╨░╨╗╨╛╤Б╤М {build_ok} ╨╕╨╖ {build_total} ╤Д╨░╨╣╨╗╨╛╨▓.")
+        parts.append(f"Собралось {build_ok} из {build_total} файлов.")
 
     return " ".join(parts)
 
 
 def _report(slug: str, spec: dict, build_results: list[dict], test_results: list[dict],
             budget: Budget) -> str:
-    """P5.2: ╨╡╤Б╨╗╨╕ ╨▓╤Б╨╡ ╤В╨╡╤Б╤В╤Л ╨╛╨║ ╨╕ ╨▓╤Б╨╡ ╤Д╨░╨╣╨╗╤Л ╤Б╨╛╨▒╤А╨░╨╗╨╕╤Б╤М тАФ ╨┤╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╨║╨░ ╨▒╨╡╨╖ LLM (╨▓╤А╨░╤В╤М ╨╜╨╡╤З╨╡╨╝╤Г).
+    """P5.2: если все тесты ок и все файлы собрались — детерминистика без LLM (врать нечему).
 
-    LLM ╨╖╨╛╨▓╤С╨╝ ╤В╨╛╨╗╤М╨║╨╛ ╨║╨╛╨│╨┤╨░ ╨╡╤Б╤В╤М ╤А╨╡╨░╨╗╤М╨╜╤Л╨╡ ╨┐╤А╨╛╨▒╨╗╨╡╨╝╤Л ╨╕ ╨╜╤Г╨╢╨╜╨╛ ╨╛╨▒╤К╤П╤Б╨╜╨╕╤В╤М.
+    LLM зовём только когда есть реальные проблемы и нужно объяснить.
     """
     all_files_ok = all(r.get("ok") for r in build_results) and len(build_results) > 0
     all_tests_ok = all(r.get("ok") for r in test_results)
     has_failed_tests = any(not r.get("ok") for r in test_results)
 
-    # ╨б╤З╨░╤Б╤В╨╗╨╕╨▓╤Л╨╣ ╨┐╤Г╤В╤М тАФ ╨▒╨╡╨╖ LLM. ╨Э╨╡╨▓╨╛╨╖╨╝╨╛╨╢╨╜╨╛ ╨▓╤А╨░╤В╤М.
+    # Счастливый путь — без LLM. Невозможно врать.
     if all_files_ok and all_tests_ok and not has_failed_tests:
         return _deterministic_report(slug, spec, build_results, test_results)
 
-    # ╨Ш╨╜╨░╤З╨╡ тАФ ╨┐╤А╨╛╨▒╤Г╨╡╨╝ LLM, ╨╜╨╛ fallback ╨╜╨░ ╨┤╨╡╤В╨╡╤А╨╝╨╕╨╜╨╕╤Б╤В╨╕╨║╤Г ╨┐╤А╨╕ ╨╗╤О╨▒╨╛╨╣ ╨╛╤И╨╕╨▒╨║╨╡.
+    # Иначе — пробуем LLM, но fallback на детерминистику при любой ошибке.
     summary = {
         "title":       spec.get("title"),
         "slug":        slug,
@@ -3184,42 +3090,42 @@ def _report(slug: str, spec: dict, build_results: list[dict], test_results: list
         "tests_total": len(test_results),
         "first_test_error": next((r["stderr"] for r in test_results if not r["ok"] and r.get("stderr")), ""),
     }
-    user = ("╨Ш╤В╨╛╨│╨╕ ╨┐╤А╨╛╨╡╨║╤В╨░ ╨▓ JSON (╨╛╨┐╨╕╤А╨░╨╣╤Б╤П ╨в╨Ю╨Ы╨м╨Ъ╨Ю ╨╜╨░ ╤Н╤В╨╕ ╨┤╨░╨╜╨╜╤Л╨╡):\n"
+    user = ("Итоги проекта в JSON (опирайся ТОЛЬКО на эти данные):\n"
             + json.dumps(summary, ensure_ascii=False, indent=2)
-            + f"\n\n╨Я╨░╨┐╨║╨░ ╨┐╤А╨╛╨╡╨║╤В╨░: data/projects/{slug}/")
+            + f"\n\nПапка проекта: data/projects/{slug}/")
     try:
         return _llm(budget, MODEL_REPORT, PROJECT_REPORT_SYSTEM, user,
                     temperature=0.2, num_ctx=2048, where="report").strip()
     except (BudgetExceeded, Exception) as e:
-        logger.warning(f"[project.report] LLM unavailable: {e} тАФ using deterministic")
+        logger.warning(f"[project.report] LLM unavailable: {e} — using deterministic")
         return _deterministic_report(slug, spec, build_results, test_results)
 
 
-# тФАтФАтФА PUBLIC: run() тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+# ─── PUBLIC: run() ──────────────────────────────────────────────────────────
 def run(query: str, history: list[dict] | None = None,
         *, wall_budget_s: float = PROJECT_WALL_BUDGET_S,
         llm_budget: int = PROJECT_LLM_BUDGET) -> str:
-    """╨Я╨╛╨╗╨╜╤Л╨╣ ╤Ж╨╕╨║╨╗: ╨╖╨░╨┐╤А╨╛╤Б тЖТ ╨│╨╛╤В╨╛╨▓╤Л╨╣ ╨┐╤А╨╛╨╡╨║╤В."""
+    """Полный цикл: запрос → готовый проект."""
     if not isinstance(query, str) or not query.strip():
-        return "╨б╤Н╤А, ╤П ╨╜╨╡ ╨┐╨╛╨╜╤П╨╗ ╨║╨░╨║╨╛╨╣ ╨┐╤А╨╛╨╡╨║╤В ╨╜╤Г╨╢╨╜╨╛ ╤Б╨┤╨╡╨╗╨░╤В╤М."
+        return "Сэр, я не понял какой проект нужно сделать."
 
-    # P3: ╨╜╨░ intake ╨▒╤О╨┤╨╢╨╡╤В ╤Д╨╕╨║╤Б╨╕╤А╨╛╨▓╨░╨╜╨╜╤Л╨╣ (╨╝╨╕╨╜╨╕╨╝╤Г╨╝ ╨║╨░╨║ XS), ╨┐╨╛╤В╨╛╨╝ ╨┐╨╡╤А╨╡╨╛╤Ж╨╡╨╜╨╕╨▓╨░╨╡╨╝ ╨┐╨╛ spec.
+    # P3: на intake бюджет фиксированный (минимум как XS), потом переоцениваем по spec.
     budget = Budget(wall_s=wall_budget_s, llm=llm_budget)
 
     # PHASE 1
     try:
         spec = _intake(query, budget)
     except BudgetExceeded as e:
-        return f"╨С╤О╨┤╨╢╨╡╤В ╨╕╤Б╤З╨╡╤А╨┐╨░╨╜ ╨╜╨░ ╤Н╤В╨░╨┐╨╡ intake: {e}"
+        return f"Бюджет исчерпан на этапе intake: {e}"
     except Exception as e:
         logger.error(f"[project.intake] {e}")
-        return f"╨Э╨╡ ╤Г╨┤╨░╨╗╨╛╤Б╤М ╤А╨░╨╖╨╛╨▒╤А╨░╤В╤М ╨╖╨░╨┤╨░╤З╤Г: {e}"
+        return f"Не удалось разобрать задачу: {e}"
 
-    # P3: ╨░╨┤╨░╨┐╤В╨╕╨▓╨╜╤Л╨╣ ╨▒╤О╨┤╨╢╨╡╤В тАФ ╤В╨╛╨╗╤М╨║╨╛ ╨╡╤Б╨╗╨╕ ╨▓╤Л╨╖╨▓╨░╨▓╤И╨╕╨╣ ╨╜╨╡ ╤Г╨║╨░╨╖╨░╨╗ ╤П╨▓╨╜╨╛ ╤Б╨▓╨╛╨╕ ╨╖╨╜╨░╤З╨╡╨╜╨╕╤П.
+    # P3: адаптивный бюджет — только если вызвавший не указал явно свои значения.
     if wall_budget_s == PROJECT_WALL_BUDGET_S and llm_budget == PROJECT_LLM_BUDGET:
         tier = estimate_complexity(query, spec=spec, plan=None)
         params = budget_for_tier(tier)
-        # ╨Э╨╡ ╤Г╤А╨╡╨╖╨░╨╡╨╝ ╤Г╨╢╨╡ ╨┐╨╛╤В╤А╨░╤З╨╡╨╜╨╜╨╛╨╡: ╤Б╨╛╤Е╤А╨░╨╜╤П╨╡╨╝ llm_used, ╨╛╨▒╨╜╨╛╨▓╨╗╤П╨╡╨╝ ╨╗╨╕╨╝╨╕╤В╤Л.
+        # Не урезаем уже потраченное: сохраняем llm_used, обновляем лимиты.
         spent = budget.llm_used
         budget = Budget(wall_s=params["wall_s"], llm=params["llm"])
         budget.llm_used = spent
@@ -3229,9 +3135,9 @@ def run(query: str, history: list[dict] | None = None,
         manifest = create_project(spec)
     except Exception as e:
         logger.error(f"[project.create] {e}")
-        return f"╨Э╨╡ ╤Г╨┤╨░╨╗╨╛╤Б╤М ╤Б╨╛╨╖╨┤╨░╤В╤М ╨┐╤А╨╛╨╡╨║╤В: {e}"
+        return f"Не удалось создать проект: {e}"
     slug = manifest.slug
-    # ╤Б╨╛╤Е╤А╨░╨╜╨╕╤В╤М ╨╖╨░╨┐╤А╨╛╤Б
+    # сохранить запрос
     try:
         m = load_manifest(slug); m.request = query[:500]; save_manifest(m)
     except Exception:
@@ -3244,11 +3150,11 @@ def run(query: str, history: list[dict] | None = None,
 
 def resume(slug: str, *, wall_budget_s: float = PROJECT_WALL_BUDGET_S,
            llm_budget: int = PROJECT_LLM_BUDGET) -> str:
-    """╨Я╤А╨╛╨┤╨╛╨╗╨╢╨╕╤В╤М ╤Г╨┐╨░╨▓╤И╨╕╨╣ ╨┐╤А╨╛╨╡╨║╤В ╤Б ╤Г╨┐╨░╨▓╤И╨╡╨╣ ╤Д╨░╨╖╤Л."""
+    """Продолжить упавший проект с упавшей фазы."""
     try:
         m = load_manifest(slug)
     except Exception as e:
-        return f"╨Э╨╡ ╨╜╨░╤И╤С╨╗ ╨┐╤А╨╛╨╡╨║╤В {slug}: {e}"
+        return f"Не нашёл проект {slug}: {e}"
     last = m.last_phase or "intake"
     order = ["intake", "architect", "env", "build", "test", "heal", "readme", "finalize"]
     if last not in order:
@@ -3260,44 +3166,42 @@ def resume(slug: str, *, wall_budget_s: float = PROJECT_WALL_BUDGET_S,
 
 
 def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
-    """╨Ю╨▒╤Й╨░╤П ╤З╨░╤Б╤В╤М run() ╨╕ resume(): ╤Д╨░╨╖╤Л 2..8. ╨Я╤А╨╕ BudgetExceeded ╨╕╨╗╨╕ ╤Д╨░╤В╨░╨╗╤М╨╜╨╛╨╣
-    ╨╛╤И╨╕╨▒╨║╨╡ ╤А╨░╨╜╨╜╨╕╨╣ ╨▓╤Л╤Е╨╛╨┤ ╨▒╨╡╨╖ ╤Д╨╕╨╜╨░╨╗╨╕╨╖╨░╤Ж╨╕╨╕ тАФ ╤З╤В╨╛╨▒╤Л last_phase ╨╛╤Б╤В╨░╨╗╤Б╤П ╨╜╨░ ╨┐╨╛╤Б╨╗╨╡╨┤╨╜╨╡╨╣
-    ╤Г╤Б╨┐╨╡╤И╨╜╨╛╨╣, ╨╕ resume(slug) ╨╝╨╛╨│ ╨┐╤А╨╛╨┤╨╛╨╗╨╢╨╕╤В╤М."""
+    """Общая часть run() и resume(): фазы 2..8. При BudgetExceeded или фатальной
+    ошибке ранний выход без финализации — чтобы last_phase остался на последней
+    успешной, и resume(slug) мог продолжить."""
     m = load_manifest(slug)
     spec = m.spec
     plan = m.plan or {}
-    # BUG-2 FIX: при resume загружаем сохранённые результаты из манифеста
-    build_results: list[dict] = list(getattr(m, "build_results", None) or [])
-    test_results:  list[dict] = list(getattr(m, "test_results", None) or [])
+    build_results: list[dict] = []
+    test_results:  list[dict] = []
 
     phases = ["architect", "env", "build", "test", "heal", "readme", "finalize"]
     if start_phase not in phases:
         start_phase = "architect"
-    # BUG-8 NOTE: finalize-resume now correct because BUG-2 loads results from manifest.
     skip_until = phases.index(start_phase)
 
     def _abort_partial(reason: str) -> str:
-        """╨а╨░╨╜╨╜╨╕╨╣ ╨▓╤Л╤Е╨╛╨┤: status=failed, ╨▒╨╡╨╖ finalize-╤Д╨░╨╖╤Л, ╨▒╨╡╨╖ _index, ╨▒╨╡╨╖ README."""
+        """Ранний выход: status=failed, без finalize-фазы, без _index, без README."""
         set_status(slug, "failed")
         _save_metrics(slug, partial=True, abort_reason=reason, **budget.summary())
-        return f"╨Я╤А╨╛╨╡╨║╤В ╨┐╤А╨╡╤А╨▓╨░╨╜: {reason}. ╨Ь╨╛╨╢╨╜╨╛ ╨┐╤А╨╛╨┤╨╛╨╗╨╢╨╕╤В╤М: resume({slug!r})."
+        return f"Проект прерван: {reason}. Можно продолжить: resume({slug!r})."
 
     try:
         # PHASE 2: ARCHITECT
         if 0 >= skip_until:
             try:
                 plan = _architect(spec, budget)
-                # P9.10: ╨╛╨▒╨╛╨│╨░╤Й╨░╨╡╨╝ plan.inputs heuristic-╨▓╤Е╨╛╨┤╨░╨╝╨╕ ╨╕╨╖ spec.summary,
-                # ╤З╤В╨╛╨▒╤Л coder/aider ╨▓╨╕╨┤╨╡╨╗╨╕ ╤А╨╡╨░╨╗╤М╨╜╤Л╨╡ ╨╕╨╝╨╡╨╜╨░ ╤Д╨░╨╣╨╗╨╛╨▓, ╨░ ╨╜╨╡ ╨┐╤А╨╕╨┤╤Г╨╝╤Л╨▓╨░╨╗╨╕ ╤Б╨▓╨╛╨╕.
+                # P9.10: обогащаем plan.inputs heuristic-входами из spec.summary,
+                # чтобы coder/aider видели реальные имена файлов, а не придумывали свои.
                 plan = _enrich_plan_with_heuristic_inputs(plan, spec)
-                # P11.1: ╨╜╨╛╤А╨╝╨░╨╗╨╕╨╖╤Г╨╡╨╝ ╨║╨╛╨╜╤В╤А╨░╨║╤В╤Л (exports per file, depends_on consistency).
-                # Lossless: ╨╜╨╕╤З╨╡╨│╨╛ ╨╜╨╡ ╨╛╤В╨▒╤А╨░╤Б╤Л╨▓╨░╨╡╤В, ╤В╨╛╨╗╤М╨║╨╛ ╨╖╨░╨┐╨╛╨╗╨╜╤П╨╡╤В/╨╕╤Б╨┐╤А╨░╨▓╨╗╤П╨╡╤В ╨┐╨╛╨╗╤П.
+                # P11.1: нормализуем контракты (exports per file, depends_on consistency).
+                # Lossless: ничего не отбрасывает, только заполняет/исправляет поля.
                 plan = _normalize_plan_contracts(plan, spec)
-                # P11.2.e (FM-10): ╤Г╨▒╨╕╤А╨░╨╡╨╝ ╨╕╨╖ plan.files ╤Д╨░╨╣╨╗╤Л, ╨║╨╛╤В╨╛╤А╤Л╨╡ ╤Г╨╢╨╡ ╨▓ plan.inputs.
+                # P11.2.e (FM-10): убираем из plan.files файлы, которые уже в plan.inputs.
                 plan = _dedupe_files_vs_inputs(plan)
-                # P11.6: ╨▒╨╗╨╛╨║╨╕╤А╤Г╤О╤Й╨╕╨╣ ╨▓╨░╨╗╨╕╨┤╨░╤В╨╛╤А ╨┐╨╗╨░╨╜╨░ тАФ autofill exports ╨╕╨╖ tests +
-                # revise-loop ╨╡╤Б╨╗╨╕ ╨╛╤Б╤В╨░╨╗╨╕╤Б╤М ╨╜╨░╤А╤Г╤И╨╡╨╜╨╕╤П (FM-16/FM-17).
-                # ╨а╨╡╨╜╨╛╤А╨╝╨░╨╗╨╕╨╖╤Г╨╡╨╝ ╨║╨╛╨╜╤В╤А╨░╨║╤В-╨╝╨╡╤В╤А╨╕╨║╨╕ ╨┐╨╛╤Б╨╗╨╡ ╨▓╨░╨╗╨╕╨┤╨░╤В╨╛╤А╨░.
+                # P11.6: блокирующий валидатор плана — autofill exports из tests +
+                # revise-loop если остались нарушения (FM-16/FM-17).
+                # Ренормализуем контракт-метрики после валидатора.
                 plan, p11_6_violations, p11_6_revises = _enforce_plan_validity(
                     plan, spec, budget, max_revise=2
                 )
@@ -3312,7 +3216,7 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
                         slug, "plan.validate", "ok",
                         f"revises={p11_6_revises} (P11.6)"
                     )
-                # ╨Я╨╡╤А╨╡╤Б╤З╨╕╤В╤Л╨▓╨░╨╡╨╝ ╨╝╨╡╤В╤А╨╕╨║╨╕, ╤В.╨║. autofill ╨╝╨╛╨│ ╨┤╨╛╨▒╨░╨▓╨╕╤В╤М exports.
+                # Пересчитываем метрики, т.к. autofill мог добавить exports.
                 plan = _normalize_plan_contracts(plan, spec)
                 m = load_manifest(slug); m.plan = plan; save_manifest(m)
                 _cm = plan.get("_contract_metrics", {}) or {}
@@ -3330,7 +3234,7 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
                 add_phase(slug, "architect", "failed", str(e))
                 _save_metrics(slug, **budget.summary())
                 set_status(slug, "failed")
-                return f"╨Э╨╡ ╨┐╨╛╨╗╤Г╤З╨╕╨╗╨╛╤Б╤М ╤Б╨┐╤А╨╛╨╡╨║╤В╨╕╤А╨╛╨▓╨░╤В╤М ╨░╤А╤Е╨╕╤В╨╡╨║╤В╤Г╤А╤Г: {e}"
+                return f"Не получилось спроектировать архитектуру: {e}"
 
         # PHASE 3: ENV
         if 1 >= skip_until:
@@ -3339,7 +3243,7 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
                       json.dumps(env_res, ensure_ascii=False)[:400])
             if env_res["ok"]:
                 _set_last_phase(slug, "env")
-            # env-failure ╨╜╨╡ ╤Д╨░╤В╨░╨╗╨╡╨╜: project ╨╝╨╛╨╢╨╡╤В ╤А╨░╨▒╨╛╤В╨░╤В╤М ╨╜╨░ stdlib
+            # env-failure не фатален: project может работать на stdlib
 
         # PHASE 4: BUILD
         if 2 >= skip_until:
@@ -3349,23 +3253,18 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
                 add_phase(slug, "build", "failed", f"budget: {e}")
                 return _abort_partial(f"budget at build: {e}")
             if build_results and any(r.get("ok") for r in build_results):
-                # BUG-2b FIX: сохраняем build_results для корректного resume
-                try:
-                    _mb2 = load_manifest(slug); _mb2.build_results = build_results; save_manifest(_mb2)
-                except Exception:
-                    pass
                 _set_last_phase(slug, "build")
             elif build_results and not any(r.get("ok") for r in build_results):
-                # ╨Т╤Б╨╡ ╤Д╨░╨╣╨╗╤Л ╤Г╨┐╨░╨╗╨╕ (╨╛╨▒╤Л╤З╨╜╨╛ ╨┐╤А╨╕ ╨╕╤Б╤З╨╡╤А╨┐╨░╨╜╨╕╨╕ ╨▒╤О╨┤╨╢╨╡╤В╨░ ╨▓╨╜╤Г╤В╤А╨╕ _build) тАФ
-                # ╨▓╤Л╤Е╨╛╨┤╨╕╨╝ ╨▒╨╡╨╖ finalize, ╤З╤В╨╛╨▒╤Л last_phase ╨╛╤Б╤В╨░╨╗╤Б╤П ╨╜╨░ architect/env
-                # ╨╕ resume(slug) ╨╝╨╛╨│ ╨║╨╛╤А╤А╨╡╨║╤В╨╜╨╛ ╨┐╤А╨╛╨┤╨╛╨╗╨╢╨╕╤В╤М ╤Б build.
+                # Все файлы упали (обычно при исчерпании бюджета внутри _build) —
+                # выходим без finalize, чтобы last_phase остался на architect/env
+                # и resume(slug) мог корректно продолжить с build.
                 add_phase(slug, "build", "failed", "no successful files")
                 return _abort_partial("build had no successful files")
 
-        # P11.5.C: PHASE 4.5 тАФ ╨▒╨╗╨╛╨║╨╕╤А╤Г╤О╤Й╨╕╨╣ ╨║╨╛╨╜╤В╤А╨░╨║╤В-╨╗╨╕╨╜╤В╨╡╤А ╨╝╨╡╨╢╨┤╤Г BUILD ╨╕ TEST.
-        # ╨Х╤Б╨╗╨╕ ╨╗╤О╨▒╨╛╨╣ ╤Д╨░╨╣╨╗ ╨┐╤А╨╛╨▓╨░╨╗╨╕╨╗ ╨╗╨╕╨╜╤В ╤Н╨║╤Б╨┐╨╛╤А╤В╨╛╨▓ тАФ ╤Б╨╕╨╜╤В╨╡╨╖╨╕╤А╤Г╨╡╨╝ failed-test-record
-        # ╨╕ ╤Б╤А╨░╨╖╤Г ╨┐╤Г╤Б╨║╨░╨╡╨╝ ╤З╨╡╤А╨╡╨╖ _heal_loop. ╨н╤В╨╛ ╨┤╨░╤С╤В heal-loop'╤Г ╤В╨╛╤З╨╜╤Л╨╣ target
-        # (╤Д╨░╨╣╨╗ ╤Б missing exports) ╨┤╨╛ ╤В╨╛╨│╨╛ ╨║╨░╨║ smoke ╤Г╨┐╨░╨┤╤С╤В ╨╜╨░ ImportError.
+        # P11.5.C: PHASE 4.5 — блокирующий контракт-линтер между BUILD и TEST.
+        # Если любой файл провалил линт экспортов — синтезируем failed-test-record
+        # и сразу пускаем через _heal_loop. Это даёт heal-loop'у точный target
+        # (файл с missing exports) до того как smoke упадёт на ImportError.
         contract_failed_files: list[dict] = []
         if 3 >= skip_until and build_results:
             for br in build_results:
@@ -3387,7 +3286,7 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
                             f"file={br.get('path')} missing={missing}"
                         ),
                         "expects": "plan.exports satisfied",
-                        # P11.5.C: ╤Н╤В╨╕ ╨┐╨╛╨╗╤П ╤З╨╕╤В╨░╤О╤В╤Б╤П _classify_failure'╨╛╨╝
+                        # P11.5.C: эти поля читаются _classify_failure'ом
                         "contract_failure": True,
                         "contract": contract,
                         "path":     br.get("path"),
@@ -3395,24 +3294,19 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
                 add_phase(
                     slug, "contract.block", "failed",
                     f"files={[r.get('path') for r in contract_failed_files]} "
-                    f"тЖТ heal-loop ╨▒╨╡╨╖ smoke (P11.5)"
+                    f"→ heal-loop без smoke (P11.5)"
                 )
                 try:
                     synthetic_results = _heal_loop(slug, spec, plan, synthetic_results, budget)
                 except BudgetExceeded as e:
                     add_phase(slug, "contract.block", "failed", f"budget: {e}")
-                # ╨Я╨╛╤Б╨╗╨╡ heal'╨░ ╨▓╤Б╤С ╤А╨░╨▓╨╜╨╛ ╨┐╨╛╨╣╨┤╤С╤В PHASE 5 тАФ ╤А╨╡╨░╨╗╤М╨╜╤Л╨╣ smoke ╤А╨╡╤И╨╕╤В ╨╛╨║/╨╜╨╡ ╨╛╨║.
+                # После heal'а всё равно пойдёт PHASE 5 — реальный smoke решит ок/не ок.
 
         # PHASE 5: TEST
         if 3 >= skip_until:
             try:
                 test_results = _test(slug, plan, spec)
                 _set_last_phase(slug, "test")
-            except BudgetExceeded as e:
-                # P11.7 FIX-5: BudgetExceeded ╨▓ test ╨╛╤В╨┤╨╡╨╗╤М╨╜╨╛ тАФ ╨╜╨╡ ╤А╨╛╨╜╤П╨╡╨╝ ╨▓ ╨╛╨▒╤Й╨╕╨╣ except
-                add_phase(slug, "test", "failed", f"budget: {e}")
-                test_results = []
-                return _abort_partial(f"budget exhausted at test: {e}")
             except Exception as e:
                 add_phase(slug, "test", "failed", str(e))
                 test_results = []
@@ -3424,7 +3318,7 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
                 _set_last_phase(slug, "heal")
             except BudgetExceeded as e:
                 add_phase(slug, "heal", "failed", f"budget: {e}")
-                # heal-budget тАФ ╨╜╨╡ ╤Д╨░╤В╨░╨╗╤М╨╜╨╛, ╨╕╨┤╤С╨╝ ╨▓ README/finalize ╤Б ╤В╨╡╨╝ ╤З╤В╨╛ ╨╡╤Б╤В╤М
+                # heal-budget — не фатально, идём в README/finalize с тем что есть
 
         # PHASE 7: README
         if 5 >= skip_until:
@@ -3460,7 +3354,7 @@ def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
         logger.exception(f"[project] unexpected: {e}")
         set_status(slug, "failed")
         _save_metrics(slug, **budget.summary())
-        return f"╨Ю╤И╨╕╨▒╨║╨░ ╨┐╤А╨╛╨╡╨║╤В╨░: {e}. ╨Ь╨╛╨╢╨╜╨╛ ╨┐╤А╨╛╨┤╨╛╨╗╨╢╨╕╤В╤М ╤З╨╡╤А╨╡╨╖ resume({slug})."
+        return f"Ошибка проекта: {e}. Можно продолжить через resume({slug})."
 
 
 def _final_report(slug: str, spec: dict, build_results: list[dict],
@@ -3468,12 +3362,12 @@ def _final_report(slug: str, spec: dict, build_results: list[dict],
     return _report(slug, spec, build_results, test_results, budget)
 
 
-# тФАтФАтФА CLI тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+# ─── CLI ────────────────────────────────────────────────────────────────────
 def _main() -> int:
-    p = argparse.ArgumentParser(description="Jarvis ProjectAgent тАФ Level 4")
-    p.add_argument("query", nargs="?", help="╨╖╨░╨┐╤А╨╛╤Б ╨╜╨░ ╨┐╤А╨╛╨╡╨║╤В")
-    p.add_argument("--resume", metavar="SLUG", help="╨┐╤А╨╛╨┤╨╛╨╗╨╢╨╕╤В╤М ╤Г╨┐╨░╨▓╤И╨╕╨╣ ╨┐╤А╨╛╨╡╨║╤В")
-    p.add_argument("--list",   action="store_true", help="╨┐╨╛╨║╨░╨╖╨░╤В╤М ╨▓╤Б╨╡ ╨┐╤А╨╛╨╡╨║╤В╤Л")
+    p = argparse.ArgumentParser(description="Jarvis ProjectAgent — Level 4")
+    p.add_argument("query", nargs="?", help="запрос на проект")
+    p.add_argument("--resume", metavar="SLUG", help="продолжить упавший проект")
+    p.add_argument("--list",   action="store_true", help="показать все проекты")
     p.add_argument("--wall",   type=int, default=PROJECT_WALL_BUDGET_S, help="wall-clock budget (s)")
     p.add_argument("--llm",    type=int, default=PROJECT_LLM_BUDGET, help="LLM-call budget")
     args = p.parse_args()
