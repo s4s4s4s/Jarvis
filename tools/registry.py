@@ -8,7 +8,6 @@ from tools.currency import convert_currency, get_rates
 from tools.time_tool import get_time
 from tools.weather import get_weather
 from tools.timer import set_timer, list_timers, cancel_timer
-from dev.auditor import AuditorAgent
 
 # Системные инструменты (Level 2)
 from tools.system.files import read_file, write_file, list_dir, search_files, delete_file
@@ -18,6 +17,14 @@ from tools.system.clipboard import get_clipboard, set_clipboard
 
 # Векторная память
 from tools.memory import add_fact, search_memory, get_all_facts
+
+# AuditorAgent — опциональная зависимость (dev/ может отсутствовать)
+try:
+    from dev.auditor import AuditorAgent as _AuditorAgent
+    _AUDITOR_AVAILABLE = True
+except Exception:
+    _AuditorAgent = None  # type: ignore[assignment,misc]
+    _AUDITOR_AVAILABLE = False
 
 
 @dataclass
@@ -70,8 +77,10 @@ _DEFAULT_AUDIT_FILES = [
 ]
 
 def _call_auditor(files: list[str] | None = None) -> str:
+    if not _AUDITOR_AVAILABLE or _AuditorAgent is None:
+        return "AuditorAgent недоступен (dev/auditor.py не найден)."
     targets = files or _DEFAULT_AUDIT_FILES
-    agent = AuditorAgent()
+    agent = _AuditorAgent()
     findings = agent.audit(targets)
     if not findings:
         return "Находок не обнаружено."
