@@ -34,24 +34,24 @@ logger = logging.getLogger(__name__)
 EXTEND_LOG = LOGS_DIR / "self_extend.jsonl"
 TOOLS_DIR  = ROOT / "tools"
 
-# ─── запрещённые паттерны ─────────────────────────────────────────────────────────────────────
-# fix #13: расширен список опасных паттернов:
-#   - os.unlink / pathlib unlink / Path(...).unlink — способы удаления файлов помимо os.remove
-#   - glob + цикл с remove/unlink — массовые удаления через итерацию
-#   - shutil.rmtree уже был, оставляем
+# ─── запрещённые паттерны ─────────────────────────────────────────────────────────────────────────────────────
+# fix #13: расширен список опасных паттернов
+# fix N4: добавлен паттерн на прямой импорт subprocess (блокирует использование алиаса:
+#   import subprocess as sp; sp.run(...) — обход через слово "subprocess" в паттерне)
 _DANGEROUS_PATTERNS = [
     r"\bexec\s*\(",
     r"\beval\s*\(",
     r"__import__",
-    r"subprocess",
+    r"\bsubprocess\b",         # fix N4: ловим любое вхождение слова subprocess,
+                               #          включая import subprocess, import subprocess as sp
     r"os\.system",
     r"os\.popen",
     r"shutil\.rmtree",
-    r"os\.remove",          # fix #13: ловим os.remove в любом контексте (не только с *)
-    r"os\.unlink",          # fix #13: os.unlink — прямое удаление файла
-    r"\.unlink\s*\(",       # fix #13: pathlib Path.unlink() / любой объект .unlink()
-    r"\bglob\b.*for.*\b(remove|unlink|rmtree)\b",  # fix #13: glob-цикл с удалением
-    r"open\s*\([^)]*['\"]w['\"].*\.\.\.\.",   # запись в произвольные пути (оригинал был с в-кириллицей, исправлен на w)
+    r"os\.remove",
+    r"os\.unlink",
+    r"\.unlink\s*\(",
+    r"\bglob\b.*for.*\b(remove|unlink|rmtree)\b",
+    r"open\s*\([^)]*['\"]w['\"].*\.\.\.\.\.",
     r"socket\.connect",
     r"requests\.post.*password",
     r"import\s+ctypes",
@@ -74,7 +74,37 @@ def _ast_check(code: str) -> tuple[bool, str]:
         return False, f"Синтаксическая ошибка: {e}"
 
 
-# ─── промпты ──────────────────────────────────────────────────────────────────────────────────────
+# ─── smoke-тест с умными аргументами ──────────────────────────────────────────────────────────────
+
+def _build_smoke_kwargs(design: dict) -> dict:
+    """
+    fix N3: вместо пустых kwargs берём тестовые значения из дизайна (design["args"]).
+    Если инструмент имеет обязательные параметры — подставляемсинтетические значения
+    по типу (строка → "test", целое → 0, флоат → 0.0, буль → False).
+    Возвращает dict готовых kwargs для call_tool.
+    """
+    _TYPE_DEFAULTS: dict[str, object] = {
+        "str":   "test",
+        "int":   0,
+        "float": 0.0,
+        "bool":  False,
+        "list":  [],
+        "dict":  {},
+    }
+    args_spec: dict = design.get("args") or {}
+    kwargs: dict[str, object] = {}
+    for param, type_hint in args_spec.items():
+        t = str(type_hint).lower().strip()
+        # ищем первый подходящий префикс типа
+        default = next(
+            (v for k, v in _TYPE_DEFAULTS.items() if t.startswith(k)),
+            "test",  # fallback на строку
+        )
+        kwargs[param] = default
+    return kwargs
+
+
+# ─── промпты ────────────────────────────────────────────────────────────────────────────────────────
 
 _DESIGN_SYSTEM = """Ты — Jarvis, архитектор инструментов. Пользователь хочет добавить новый инструмент.
 Уже есть: {existing_tools}
@@ -120,13 +150,13 @@ Dобавь:
 Верни ONLY JSON:
 {{
   "import_line": "from tools.<module> import <entry_fn>",
-  "wrapper_code": "def _call_<snake>(**kwargs):\n    return <entry_fn>(**kwargs)",
-  "map_entry": "    \"{tool_name}\": _call_<snake>,"
+  "wrapper_code": "def _call_<snake>(**kwargs):\\n    return <entry_fn>(**kwargs)",
+  "map_entry": "    \\"{tool_name}\\": _call_<snake>,"
 }}
 """
 
 
-# ─── логирование ────────────────────────────────────────────────────────────────────────────────────────
+# ─── логирование ────────────────────────────────────────────────────────────────────────────────────────────
 
 def _log_result(tool_name: str, status: str, detail: str, query: str) -> None:
     EXTEND_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -141,15 +171,12 @@ def _log_result(tool_name: str, status: str, detail: str, query: str) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-# ─── патч registry.py ──────────────────────────────────────────────────────────────────────────────────
+# ─── патч registry.py ────────────────────────────────────────────────────────────────────────────────────
 
 def _patch_registry(tool_name: str, filename: str, entry_fn: str) -> tuple[bool, str]:
     """
     Добавляет импорт + wrapper + запись в _TOOL_MAP.
     Патч напрямую в файл, без LLM — детерминированный формат.
-
-    fix #3: порядок анкоров проверяется в порядке приоритета (realia реальных anchor-ов в файле).
-    fix #7: заменен некорректный lstrip(«tools/») на removeprefix(«tools/»).
     """
     registry_path = ROOT / "tools" / "registry.py"
     try:
@@ -172,12 +199,10 @@ def _patch_registry(tool_name: str, filename: str, entry_fn: str) -> tuple[bool,
     if import_line in src:
         return True, "уже зарегистрирован"
 
-    # вставляем import перед блоком "# ── memory"
-    # fix #3: проверяем несколько анкоров в порядке реального файла
     import_anchors = [
-        "# ── memory",       # если есть секция памяти
-        "from tools.memory import",  # первая строка блока memory (fix #3)
-        "@dataclass",        # fallback: вставляем до первого dataclass
+        "# ── memory",
+        "from tools.memory import",
+        "@dataclass",
     ]
     placed_import = False
     for anchor in import_anchors:
@@ -186,7 +211,6 @@ def _patch_registry(tool_name: str, filename: str, entry_fn: str) -> tuple[bool,
             placed_import = True
             break
     if not placed_import:
-        # ультра-fallback: добавляем после последнего import-блока
         lines = src.splitlines(keepends=True)
         last_import_idx = 0
         for i, line in enumerate(lines):
@@ -195,14 +219,12 @@ def _patch_registry(tool_name: str, filename: str, entry_fn: str) -> tuple[bool,
         lines.insert(last_import_idx + 1, import_line + "\n")
         src = "".join(lines)
 
-    # вставляем wrapper перед _TOOL_MAP
     map_anchor = "\n_TOOL_MAP:"
     if map_anchor in src:
         src = src.replace(map_anchor, wrapper_code + map_anchor, 1)
     else:
         src = src.replace("_TOOL_MAP: dict", wrapper_code + "_TOOL_MAP: dict", 1)
 
-    # вставляем запись в _TOOL_MAP перед закрывающей скобкой
     closing = "\n}\n\n\ndef list_tools"
     if closing in src:
         src = src.replace(closing, f"\n{map_line}{closing}", 1)
@@ -269,7 +291,6 @@ def run(query: str, history: list[dict]) -> str:
         return f"Сэр, {msg}"
 
     # защита от path traversal
-    # fix #7: заменен некорректный lstrip("tools/") на removeprefix("tools/")
     safe_filename = Path(filename).name
     norm_filename = filename.replace("\\", "/")
     inner_path = norm_filename.removeprefix("tools/")
@@ -334,11 +355,14 @@ def run(query: str, history: list[dict]) -> str:
         return f"Сэр, файл создан, но регистрация не удалась: {reg_msg}"
 
     # ── Шаг 6: smoke-тест ──
+    # fix N3: используем тестовые kwargs из design, чтобы не получать
+    # ложный smoke_fail при обязательных параметрах.
     try:
         import tools.registry as _reg_mod
         importlib.reload(_reg_mod)
         from tools.registry import call_tool as _ct
-        smoke = _ct(tool_name, {})
+        smoke_kwargs = _build_smoke_kwargs(design)
+        smoke = _ct(tool_name, smoke_kwargs)
         smoke_ok = True
         smoke_detail = str(smoke.data)[:200] if smoke.ok else smoke.error
     except Exception as e:
