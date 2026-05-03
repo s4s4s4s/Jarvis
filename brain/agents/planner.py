@@ -10,6 +10,11 @@ Hardening v2:
 
 fix #6: _validate_plan() принимает known_tools как параметр (list | None),
 а list_tools() вызывается один раз в _make_plan() с try/except вокруг.
+
+fix P1: добавлен wall-timeout на весь план (PLAN_WALL_TIMEOUT).
+Без этого plan с 8 шагами × STEP_TIMEOUT=30s мог висеть 4+ минут.
+Для голосового ассистента это неприемлемо. При превышении возвращается
+fallback с частичными результатами.
 """
 from __future__ import annotations
 
@@ -17,6 +22,7 @@ import json
 import logging
 import re
 import threading
+import time
 from typing import Any
 
 from brain.client import chat, MODEL_FAST, MODEL_HEAVY
@@ -24,9 +30,10 @@ from tools.registry import call_tool, list_tools
 
 logger = logging.getLogger(__name__)
 
-MAX_STEPS     = 8
-STEP_TIMEOUT  = 30.0   # секунд на один шаг
-PLAN_RETRIES  = 2       # попыток получить валидный план
+MAX_STEPS          = 8
+STEP_TIMEOUT       = 30.0    # секунд на один шаг инструмента
+PLAN_RETRIES       = 2        # попыток получить валидный план
+PLAN_WALL_TIMEOUT  = 240.0   # fix P1: максимум секунд на весь план целиком
 
 # ── JSON-схема плана ─────────────────────────────────────────────────────────────────────────
 _PLAN_SCHEMA = {
@@ -85,7 +92,7 @@ _SYNTH_SYSTEM = """Ты — Jarvis. Пользователь дал задачу
 # ── утилиты ──────────────────────────────────────────────────────────────────────────────────────────
 
 def _strip_markdown(raw: str) -> str:
-    """\u0423\u0431\u0438\u0440\u0430\u0435\u0442 ```json ... ``` \u043e\u0431\u0451\u0440\u0442\u043a\u0438."""
+    """Убирает ```json ... ``` обёртки."""
     raw = raw.strip()
     raw = re.sub(r'^```[a-zA-Z]*\n?', '', raw)
     raw = re.sub(r'\n?```$', '', raw)
@@ -93,10 +100,10 @@ def _strip_markdown(raw: str) -> str:
 
 
 def _validate_plan(plan: list[dict], known_tools: list[str] | None = None) -> tuple[bool, str]:
-    """П\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u0442 \u0441\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u0443 \u043f\u043b\u0430\u043d\u0430.
+    """Проверяет структуру плана.
 
-    fix #6: known_tools \u043f\u0435\u0440\u0435\u0434\u0430\u0451\u0442\u0441\u044f \u0441\u043d\u0430\u0440\u0443\u0436\u0438 \u0447\u0442\u043e\u0431\u044b \u043d\u0435 \u0432\u044b\u0437\u044b\u0432\u0430\u0442\u044c list_tools() \u043d\u0430 \u043a\u0430\u0436\u0434\u043e\u043c \u0448\u0430\u0433\u0435.
-    \u0415\u0441\u043b\u0438 None \u2014 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u044b \u043d\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u044f\u044e\u0442\u0441\u044f (fallback \u0434\u043b\u044f \u043e\u0431\u0440\u0430\u0442\u043d\u043e\u0439 \u0441\u043e\u0432\u043c\u0435\u0441\u0442\u0438\u043c\u043e\u0441\u0442\u0438).
+    fix #6: known_tools передаётся снаружи чтобы не вызывать list_tools() на каждом шаге.
+    Если None — инструменты не проверяются (fallback для обратной совместимости).
     """
     if not isinstance(plan, list) or len(plan) == 0:
         return False, "план пуст или не список"
@@ -161,6 +168,10 @@ class _StepTimeoutError(Exception):
     pass
 
 
+class _WallTimeoutError(Exception):
+    pass
+
+
 def _call_tool_with_timeout(tool_name: str, args: dict, timeout: float) -> Any:
     result_holder: list = [None]
     exc_holder:    list = [None]
@@ -191,12 +202,11 @@ def _make_plan(query: str) -> tuple[list[dict] | None, str]:
     fix #6: list_tools() вызывается один раз с try/except,
     результат передаётся в _validate_plan() аргументом.
     """
-    # fix #6: один вызов list_tools() на всё планирование
     try:
         known_tools: list[str] | None = list_tools()
     except Exception as e:
         logger.warning(f"[planner] list_tools() failed: {e} — инструменты не будут валидированы")
-        known_tools = None  # fallback: валидация типов остаётся, проверка tool_name отключается
+        known_tools = None
 
     tools_str = ", ".join(known_tools) if known_tools else "недоступны"
     last_error = "неизвестная ошибка"
@@ -248,6 +258,9 @@ def run(query: str, history: list[dict]) -> str:
     Вход: запрос пользователя.
     Выход: строка — ответ для голосового ассистента.
     Никогда не бросает исключение.
+
+    fix P1: весь цикл выполнения шагов ограничен PLAN_WALL_TIMEOUT.
+    При превышении — немедленный синтез по уже собранным результатам.
     """
     logger.info(f"[planner] Новая задача: {query[:80]}")
 
@@ -261,9 +274,13 @@ def run(query: str, history: list[dict]) -> str:
         logger.error(f"[planner] план не составлен: {err}")
         return f"Сэр, не удалось составить план: {err}"
 
-    logger.info(f"[planner] выполняю {len(plan)} шагов")
+    logger.info(f"[planner] выполняю {len(plan)} шагов (wall_timeout={PLAN_WALL_TIMEOUT:.0f}s)")
     step_results: dict[int, Any] = {}
     errors: list[str] = []
+
+    # fix P1: фиксируем время старта, проверяем на каждом шаге
+    wall_start = time.monotonic()
+    wall_exceeded = False
 
     for step in plan:
         step_num  = step.get("step", 0)
@@ -271,6 +288,15 @@ def run(query: str, history: list[dict]) -> str:
         desc      = step.get("description", "")
 
         if step_type == "answer":
+            break
+
+        # fix P1: проверка wall-timeout перед каждым шагом
+        elapsed = time.monotonic() - wall_start
+        if elapsed >= PLAN_WALL_TIMEOUT:
+            wall_exceeded = True
+            warn = f"Превышен общий лимит времени плана ({PLAN_WALL_TIMEOUT:.0f}с), шаги после {step_num - 1} пропущены"
+            logger.warning(f"[planner] {warn}")
+            errors.append(warn)
             break
 
         if step_type == "tool":
@@ -285,15 +311,20 @@ def run(query: str, history: list[dict]) -> str:
                 continue
 
             args = _safe_substitute(raw_args, step_results)
-            logger.info(f"[planner] Шаг {step_num}: {tool_name}({list(args.keys())}) — {desc}")
+
+            # fix P1: step_timeout не может превышать оставшееся wall время
+            remaining = PLAN_WALL_TIMEOUT - (time.monotonic() - wall_start)
+            effective_timeout = min(STEP_TIMEOUT, max(remaining, 1.0))
+
+            logger.info(f"[planner] Шаг {step_num}: {tool_name}({list(args.keys())}) — {desc} (timeout={effective_timeout:.0f}s)")
 
             try:
-                result = _call_tool_with_timeout(tool_name, args, timeout=STEP_TIMEOUT)
+                result = _call_tool_with_timeout(tool_name, args, timeout=effective_timeout)
             except _StepTimeoutError as e:
                 err_msg = f"Шаг {step_num} ({tool_name}): таймаут — {e}"
                 logger.warning(f"[planner] {err_msg}")
                 errors.append(err_msg)
-                step_results[step_num] = f"ERROR: timeout"
+                step_results[step_num] = "ERROR: timeout"
                 continue
             except Exception as e:
                 err_msg = f"Шаг {step_num} ({tool_name}): неожиданная ошибка — {e}"
@@ -325,6 +356,8 @@ def run(query: str, history: list[dict]) -> str:
             context_parts.append(f"Шаг {sn} [{step.get('tool')}]: {res}")
     if errors:
         context_parts.append(f"\nОшибки при выполнении: {'; '.join(errors)}")
+    if wall_exceeded:
+        context_parts.append("\n(Часть шагов не была выполнена из-за превышения лимита времени.)")
 
     msgs = [
         {"role": "system", "content": _SYNTH_SYSTEM},
@@ -336,5 +369,5 @@ def run(query: str, history: list[dict]) -> str:
         logger.exception("[planner] синтез упал")
         answer = f"Сэр, план выполнен, но синтез не удался: {e}"
 
-    logger.info("[planner] Готово.")
+    logger.info(f"[planner] Готово. elapsed={time.monotonic() - wall_start:.1f}s")
     return answer
