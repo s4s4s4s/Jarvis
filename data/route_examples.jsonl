@@ -175,3 +175,11 @@
 {"text": "курс истории России", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "курс как учебная дисциплина"}
 {"text": "скорость передачи данных в нейросети", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "скорость как ML-параметр"}
 {"text": "переведи 100 долларов в рубли", "route": "tool", "tool": "currency.convert", "tool_args": {"amount": 100, "from_code": "USD", "to_code": "RUB"}, "filler": "Считаю конвертацию"}
+{"text": "что произошло сегодня в России", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети", "_hard": true, "_note": "актуальные события дня = web"}
+{"text": "что случилось сегодня в стране", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети", "_hard": true, "_note": "актуальные события = web"}
+{"text": "что произошло вчера в мире", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети", "_hard": true, "_note": "события вчера = web"}
+{"text": "найди новости про ии и запиши в файл", "route": "plan", "tool": null, "tool_args": {}, "filler": "Составляю план", "_hard": true, "_note": "найди + запиши = два действия = plan"}
+{"text": "найди статью про python и сохрани в файл", "route": "plan", "tool": null, "tool_args": {}, "filler": "Составляю план", "_hard": true, "_note": "поиск + сохранение = plan"}
+{"text": "найди новости и запиши результат", "route": "plan", "tool": null, "tool_args": {}, "filler": "Составляю план", "_hard": true, "_note": "два глагола = plan"}
+{"text": "онлайн курс по питону", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "учебный курс != веб-поиск"}
+{"text": "обучающий курс по дата сайенс", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "учебный курс != веб-поиск"}
