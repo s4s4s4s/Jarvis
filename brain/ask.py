@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 _TOOL_TIMEOUT   = "get_answer"
 _FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
 
+# OPT-1: маршруты без личных данных пользователя — пропускаем memory extraction.
+# tool/web/feedback никогда не несут персональной информации — лишний LLM-вызов
+# (200-500ms) на каждый «поставь таймер» или «поищи в интернете».
+_NO_MEMORY_ROUTES = frozenset({"tool", "web", "feedback"})
+
 
 @dataclass
 class AskResult:
@@ -237,11 +242,15 @@ def ask_llm(text: str) -> AskResult:
             reason=route_data.get("reason", ""),
             answer_ms=elapsed_ms + route_ms,
         )
-        try:
-            from tools.memory import extract_and_save_async
-            extract_and_save_async(text, answer)
-        except Exception as e:
-            logger.error(f"Memory extraction failed: {e}")
+        # OPT-1: пропускаем извлечение фактов для маршрутов без личных данных.
+        # tool/web/feedback никогда не несут персональной информации о пользователе —
+        # лишний LLM-вызов (200-500ms) на каждый «поставь таймер» или «поищи в инете».
+        if route_data.get("route") not in _NO_MEMORY_ROUTES:
+            try:
+                from tools.memory import extract_and_save_async
+                extract_and_save_async(text, answer)
+            except Exception as e:
+                logger.error(f"Memory extraction failed: {e}")
         return answer
 
     # fix H1: ProjectAgent уходит в отдельный executor —
