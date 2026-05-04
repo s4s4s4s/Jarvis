@@ -793,6 +793,13 @@ def _build(slug: str, spec: dict, plan: dict, budget: Budget) -> list[dict]:
         results.append(res)
         status = "ok" if res.get("ok") else "failed"
         add_phase(slug, f"build:{target.get('path')}", status, json.dumps(res, ensure_ascii=False))
+    try:
+        import shutil
+        _cd = project_dir(slug) / _CONTRACT_DIR_NAME
+        if _cd.exists():
+            shutil.rmtree(_cd, ignore_errors=True)
+    except Exception:
+        pass
     return results
 
 
@@ -2452,7 +2459,7 @@ def run(query: str, history: list[dict] | None = None,
     if not isinstance(query, str) or not query.strip():
         return "Сэр, я не понял какой проект нужно сделать."
 
-    # Уточнение требований — только при первом запросе, не при ответе на вопросы
+    # Оставить блок с GitHub (questions / if questions:)
     if not _skip_clarify:
         try:
             from brain.agents.project_clarify import maybe_start_clarify
