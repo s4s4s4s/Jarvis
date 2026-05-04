@@ -13,6 +13,14 @@ brain/agents/self_extend.py — SelfExtendAgent (Level 3)
 
 Маршрут: route="extend"
 Триггер: "добавь инструмент X", "напиши инструмент для Y", "создай tool ..."
+
+fix SE-1: добавлена валидация tool_name и entry_fn в run().
+  Раньше LLM могла вернуть tool_name с пробелами или спецсимволами.
+  _patch_registry делал из них snake-имя через replace('.','_'), но пробелы
+  не заменялись — в registry.py появлялась строка вида
+  'def _call_my tool(**kwargs):' → SyntaxError при следующем import → Jarvis ломался.
+  Теперь: tool_name проверяется на r'^[a-z][a-z0-9._-]*$', entry_fn — на
+  r'^[a-z_][a-z0-9_]*$'. Несоответствие — rejected до записи файлов.
 """
 from __future__ import annotations
 
@@ -79,6 +87,10 @@ _DANGEROUS_PATTERNS = [
 _CODE_ONLY_PATTERNS = [
     r"\bsubprocess\b",  # fix N4 + SEC-1: любое использование subprocess в коде
 ]
+
+# fix SE-1: регулярки для валидации имён от LLM
+_TOOL_NAME_RE  = re.compile(r'^[a-z][a-z0-9._\-]*$', re.IGNORECASE)
+_ENTRY_FN_RE   = re.compile(r'^[a-z_][a-z0-9_]*$',   re.IGNORECASE)
 
 
 def _strip_comments_and_strings(code: str) -> str:
@@ -322,6 +334,22 @@ def run(query: str, history: list[dict]) -> str:
     if not tool_name or not filename or not entry_fn:
         msg = f"Неполный дизайн: tool_name={tool_name!r}, file={filename!r}, fn={entry_fn!r}"
         _log_result(tool_name or "?", "failed", msg, query)
+        return f"Сэр, {msg}"
+
+    # fix SE-1: валидация форматов tool_name и entry_fn.
+    # Защищает registry.py от повреждения: если LLM вернула имя с пробелами
+    # или спецсимволами — _patch_registry сгенерировала бы невалидный Python
+    # (def _call_my tool(**kwargs):) → SyntaxError при следующем import → Jarvis ломался.
+    if not _TOOL_NAME_RE.match(tool_name):
+        msg = f"Недопустимый tool_name: {tool_name!r} — ожидается формат 'category.action' (только a-z, 0-9, точка, дефис)"
+        logger.warning(f"[self_extend] {msg}")
+        _log_result(tool_name, "failed", msg, query)
+        return f"Сэр, {msg}"
+
+    if not _ENTRY_FN_RE.match(entry_fn):
+        msg = f"Недопустимый entry_fn: {entry_fn!r} — должно быть корректное имя Python-функции"
+        logger.warning(f"[self_extend] {msg}")
+        _log_result(tool_name, "failed", msg, query)
         return f"Сэр, {msg}"
 
     if tool_name in existing:
