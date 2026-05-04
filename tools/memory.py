@@ -13,6 +13,15 @@ tools/memory.py — долгосрочная векторная память Jar
 
 Миграция: если data/memory.json существует и векторная БД пуста —
          автоматически импортируем все факты при первом запуске.
+
+fix C1: _init_lock заменён на RLock (был Lock). Устраняет deadlock:
+  _get_collection() держит _init_lock → вызывает _maybe_migrate() →
+  та вызывает _get_embed_model() → та пытается захватить тот же _init_lock
+  → дедлок, т.к. threading.Lock не реентрантен.
+  threading.RLock реентрантен: один и тот же поток может захватить его повторно.
+
+fix M4: _trim_if_needed теперь удаляет самые СТАРЫЕ факты (по created_at),
+  а не случайные. Раньше col.get(offset=0) не гарантировал порядок.
 """
 from __future__ import annotations
 
@@ -42,7 +51,9 @@ logger = logging.getLogger(__name__)
 # Инициализация ChromaDB и SentenceTransformer
 # ───────────────────────────────────────────────────────────────────────────────
 
-_init_lock   = threading.Lock()
+# fix C1: RLock вместо Lock — устраняет deadlock между _get_collection() и
+# _get_embed_model(), которые оба пытаются захватить один и тот же лок.
+_init_lock   = threading.RLock()
 _embed_model = None   # SentenceTransformer (lazy load)
 _collection  = None   # chromadb.Collection (lazy load)
 
@@ -91,7 +102,8 @@ def _get_collection():
         logger.info(f"[memory] ChromaDB коллекция '{MEMORY_COLLECTION}' готова, "
                     f"{_collection.count()} записей")
 
-        # Автомиграция из legacy flat-JSON
+        # fix C1: _maybe_migrate вызывает _get_embed_model(), которая тоже
+        # захватывает _init_lock. С RLock (реентрантным) это безопасно.
         _maybe_migrate()
     return _collection
 
@@ -149,12 +161,10 @@ def add_fact(fact: str, category: str = "общее", source: str = "") -> bool:
         embed = _get_embed_model()
         vec   = embed.encode([fact], normalize_embeddings=True).tolist()
 
-        # проверка на дубликат (только если есть хотя бы один факт)
         if col.count() > 0:
             res = col.query(query_embeddings=vec, n_results=1,
                             include=["distances"])
             dist = res["distances"][0][0] if res["distances"] else 1.0
-            # ChromaDB cosine возвращает distance = 1 - similarity
             similarity = 1.0 - dist
             if similarity >= 0.92:
                 logger.debug(f"[memory] Дубликат (sim={similarity:.3f}): {fact[:60]}")
@@ -168,8 +178,6 @@ def add_fact(fact: str, category: str = "общее", source: str = "") -> bool:
         }
         col.add(ids=[entry_id], embeddings=vec, documents=[fact], metadatas=[meta])
         logger.info(f"[memory] Сохранён факт: {fact[:80]}")
-
-        # Ограничение размера: удаляем старые если > MEMORY_MAX_FACTS
         _trim_if_needed(col)
         return True
     except Exception as e:
@@ -359,17 +367,31 @@ def _extract_worker(user_text: str, jarvis_answer: str) -> None:
 # ───────────────────────────────────────────────────────────────────────────────
 
 def _trim_if_needed(col: Any) -> None:
-    """Удаляет самые старые записи если превышен MEMORY_MAX_FACTS."""
+    """Удаляет самые СТАРЫЕ записи если превышен MEMORY_MAX_FACTS.
+
+    fix M4: ранее col.get(offset=0) не гарантировал порядок по времени —
+    удалялись случайные факты. Теперь получаем все метаданные, сортируем
+    по created_at (ISO-8601, лексикографически монотонны) и удаляем oldest.
+    """
     try:
         count = col.count()
         if count <= MEMORY_MAX_FACTS:
             return
         excess = count - MEMORY_MAX_FACTS
-        # получаем самые старые (offset=0)
-        res    = col.get(limit=excess, offset=0, include=[])
-        old_ids = res.get("ids", [])
+        res   = col.get(include=["metadatas"])
+        ids   = res.get("ids") or []
+        metas = res.get("metadatas") or []
+        if not ids:
+            return
+        paired = sorted(
+            zip(ids, metas),
+            key=lambda x: (x[1].get("created_at", "") if isinstance(x[1], dict) else ""),
+        )
+        old_ids = [p[0] for p in paired[:excess]]
         if old_ids:
             col.delete(ids=old_ids)
-            logger.info(f"[memory] Удалено {len(old_ids)} старых фактов (превышен лимит {MEMORY_MAX_FACTS})")
+            logger.info(
+                f"[memory] Удалено {len(old_ids)} старых фактов (превышен лимит {MEMORY_MAX_FACTS})"
+            )
     except Exception as e:
         logger.warning(f"[memory] _trim_if_needed ошибка: {e}")

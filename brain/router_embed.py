@@ -6,23 +6,21 @@ Embedding-роутер на sentence-transformers.
 cosine similarity за ~20-50 ms. Возвращает None если
 неуверенно → LLM fallback в ask.py.
 
-fix #9: _load() защищён Lock + Double-Checked Locking,
-чтобы несколько потоков из ThreadPoolExecutor не загрузили
-SentenceTransformer одновременно (OOM-риск).
+fix #9: _load() защищён Lock + Double-Checked Locking.
 
-fix N6: route_embed теперь проверяет _example_vecs is not None перед
-@ (иначе TypeError после неудачного cache refresh, когда _examples != None,
-но _example_vecs == None).
+fix N6: route_embed проверяет _example_vecs is not None перед @.
 
-fix BUG-5: invalidate_cache() больше не выставляет _examples = None
-и _example_vecs = None в начале — вместо этого сборка new_vecs/new_examples
-выполняется во временных переменных, затем атомарно
-присваивается пара (_examples, _example_vecs). Устраняет окно, в котором
-_example_vecs был None и route_embed возвращал None (деградированный режим).
+fix BUG-5: invalidate_cache() не выставляет None в начале — сборка
+выполняется во временных переменных, затем атомарно присваивается пара.
 
-OPT-1: добавлен eager_load() — загрузка модели в фоновом потоке при старте
-Jarvis. Следует вызывать из ask.py через threading.Thread(даемон=True).
-Без этого первый запрос до загрузки SentenceTransformer (до 5 с) висел без ответа.
+fix C2: заменили отдельные _examples/_example_vecs на единый _state-кортеж.
+Due to CPython GIL, присваивание одной ссылки (_state = ...) — одна инструкция
+STORE_GLOBAL, а значит атомарно. Устраняет окно между двумя отдельными
+присваиваниями, в котором route_embed мог видеть _examples=new/_example_vecs=old
+(или наоборот) → IndexError или неверный маршрут.
+route_embed читает state = _state один раз, затем работает с локальными копиями.
+
+OPT-1: добавлен eager_load() — загрузка модели в фоновом потоке при старте Jarvis.
 """
 from __future__ import annotations
 
@@ -39,18 +37,17 @@ from core.paths import ROUTE_EXAMPLES
 logger = logging.getLogger(__name__)
 
 _model = None
-_examples: list[dict] | None = None
-_example_vecs: np.ndarray | None = None
-_load_lock = threading.Lock()  # fix #9: гарантируем однократную загрузку
+# fix C2: единый _state-кортеж (examples, vecs) вместо двух отдельных переменных.
+# Присваивание одной ссылки атомарно в CPython (STORE_GLOBAL = 1 байткод-инструкция).
+_state: "tuple[list[dict], np.ndarray] | None" = None
+_load_lock = threading.Lock()  # fix #9
 
 
 def _load() -> None:
-    global _model, _examples, _example_vecs
-    # Быстрая проверка без захвата лока (Double-Checked Locking)
+    global _model, _state
     if _model is not None:
         return
     with _load_lock:
-        # Повторная проверка внутри лока: первый поток уже загрузил, остальные пропускают
         if _model is not None:
             return
         try:
@@ -79,22 +76,15 @@ def _load() -> None:
 
         logger.info(f"[router_embed] Loading model: {EMBED_MODEL_NAME}")
         _model = SentenceTransformer(EMBED_MODEL_NAME)
-        _examples = raw_examples
-        texts = [e["text"] for e in _examples]
-        _example_vecs = _model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-        logger.info(f"[router_embed] Ready: {len(_examples)} examples loaded")
+        texts = [e["text"] for e in raw_examples]
+        new_vecs = _model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+        # fix C2: единое атомарное присваивание пары
+        _state = (raw_examples, new_vecs)
+        logger.info(f"[router_embed] Ready: {len(raw_examples)} examples loaded")
 
 
 def eager_load() -> None:
-    """OPT-1: загрузить SentenceTransformer заранее в фоновом потоке.
-
-    Вызывать при старте Jarvis:
-        import threading
-        threading.Thread(target=eager_load, daemon=True).start()
-
-    Это устраняет 2-5 секундную задержку первого запроса:
-    без eager_load пользователь сказал "Джарвис" — и тишина.
-    """
+    """OPT-1: загрузить SentenceTransformer заранее в фоновом потоке."""
     _load()
 
 
@@ -105,15 +95,15 @@ def route_embed(text: str) -> dict[str, Any] | None:
     """
     if _model is None:
         _load()
-    # fix N6: явная проверка _example_vecs до @-умножения.
-    # Без этой проверки после неудачного cache refresh _examples может быть
-    # не-None, а _example_vecs == None, что вызывало TypeError при @ .
-    if _model is None or _examples is None or _example_vecs is None:
+    # fix C2: читаем _state один раз — гарантированно консистентная пара.
+    state = _state
+    if _model is None or state is None:
         return None
+    examples, example_vecs = state
 
     try:
         vec = _model.encode([text], normalize_embeddings=True, show_progress_bar=False)
-        scores = (_example_vecs @ vec.T).flatten()
+        scores = (example_vecs @ vec.T).flatten()
 
         sorted_idx = np.argsort(scores)[::-1]
         top_idx   = int(sorted_idx[0])
@@ -125,7 +115,7 @@ def route_embed(text: str) -> dict[str, Any] | None:
             logger.debug(f"[router_embed] Uncertain: score={top_score:.3f} gap={gap:.3f} → LLM")
             return None
 
-        best = _examples[top_idx]
+        best = examples[top_idx]
         logger.debug(f"[router_embed] Hit: '{best['text']}' score={top_score:.3f} gap={gap:.3f}")
         return {
             "route":     best["route"],
@@ -142,16 +132,13 @@ def route_embed(text: str) -> dict[str, Any] | None:
 
 
 def invalidate_cache() -> None:
-    """Force reload of examples and vectors on next call (used by learning_loop).
+    """Force reload of examples and vectors (used by learning_loop).
 
-    fix BUG-5: больше не выставляет _examples=None/_example_vecs=None в начале.
-    Сборка new_vecs/new_examples выполняется во временных переменных,
-    затем атомарно присваивается пара. Устраняет окно, в котором
-    _example_vecs был None и route_embed возвращал None (деградированный режим).
+    fix BUG-5 + C2: сборка new_vecs во временных переменных,
+    затем одним атомарным присваиванием _state = (raw_examples, new_vecs).
     """
-    global _examples, _example_vecs
+    global _state
     with _load_lock:
-        # Keep _model loaded — only reload examples/vectors, not the heavy model
         if _model is not None and ROUTE_EXAMPLES.exists():
             try:
                 raw_examples = []
@@ -165,24 +152,14 @@ def invalidate_cache() -> None:
                         continue
                 if raw_examples:
                     texts = [e["text"] for e in raw_examples]
-                    # fix BUG-5: собираем во временных переменных, затем атомарно заменяем пару.
-                    # Благодаря этому route_embed никогда не видит состояние
-                    # "_examples=data, _example_vecs=None" и не падает в LLM fallback.
                     new_vecs = _model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-                    _examples = raw_examples
-                    _example_vecs = new_vecs
-                    logger.info(f"[router_embed] Cache refreshed: {len(_examples)} examples")
+                    _state = (raw_examples, new_vecs)  # fix C2: атомарно
+                    logger.info(f"[router_embed] Cache refreshed: {len(raw_examples)} examples")
                 else:
-                    # Пустой файл — сбрасываем оба, route_embed вернёт None
-                    _examples = None
-                    _example_vecs = None
+                    _state = None
                     logger.warning("[router_embed] route_examples.jsonl is empty after refresh")
             except Exception as e:
                 logger.error(f"[router_embed] Cache refresh error: {e}")
-                # Сбрасываем оба, чтобы route_embed корректно вернул None
-                _examples = None
-                _example_vecs = None
+                _state = None
         else:
-            # Модель не загружена или файл не существует — очищаем
-            _examples = None
-            _example_vecs = None
+            _state = None

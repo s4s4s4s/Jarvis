@@ -15,16 +15,18 @@ from brain import history as hist
 from brain.logger import log_route
 from brain.router_embed import route_embed, eager_load
 
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jarvis-ask")
+# fix H1: два отдельных executor-а — короткие задачи и долгие проекты.
+# ProjectAgent может занимать 10+ минут, забивая все 4 слота _executor
+# и блокируя обработку голосовых запросов. _project_executor изолирует эти задачи.
+_executor         = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jarvis-ask")
+_project_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="jarvis-project")
 atexit.register(lambda: _executor.shutdown(wait=False, cancel_futures=True))
+atexit.register(lambda: _project_executor.shutdown(wait=False, cancel_futures=True))
 
-# fix #14: лок для hist.append — предотвращает race condition при параллельных
-# запросах из ThreadPoolExecutor, которые записывают ответы не по порядку.
+# fix #14: лок для hist.append
 _hist_lock = threading.Lock()
 
-# fix F6: подогреваем embed-router заранее в фоне.
-# Это использует уже существующий eager_load() из router_embed.py и убирает
-# 2-5 секундную паузу на первом пользовательском запросе.
+# fix F6: подогрев embed-router в фоне
 try:
     threading.Thread(target=eager_load, daemon=True, name="jarvis-embed-eager-load").start()
 except Exception:
@@ -32,7 +34,6 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
-_CTX_TIMEOUT    = "получение ответа"
 _TOOL_TIMEOUT   = "get_answer"
 _FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
 
@@ -40,6 +41,9 @@ _FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {erro
 @dataclass
 class AskResult:
     filler: str = ""
+    # fix M1: сохраняем оригинальный текст запроса — если get_answer()
+    # получает timeout, LLM видит реальный запрос (раньше был бессмысленный placeholder).
+    text: str = ""
     _future: Future | None = field(default=None, repr=False)
     _answer: str = field(default="", repr=False)
 
@@ -48,7 +52,12 @@ class AskResult:
             try:
                 self._answer = self._future.result(timeout=timeout)
             except Exception as e:
-                self._answer = _format_tool_error(_CTX_TIMEOUT, _TOOL_TIMEOUT, str(e))
+                # fix M1: используем реальный текст запроса в сообщении об ошибке
+                self._answer = _format_tool_error(
+                    self.text or "запрос",
+                    _TOOL_TIMEOUT,
+                    str(e),
+                )
             self._future = None
         return self._answer
 
@@ -182,7 +191,8 @@ def ask_llm(text: str) -> AskResult:
         }
     route_ms = int((time.monotonic() - t_route0) * 1000)
 
-    result = AskResult(filler=route_data.get("filler", ""))
+    # fix M1: передаём text в AskResult
+    result = AskResult(filler=route_data.get("filler", ""), text=text)
 
     def _run() -> str:
         t0 = time.monotonic()
@@ -234,5 +244,8 @@ def ask_llm(text: str) -> AskResult:
             logger.error(f"Memory extraction failed: {e}")
         return answer
 
-    result._future = _executor.submit(_run)
+    # fix H1: ProjectAgent уходит в отдельный executor —
+    # проекты не забивают слоты для голосовых запросов.
+    executor = _project_executor if route_data.get("route") == "project" else _executor
+    result._future = executor.submit(_run)
     return result
