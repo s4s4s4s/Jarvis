@@ -179,6 +179,19 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> tup
 
 
 def ask_llm(text: str) -> AskResult:
+    # ─── credentials pre-check: KEY=VALUE после запроса учётных данных ───
+    # Если проект ждёт токенов и пользователь ввёл KEY=VALUE — не роутим, а сразу принимаем
+    try:
+        from brain.agents.project_creds import has_pending_creds, looks_like_creds
+        from brain.agents.project_creds import provide_credentials as _provide_creds
+        if has_pending_creds() and looks_like_creds(text):
+            creds_result = AskResult(filler="Сохраняю данные...", text=text)
+            creds_result._future = _executor.submit(_provide_creds, text)
+            return creds_result
+    except Exception as exc:
+        logger.warning(f"[ask] credentials pre-check failed: {exc}")
+    # ────────────────────────────────────────────────────────────────
+
     history = hist.snapshot()
 
     t_route0 = time.monotonic()
@@ -244,7 +257,7 @@ def ask_llm(text: str) -> AskResult:
         )
         # OPT-1: пропускаем извлечение фактов для маршрутов без личных данных.
         # tool/web/feedback никогда не несут персональной информации о пользователе —
-        # лишний LLM-вызов (200-500ms) на каждый «поставь таймер» или «поищи в инете».
+        # лишний LLM-вызов (200-500ms) на каждый «поставь таймер» или «поищи в инет».
         if route_data.get("route") not in _NO_MEMORY_ROUTES:
             try:
                 from tools.memory import extract_and_save_async
