@@ -10,6 +10,11 @@
 {"text": "тепло ли сейчас на улице", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
 {"text": "холодно ли сегодня", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
 {"text": "есть ли снег в Москве", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "прогноз погоды на неделю", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "погода на следующей неделе", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "прогноз на несколько дней вперёд", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "идёт ли дождь", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
+{"text": "нужно ли брать зонт", "route": "tool", "tool": "weather", "tool_args": {"location": "Москва", "language": "ru"}, "filler": "Смотрю погоду"}
 {"text": "поставь таймер на 5 минут", "route": "tool", "tool": "timer.set", "tool_args": {"seconds": 300}, "filler": "Ставлю таймер"}
 {"text": "поставь таймер на 10 минут", "route": "tool", "tool": "timer.set", "tool_args": {"seconds": 600}, "filler": "Ставлю таймер"}
 {"text": "таймер на полчаса", "route": "tool", "tool": "timer.set", "tool_args": {"seconds": 1800}, "filler": "Ставлю таймер"}
@@ -28,6 +33,9 @@
 {"text": "что с рынком крипты", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "bitcoin"}, "filler": "Смотрю рынок"}
 {"text": "btc цена сейчас", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "bitcoin"}, "filler": "Смотрю котировки"}
 {"text": "eth usd", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "ethereum"}, "filler": "Смотрю котировки"}
+{"text": "курс биткоина сейчас", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "bitcoin"}, "filler": "Смотрю котировки"}
+{"text": "цена эфира", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "ethereum"}, "filler": "Смотрю котировки"}
+{"text": "биткоин растёт или падает", "route": "tool", "tool": "crypto.search", "tool_args": {"query": "bitcoin"}, "filler": "Смотрю котировки"}
 {"text": "покажи курс доллара", "route": "tool", "tool": "currency.rates", "tool_args": {}, "filler": "Получаю курсы валют"}
 {"text": "курс евро к рублю", "route": "tool", "tool": "currency.rates", "tool_args": {}, "filler": "Получаю курсы валют"}
 {"text": "сколько стоит доллар сегодня", "route": "tool", "tool": "currency.rates", "tool_args": {}, "filler": "Получаю курсы валют"}
@@ -45,6 +53,8 @@
 {"text": "найди баги в проекте", "route": "tool", "tool": "auditor.run", "tool_args": {}, "filler": "Анализирую код, это займёт немного"}
 {"text": "проверь код на ошибки", "route": "tool", "tool": "auditor.run", "tool_args": {}, "filler": "Анализирую код, это займёт немного"}
 {"text": "запусти аудитор", "route": "tool", "tool": "auditor.run", "tool_args": {}, "filler": "Анализирую код, это займёт немного"}
+{"text": "проаудируй проект", "route": "tool", "tool": "auditor.run", "tool_args": {}, "filler": "Анализирую код, это займёт немного"}
+{"text": "запусти аудит", "route": "tool", "tool": "auditor.run", "tool_args": {}, "filler": "Анализирую код, это займёт немного"}
 {"text": "привет", "route": "chat", "tool": null, "tool_args": {}, "filler": ""}
 {"text": "как дела", "route": "chat", "tool": null, "tool_args": {}, "filler": ""}
 {"text": "что ты умеешь", "route": "chat", "tool": null, "tool_args": {}, "filler": ""}
@@ -84,7 +94,7 @@
 {"text": "температура inference для llm", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true}
 {"text": "что такое temperature в параметрах ollama", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true}
 {"text": "какой курс у qwen2.5", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "омоним: курс обучения != курс валюты"}
-{"text": "курс по машинному обучению", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети", "_hard": true, "_note": "курс как обучение"}
+{"text": "курс по машинному обучению", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "курс как учебная программа, не валюта"}
 {"text": "сколько времени займёт обучение модели", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "время как длительность != текущее время"}
 {"text": "сколько стоит обучение в университете", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети", "_hard": true, "_note": "стоит как цена обучения != крипто"}
 {"text": "скорость обучения нейросети", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "learning rate, не погода"}
@@ -154,3 +164,14 @@
 {"text": "разработай парсер озона который сохраняет цены в csv", "route": "project", "tool": null, "tool_args": {}, "filler": "Беру в работу проект"}
 {"text": "реализуй проект todo приложения с сохранением в json", "route": "project", "tool": null, "tool_args": {}, "filler": "Беру в работу проект"}
 {"text": "построй мне трейдинг бота для арбитража", "route": "project", "tool": null, "tool_args": {}, "filler": "Беру в работу проект"}
+{"text": "что такое нейронная сеть", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "простой вопрос, не deep"}
+{"text": "как работает трансформер в LLM", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "краткий вопрос без запроса анализа"}
+{"text": "что такое нейрон в нейросети", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true}
+{"text": "при какой температуре тела вызывать врача", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "температура тела != погода"}
+{"text": "нормальная температура тела у взрослого", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "температура тела != погода"}
+{"text": "у меня жар что делать", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "жар = медицина, не погода"}
+{"text": "высокая температура у ребёнка", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "температура тела != погода"}
+{"text": "курс обучения по машинному обучению", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "курс как учебная программа"}
+{"text": "курс истории России", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "курс как учебная дисциплина"}
+{"text": "скорость передачи данных в нейросети", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "скорость как ML-параметр"}
+{"text": "переведи 100 долларов в рубли", "route": "tool", "tool": "currency.convert", "tool_args": {"amount": 100, "from_code": "USD", "to_code": "RUB"}, "filler": "Считаю конвертацию"}
