@@ -734,7 +734,7 @@ def _build_one_file(slug: str, spec: dict, plan: dict, target: dict, budget: Bud
                 "_source": "static",
             }
             # Если это последняя допустимая итерация — выходим, файл останется писаться как
-            # есть (пусть хилер ловит на фазе test или проект упадёт честно).
+            # есть (пусть хилер ловит на фазе test или проект упадёт честно)
             if it >= MAX_REVIEW_ITERS:
                 break
             continue
@@ -1863,7 +1863,7 @@ def _norm_path(p: str) -> str:
 
 
 def _collect_output_paths(plan: dict | None) -> set[str]:
-    """Собирает пути, которые скрипт ПИШЕТ/СОЗДАЁТ, из plan'а:
+    """Собирает пути, которые скрипт ПИШЕТ/СОЗДАЁТ, из план'а:
     1) Любой path в чеках типа _OUTPUT_CHECK_TYPES.
     2) build_steps[].target если step.kind in {create_file, write_file}.
     Возвращает множество нормализованных путей."""
@@ -2059,7 +2059,7 @@ def _run_one_test(slug: str, t: dict) -> dict:
                 r["reason"] = "[soft] " + r.get("reason", "")
             check_results.append(r)
         checks_ok = all(c.get("ok") for c in check_results)
-        # rc уже отдельная проверка только если её попросили; если её нет — 
+        # rc уже отдельная проверка только если её попросили; если её нет —
         # требуем rc=0 неявно как минимальный sanity-check.
         has_rc_check = any(c.get("type") == "rc_zero" for c in check_results)
         rc_implicit_ok = True if has_rc_check else (res.get("returncode") == 0)
@@ -2094,1331 +2094,537 @@ def _filter_invalid_checks(plan: dict, spec: dict | None) -> tuple[dict, list[di
     1) stdout_contains — ВСЕГДА удаляем. Нарушает принцип «запрещены
        ключевые слова» (проверка по жёсткому фрагменту текста).
     2) file_exists(path) на входной файл ПРИ УСЛОВИИ что этот же path НЕ
-       упомянут в выходных чеках (file_min_lines/file_min_size/json_valid/...).
-       Такой file_exists бессмыслен — фикстура уже создана _prepare_test_fixtures.
-       ИСКЛЮЧЕНИЕ: file_exists на выход (такие пути в output_paths) ГРОМКО
-       информативен — валидная пост-проверка, ОСТАВЛЯЕМ.
+       упомянут в выходных чеках (file_min_lines/file_min_size и т.п.) —
+       это проверка на наличие ВХОДА, который будет создан фикстурой,
+       а не результата работы скрипта. Убираем, чтобы не вводить в заблуждение.
 
-    Возвращает (новый plan, список удалённых чеков с reason для лога)."""
+    Lossless: возвращает модифицированный план и список удалённых чеков."""
     if not isinstance(plan, dict):
         return plan, []
-    deliverables = []
-    if isinstance(spec, dict):
-        deliverables = [str(d) for d in (spec.get("deliverables") or [])]
+    removed_checks: list[dict] = []
+    deliverables = [str(d) for d in (spec.get("deliverables") or [])] if isinstance(spec, dict) else []
     output_paths = _collect_output_paths(plan)
 
-    new_plan = dict(plan)
-    new_tests = []
-    removed: list[dict] = []
     for t in (plan.get("tests") or []):
         if not isinstance(t, dict):
-            new_tests.append(t)
             continue
-        new_t = dict(t)
-        new_checks = []
-        for ch in (t.get("checks") or []):
+        raw = t.get("checks") or []
+        if not isinstance(raw, list):
+            continue
+        kept: list[dict] = []
+        for ch in raw:
             if not isinstance(ch, dict):
-                new_checks.append(ch)
+                kept.append(ch)
                 continue
             ctype = (ch.get("type") or "").strip()
-            # 1) stdout_contains — всегда убираем
+            # Правило 1: stdout_contains всегда убираем
             if ctype == "stdout_contains":
-                removed.append({"check": ch, "reason": "stdout_contains_violates_principles"})
+                removed_checks.append({**ch, "_test": t.get("name"), "_reason": "stdout_contains_banned"})
                 continue
-            # 2) file_exists на вход без выходных чеков на тот же путь
+            # Правило 2: file_exists на входной файл убираем
             if ctype == "file_exists":
-                rel = _norm_path(ch.get("path") or "")
-                if rel and rel not in output_paths and _is_input_fixture(rel, deliverables, output_paths):
-                    removed.append({"check": ch, "reason": "file_exists_on_input_fixture"})
+                rel = _norm_path((ch.get("path") or "").strip())
+                if rel and _is_input_fixture(rel, deliverables, output_paths):
+                    removed_checks.append({**ch, "_test": t.get("name"), "_reason": "file_exists_on_input"})
                     continue
-            new_checks.append(ch)
-        # FIX-4: если все checks удалены — добавляем минимальный rc_zero
-        if not new_checks and (t.get("checks") or []):
-            new_checks = [{"type": "rc_zero"}]
-        new_t["checks"] = new_checks
-        new_tests.append(new_t)
-    new_plan["tests"] = new_tests
-    return new_plan, removed
+            kept.append(ch)
+        t["checks"] = kept
+
+    if removed_checks:
+        logger.info(f"[plan.filter] removed {len(removed_checks)} invalid checks: "
+                    f"{[c.get('type') for c in removed_checks]}")
+    return plan, removed_checks
 
 
-def _test(slug: str, plan: dict, spec: dict | None = None) -> list[dict]:
-    # P9.9: фильтрация невалидных checks (stdout_contains по принципам +
-    # file_exists на входную фикстуру без выходных чеков). Первым этапом.
-    try:
-        plan, removed = _filter_invalid_checks(plan, spec)
-        if removed:
-            reasons = sorted({r["reason"] for r in removed})
-            add_phase(slug, "test:filter", "ok",
-                      f"removed {len(removed)} invalid check(s): reasons={reasons}")
-    except Exception as e:
-        logger.debug(f"[test.filter] error: {e}")
-    # P9.7: автофикстуры для входных файлов, которые архитектор ошибочно
-    # включил в file_exists. Спек опционален для обратной совместимости с тестами.
-    if spec is not None:
-        try:
-            created = _prepare_test_fixtures(slug, plan, spec)
-            if created:
-                add_phase(slug, "test:fixtures", "ok",
-                          f"created {len(created)} input fixture(s): {created[:5]}")
-        except Exception as e:
-            logger.debug(f"[test.fixtures] error: {e}")
-    out = []
-    for t in (plan.get("tests") or []):
-        rec = _run_one_test(slug, t)
-        out.append(rec)
-        # P9.6: включаем детальные checks в деталь фазы для диагностики
-        # файловых/контент-проверок (file_min_size, stdout_contains и т.п.).
-        # Без этого в логах видно только rc=0 stderr="" и непонятно почему failed.
-        keys = ["command", "rc", "expects_ok", "stderr", "checks"]
-        add_phase(slug, f"test:{rec['name']}",
-                  "ok" if rec["ok"] else "failed",
-                  json.dumps({k: rec.get(k) for k in keys if k in rec}, ensure_ascii=False))
-    return out
+def _phase_test(slug: str, plan: dict, spec: dict | None = None) -> list[dict]:
+    plan, removed = _filter_invalid_checks(plan, spec)
+    fixtures = _prepare_test_fixtures(slug, plan, spec)
+    if fixtures:
+        logger.info(f"[test.fixtures] created {len(fixtures)}: {fixtures}")
+    results = []
+    for t in plan.get("tests", []):
+        if not isinstance(t, dict):
+            continue
+        r = _run_one_test(slug, t)
+        results.append(r)
+    return results
 
 
 # ─── PHASE 6: heal ──────────────────────────────────────────────────────────
-def _diagnose(spec: dict, file_paths: list[str], failed_test: dict, budget: Budget) -> dict:
-    user = (
-        f"Файлы проекта:\n" + "\n".join(f"  - {p}" for p in file_paths) + "\n\n"
-        f"Тест упал:\n"
-        f"  команда: {failed_test.get('command')}\n"
-        f"  rc:      {failed_test.get('rc')}\n"
-        f"  stderr:  {failed_test.get('stderr','')[:800]}\n"
-        f"  stdout:  {failed_test.get('stdout','')[:400]}\n"
-        f"  expects: {failed_test.get('expects','')}\n\n"
-        f"Спецификация:\n{json.dumps(spec, ensure_ascii=False)[:1200]}\n"
-    )
-    raw = _llm(budget, MODEL_HEALER, PROJECT_HEAL_SYSTEM, user,
-               temperature=0.0, num_ctx=4096, where="heal.diagnose")
-    diag = _safe_parse(raw)
-    if not isinstance(diag, dict):
-        diag = {}
-    return diag
-
-
-_MODNOTFOUND_RE = re.compile(r"ModuleNotFoundError: No module named ['\"]([A-Za-z0-9_.\-]+)['\"]")
-# P2: detection patterns for additional deterministic healers.
-_SYNTAX_ERR_RE   = re.compile(r"(SyntaxError|IndentationError|TabError):\s*(.+)")
-_SYNTAX_FILE_RE  = re.compile(r'File "([^"]+\.py)", line (\d+)')
-_NETWORK_ERR_RE  = re.compile(
-    r"(ConnectionError|ConnectionResetError|ConnectionRefusedError|"
-    r"ReadTimeout|ConnectTimeout|TimeoutError|ssl\.SSLError|"
-    r"urllib3\.exceptions|requests\.exceptions\.\w+|http\.client\.RemoteDisconnected|"
-    r"socket\.gaierror|socket\.timeout|TimeoutExpired)"
-)
-_JSONDEC_RE      = re.compile(r"json\.decoder\.JSONDecodeError|json\.JSONDecodeError")
-# P9.6: bs4 жалуется на отсутствие парсера (xml/lxml/html5lib) — ставим нужный пакет.
-_BS4_FEATURE_RE  = re.compile(r"FeatureNotFound.*?features you requested:\s*([a-zA-Z0-9_\-]+)", re.DOTALL)
-
-
-# Сопоставление import-имени → PyPI-имя для очевидных расхождений
-_IMPORT_TO_PIP = {
-    "cv2": "opencv-python",
-    "PIL": "Pillow",
-    "yaml": "PyYAML",
-    "sklearn": "scikit-learn",
-    "bs4": "beautifulsoup4",
-    "dateutil": "python-dateutil",
-    "dotenv": "python-dotenv",
-}
-
-
-def _heal_syntax_error(slug: str, failed: dict, plan: dict) -> dict | None:
-    """P2: детерминистический хилер для SyntaxError/IndentationError на фазе test.
-
-    Стратегия: перебираем все .py-файлы проекта, проверяем ast.parse.
-    Первый найденный файл с ошибкой — это цель. Возвращаем dict с target_path и
-    fix_instruction, которые _heal_loop скормит Coder'у без LLM-диагностики.
-    """
-    stderr = failed.get("stderr", "") or ""
-    if not _SYNTAX_ERR_RE.search(stderr):
-        return None
-    file_paths = [f["path"] for f in plan.get("files", []) if isinstance(f, dict) and "path" in f]
-    py_files = [p for p in file_paths if p.lower().endswith(".py")]
-    if not py_files:
-        return None
-    # Ищем первый .py с битым синтаксисом.
-    for path in py_files:
-        try:
-            content = read_project_file(slug, path)
-        except Exception:
-            continue
-        sc = static_check(path, content)
-        if not sc.get("ok") and sc.get("applicable"):
-            return {
-                "target_file": path,
-                "fix_instruction": static_errors_to_feedback(sc.get("errors") or []),
-                "category": "syntax",
-            }
-    # stderr жалуется на синтаксис, но ast.parse все файлы прошли — пробуем выдернуть имя/номер из traceback.
-    fm = _SYNTAX_FILE_RE.search(stderr)
-    sm = _SYNTAX_ERR_RE.search(stderr)
-    if fm and sm:
-        guess = fm.group(1).replace("\\", "/").split("/")[-1]
-        if guess in py_files:
-            return {
-                "target_file": guess,
-                "fix_instruction": (
-                    f"Исправь {sm.group(1)} в {guess} на строке {fm.group(2)}: {sm.group(2)}"
-                ),
-                "category": "syntax",
-            }
-    return None
-
-
-def _heal_network_retry(slug: str, failed: dict, plan: dict, attempt: int = 1) -> dict | None:
-    """P2: при сетевых ошибках просто перезапускаем тест (без LLM, без правки кода).
-
-    Стратегия: пауза (1.5с × attempt), ретест. Применяется вызывающим кодом, 
-    который сам вызывает _test() после результата. Мы решаем только «stoit ли ретраить?» и паузим.
-    """
-    stderr = failed.get("stderr", "") or ""
-    if not _NETWORK_ERR_RE.search(stderr):
-        return None
-    delay = min(1.5 * attempt, 4.5)
-    time.sleep(delay)
-    return {"category": "network", "retried_after_s": delay, "attempt": attempt}
-
-
-def _heal_json_decode(slug: str, failed: dict, plan: dict) -> dict | None:
-    """P2: при JSONDecodeError — хинт Coder'у: добавь try/except и проверку Content-Type.
-
-    Это не исправляет баг автоматически, но даёт однозначную fix_instruction без _diagnose-LLM.
-    """
-    stderr = failed.get("stderr", "") or ""
-    if not _JSONDEC_RE.search(stderr):
-        return None
-    file_paths = [f["path"] for f in plan.get("files", []) if isinstance(f, dict) and "path" in f]
-    # Ищем первый .py файл, где вызывается json.loads или .json().
-    for path in file_paths:
-        if not path.lower().endswith(".py"):
-            continue
-        try:
-            content = read_project_file(slug, path)
-        except Exception:
-            continue
-        if ("json.loads" in content) or (".json(" in content) or ("json.load(" in content):
-            return {
-                "target_file": path,
-                "fix_instruction": (
-                    "Оборачивай вызовы json.loads/.json() в try/except json.JSONDecodeError. "
-                    "Если ресурс отвечает не-JSON, не падай, а выведи первые байты ответа для диагностики. "
-                    "Для requests используй response.headers.get('Content-Type') перед разбором."
-                ),
-                "category": "json",
-            }
-    return None
-
-
-def _heal_missing_module(slug: str, failed: dict) -> dict | None:
-    """Детерминистический healer для ModuleNotFoundError — без LLM.
-    Выдергивает имя модуля из stderr и ставит его в venv.
-    Возвращает dict с результатом или None если это не ModuleNotFoundError.
-
-    P9.6: также распознаёт bs4.FeatureNotFound — это не ModuleNotFoundError, но
-    получается когда код зовёт BeautifulSoup(text, 'xml') без установленного lxml.
-    """
-    stderr = failed.get("stderr", "") or ""
-
-    # Сначала пробуем bs4 FeatureNotFound (более специфичный паттерн).
-    bm = _BS4_FEATURE_RE.search(stderr)
-    if bm:
-        feature = bm.group(1).lower()
-        feature_to_pkg = {"xml": "lxml", "lxml": "lxml", "lxml-xml": "lxml", "html5lib": "html5lib"}
-        pkg = feature_to_pkg.get(feature, "lxml")
-        if not _PKG_PATTERN.match(pkg):
-            return {"ok": False, "missing": f"bs4-feature:{feature}", "reason": "unsafe pkg name"}
-        res = pip_install(slug, [pkg])
-        return {
-            "ok": bool(res.get("ok")),
-            "missing": f"bs4-feature:{feature}",
-            "installed_as": pkg,
-            "stderr": res.get("stderr", "")[-400:],
-        }
-
-    m = _MODNOTFOUND_RE.search(stderr)
-    if not m:
-        return None
-    import_name = m.group(1).split(".")[0]  # берём корневой пакет
-    pip_name = _IMPORT_TO_PIP.get(import_name, import_name)
-    if not _PKG_PATTERN.match(pip_name):
-        return {"ok": False, "missing": import_name, "reason": "unsafe pkg name"}
-    res = pip_install(slug, [pip_name])
-    return {
-        "ok": bool(res.get("ok")),
-        "missing": import_name,
-        "installed_as": pip_name,
-        "stderr": res.get("stderr", "")[-400:],
-    }
-
-
-# P11.4: cross-file heal — структурный разбор ошибки и выбор правильного target.
-# Регулярки распознают конкретные форматы Python-ошибок, без угадывания по словам.
-
-# NameError: name 'X' is not defined  (баг в файле, где имя используется)
-_HEAL_NAMEERROR_RE = re.compile(r"NameError: name ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"] is not defined")
-
-# ImportError: cannot import name 'X' from 'M'  (баг в M — должен экспортировать X)
-_HEAL_IMPORTERROR_RE = re.compile(
-    r"ImportError: cannot import name ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"] from ['\"]([A-Za-z0-9_.]+)['\"]"
-)
-
-# AttributeError: module 'M' has no attribute 'X'  (баг в M)
-_HEAL_ATTRMOD_RE = re.compile(
-    r"AttributeError: module ['\"]([A-Za-z0-9_.]+)['\"] has no attribute ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"
-)
-
-# Frame в traceback: File "...\path\to\file.py", line N, in <...>
-_HEAL_FRAME_RE = re.compile(r'File "([^"]+?\.py)", line (\d+)')
-
-
-def _last_user_frame_in_plan(stderr: str, plan_paths: list[str]) -> str | None:
-    """Найти последний frame в traceback, чей файл есть в plan.files.
-
-    Это файл, в котором фактически произошла ошибка — не stdlib, не библиотеки.
-    Возвращает rel-путь из plan или None.
-    """
-    if not stderr or not plan_paths:
-        return None
-    plan_lower = {p.lower(): p for p in plan_paths}
-    plan_basenames = {p.split("/")[-1].split("\\")[-1].lower(): p for p in plan_paths}
-    last_match = None
-    for m in _HEAL_FRAME_RE.finditer(stderr):
-        frame_path = (m.group(1) or "").replace("\\", "/")
-        # Сначала пытаемся точное совпадение по rel-пути
-        for low, orig in plan_lower.items():
-            if frame_path.lower().endswith("/" + low) or frame_path.lower() == low:
-                last_match = orig
-                break
-        else:
-            # Fallback: совпадение по basename
-            base = frame_path.split("/")[-1].lower()
-            if base in plan_basenames:
-                last_match = plan_basenames[base]
-    return last_match
-
-
-def _module_to_plan_path(mod_name: str, plan_paths: list[str]) -> str | None:
-    """Перевести имя модуля ('config', 'storage') в rel-путь из plan.
-
-    Использует _module_name_from_rel — то же преобразование, что и для CONTRACT-блока.
-    """
-    if not mod_name:
-        return None
-    target = mod_name.split(".")[0]  # верхний уровень
-    for p in plan_paths:
-        if _module_name_from_rel(p) == mod_name or _module_name_from_rel(p) == target:
-            return p
-    return None
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# P11.6: structural fallback helpers (FM-14)
-# ──────────────────────────────────────────────────────────────────────────
-
-_TRACEBACK_MARKERS = ("Traceback (", "Error:", "error:", "Exception:")
-
-
 def _walk_project_top_level_defs(slug: str) -> dict[str, list[str]]:
-    """P11.6: AST-walk всех .py-файлов проекта → {rel_path: [top_level_names]}.
-
-    Возвращает только top-level def/class — без вложенных. Имена с лидирующим
-    подчёркиванием отбрасываем (приватные). На любую ошибку парсинга — пустой
-    список для этого файла, но не падаем.
-    """
+    """Собирает top-level имена из всех .py-файлов проекта.
+    Используется Healer-ом для диагностики «что реально определено»
+    в сопоставлении с тем, что импортируется. AST-based, без LLM."""
     import ast as _ast
-    out: dict[str, list[str]] = {}
-    if not slug:
-        return out
+    result: dict[str, list[str]] = {}
     try:
         files = get_project_files(slug)
-    except Exception:
-        return out
-    if not isinstance(files, dict):
-        return out
-    for rel, text in files.items():
-        if not isinstance(rel, str) or not _is_python_path(rel):
-            continue
-        if not isinstance(text, str) or not text.strip():
-            out[rel] = []
-            continue
-        try:
-            tree = _ast.parse(text)
-        except Exception:
-            out[rel] = []
-            continue
-        names: list[str] = []
-        for node in tree.body:
-            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
-                nm = node.name
-                if nm and not nm.startswith("_"):
-                    names.append(nm)
-        out[rel] = names
-    return out
-
-
-def _find_structural_owner(
-    required_name: str,
-    project_defs: dict[str, list[str]],
-) -> tuple[str | None, str | None]:
-    """P11.6: для требуемого символа найти файл, где определено похожее имя.
-
-    Стратегия (структурная, без ключевых слов):
-      1) Точное совпадение → (rel, name)
-      2) Case-fold совпадение → (rel, name)  (add ↔ Add)
-      3) Не найдено → (None, None)
-
-    Возвращаем кортеж (owner_file, actual_name). actual_name — то имя, что
-    реально объявлено в коде (может отличаться регистром).
-    """
-    if not required_name:
-        return None, None
-    req_cf = required_name.casefold()
-    # 1) Точное
-    for rel, names in project_defs.items():
-        if required_name in names:
-            return rel, required_name
-    # 2) Case-fold
-    for rel, names in project_defs.items():
-        for nm in names:
-            if nm.casefold() == req_cf:
-                return rel, nm
-    return None, None
-
-
-def _classify_failure(
-    plan: dict,
-    failed: dict,
-    spec: dict | None = None,
-    slug: str | None = None,
-) -> dict:
-    """P11.4/P11.6: структурный разбор ошибки теста → {kind, target, missing_name, source_file, reason}.
-
-    Логика выбора target (структурная, не ключевые слова):
-      • ImportError/AttributeError на имени X из модуля M → target = plan-файл, реализующий M.
-        Если plan.exports говорит что X должен быть в M — это баг M.
-      • NameError 'X' в файле F → если X объявлен как export соседа N — баг F (забыл импортировать).
-        Иначе баг F (неопределённое локальное имя).
-      • Любая другая ошибка с traceback в файле F из plan → target = F.
-      • Ничего не подошло → None (даём LLM-Healer решить).
-
-    Возвращает dict с полями:
-      kind: 'import_error' | 'attribute_error' | 'name_error' | 'traceback' | 'unknown'
-      target: str | None      — rel-путь файла, который надо чинить
-      missing_name: str | None — отсутствующее имя
-      source_file: str | None  — где обнаружилась ошибка (последний user-frame)
-      reason: str              — короткое объяснение для лога
-      hint: str                — подсказка для патчера (не для LLM-выбора, а для feedback)
-    """
-    out = {
-        "kind": "unknown",
-        "target": None,
-        "missing_name": None,
-        "source_file": None,
-        "reason": "",
-        "hint": "",
-    }
-    if not isinstance(plan, dict) or not isinstance(failed, dict):
-        return out
-
-    plan_paths = [
-        f["path"] for f in plan.get("files", [])
-        if isinstance(f, dict) and isinstance(f.get("path"), str)
-    ]
-    if not plan_paths:
-        return out
-
-    # P11.5.C: contract_failure — приоритетный сигнал из build phase, не из stderr теста.
-    # Если _build_one_file_aider пометил результат как contract_failure=True и передал
-    # contract.missing/path — берём этот файл в target без парсинга traceback'ов.
-    if failed.get("contract_failure"):
-        contract = failed.get("contract") or {}
-        target_path = failed.get("path") or failed.get("target")
-        missing = contract.get("missing") or []
-        kind_mm = contract.get("kind_mismatch") or []
-        if target_path and target_path in plan_paths:
-            out["kind"] = "contract_violation"
-            out["target"] = target_path
-            out["source_file"] = target_path
-            out["missing_name"] = (missing[0] if missing else None)
-            out["reason"] = (
-                f"contract.lint: {target_path} missing={missing} kind_mismatch={kind_mm}"
-            )
-            # Собираем хинт из plan.exports для этого файла — чтобы aider восстановил
-            # именно те сигнатуры, что были в плане.
-            file_node = next(
-                (f for f in plan.get("files", [])
-                 if isinstance(f, dict) and f.get("path") == target_path),
-                None,
-            )
-            sigs = []
-            for exp in ((file_node or {}).get("exports") or []):
-                if not isinstance(exp, dict):
-                    continue
-                nm = (exp.get("name") or "").strip()
-                if nm and nm in missing:
-                    sig = (exp.get("signature") or nm).strip()
-                    kind = (exp.get("kind") or "").strip()
-                    sigs.append(f"{kind} {sig}".strip() if kind else sig)
-            sigs_block = ("\n  - " + "\n  - ".join(sigs)) if sigs else ""
-            out["hint"] = (
-                f"Файл {target_path} не экспортирует символы, заявленные в plan.exports: "
-                f"missing={missing}. Восстанови эти экспорты на top-level файла "
-                f"с их оригинальными сигнатурами:{sigs_block}"
-            )
-            return out
-
-    # P11.6 (FM-14): structural fallback — тест "прошёл" (rc=0) но smoke ничего
-    # не проверил, ожидаемые user'ом символы отсутствуют в проекте.
-    # Срабатывает ДО разбора stderr (требует spec+slug). Берём имена из spec вида
-    # "name(args)", сравниваем с union(plan.exports.name) и с фактическими top-level
-    # def/class в коде (AST-walk). Если имя ожидается, но в коде есть case-fold
-    # вариант — баг этого файла (переименуй). Чисто структурно, без ключевых слов.
-    if (
-        spec is not None
-        and slug
-        and failed.get("rc") in (0, None)
-        and not failed.get("contract_failure")
-    ):
-        _stderr_p116 = (failed.get("stderr", "") or "") + "\n" + (failed.get("stdout", "") or "")
-        _has_traceback = any(m in _stderr_p116 for m in _TRACEBACK_MARKERS)
-        if not _has_traceback:
+        if not isinstance(files, dict):
+            return result
+        for path, text in files.items():
+            if not path.endswith(".py") or not isinstance(text, str):
+                continue
             try:
-                required = _extract_required_symbols(spec)
+                tree = _ast.parse(text)
+                names: list[str] = []
+                for node in tree.body:
+                    if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                        names.append(node.name)
+                    elif isinstance(node, _ast.Assign):
+                        for t in node.targets:
+                            if isinstance(t, _ast.Name):
+                                names.append(t.id)
+                    elif isinstance(node, _ast.AnnAssign) and isinstance(node.target, _ast.Name):
+                        names.append(node.target.id)
+                result[path] = names
             except Exception:
-                required = []
-            if required:
-                # union всех plan.exports.name
-                plan_export_names: set[str] = set()
-                for f in plan.get("files", []):
-                    if not isinstance(f, dict):
-                        continue
-                    for exp in (f.get("exports") or []):
-                        if isinstance(exp, dict):
-                            nm = (exp.get("name") or "").strip()
-                            if nm:
-                                plan_export_names.add(nm)
-                project_defs = _walk_project_top_level_defs(slug)
-                # все top-level имена в коде
-                code_names: set[str] = set()
-                for _names in project_defs.values():
-                    code_names.update(_names)
-                # required, которых нет ни в plan.exports, ни в фактическом коде
-                missing_calls = [
-                    r for r in required
-                    if r not in plan_export_names and r not in code_names
-                ]
-                if missing_calls:
-                    # Для каждого missing ищем structural owner (case-fold).
-                    # Берём первый missing, для которого нашли owner — это наиболее точный сигнал.
-                    chosen_target: str | None = None
-                    chosen_required: str | None = None
-                    chosen_actual: str | None = None
-                    for req in missing_calls:
-                        owner, actual = _find_structural_owner(req, project_defs)
-                        if owner and actual:
-                            chosen_target = owner
-                            chosen_required = req
-                            chosen_actual = actual
-                            break
-                    if chosen_target:
-                        out["kind"] = "structural_mismatch"
-                        out["target"] = chosen_target
-                        out["source_file"] = chosen_target
-                        out["missing_name"] = chosen_required
-                        out["reason"] = (
-                            f"P11.6 structural fallback: spec requires {chosen_required!r}, "
-                            f"but file {chosen_target} defines {chosen_actual!r} instead "
-                            f"(missing_in_code={missing_calls})"
-                        )
-                        out["hint"] = (
-                            f"В файле {chosen_target} определена функция `{chosen_actual}`, "
-                            f"но спецификация требует `{chosen_required}`. "
-                            f"Переименуй `{chosen_actual}` в `{chosen_required}` или добавь экспорт под именем "
-                            f"`{chosen_required}` (def {chosen_required}(...): … или "
-                            f"`{chosen_required} = {chosen_actual}`)."
-                        )
-                        return out
-                    # owner не найден — функция просто отсутствует. Target = первый
-                    # py-файл в plan, который объявлен в plan.files (обычно entry-point).
-                    py_in_plan = [p for p in plan_paths if _is_python_path(p)]
-                    if py_in_plan:
-                        target_fb = py_in_plan[0]
-                        out["kind"] = "structural_missing"
-                        out["target"] = target_fb
-                        out["source_file"] = target_fb
-                        out["missing_name"] = missing_calls[0]
-                        out["reason"] = (
-                            f"P11.6 structural fallback: spec requires {missing_calls}, "
-                            f"ни один из этих символов не определён в проекте; "
-                            f"target = первый py-файл plan ({target_fb})"
-                        )
-                        out["hint"] = (
-                            f"В проекте не определены функции, требуемые спецификацией: "
-                            f"{missing_calls}. Добавь их в {target_fb} как top-level def "
-                            f"с ожидаемыми именами."
-                        )
-                        return out
-
-    stderr = (failed.get("stderr", "") or "") + "\n" + (failed.get("stdout", "") or "")
-    if not stderr.strip():
-        return out
-
-    # Файл, где реально упало (последний кадр в traceback из плана)
-    source_file = _last_user_frame_in_plan(stderr, plan_paths)
-    out["source_file"] = source_file
-
-    # Карта exports: имя -> файл, где оно объявлено
-    exports_owner: dict[str, str] = {}
-    for f in plan.get("files", []):
-        if not isinstance(f, dict):
-            continue
-        rel = f.get("path", "")
-        for exp in (f.get("exports") or []):
-            if isinstance(exp, dict):
-                nm = (exp.get("name") or "").strip()
-                if nm:
-                    exports_owner[nm] = rel
-
-    # 1) ImportError: cannot import name 'X' from 'M'  → баг M
-    m = _HEAL_IMPORTERROR_RE.search(stderr)
-    if m:
-        missing = m.group(1)
-        mod = m.group(2)
-        out["kind"] = "import_error"
-        out["missing_name"] = missing
-        # 1a) plan.exports говорит что missing должен быть в файле X — берём его
-        owner = exports_owner.get(missing)
-        if owner:
-            out["target"] = owner
-            out["reason"] = f"plan.exports requires {missing} in {owner}"
-        else:
-            # 1b) сводим имя модуля к plan-файлу
-            mod_path = _module_to_plan_path(mod, plan_paths)
-            if mod_path:
-                out["target"] = mod_path
-                out["reason"] = f"module '{mod}' resolved to {mod_path}"
-            else:
-                out["target"] = source_file
-                out["reason"] = f"unresolved module '{mod}', falling back to source frame"
-        out["hint"] = (
-            f"В файле {out['target']} отсутствует/переименован символ '{missing}'. "
-            f"Добавь определение с тем именем, что объявлено в plan.exports."
-        )
-        return out
-
-    # 2) AttributeError: module 'M' has no attribute 'X'  → баг M
-    m = _HEAL_ATTRMOD_RE.search(stderr)
-    if m:
-        mod = m.group(1)
-        missing = m.group(2)
-        out["kind"] = "attribute_error"
-        out["missing_name"] = missing
-        owner = exports_owner.get(missing)
-        if owner:
-            out["target"] = owner
-            out["reason"] = f"plan.exports requires {missing} in {owner}"
-        else:
-            mod_path = _module_to_plan_path(mod, plan_paths)
-            out["target"] = mod_path or source_file
-            out["reason"] = f"module '{mod}' resolved to {out['target']}"
-        out["hint"] = (
-            f"Модуль '{mod}' не содержит '{missing}'. Добавь определение в {out['target']}."
-        )
-        return out
-
-    # 3) NameError: name 'X' is not defined  → почти всегда баг в source_file
-    m = _HEAL_NAMEERROR_RE.search(stderr)
-    if m:
-        missing = m.group(1)
-        out["kind"] = "name_error"
-        out["missing_name"] = missing
-        # Если имя — экспорт соседа, source_file должен его импортировать
-        owner = exports_owner.get(missing)
-        if owner and source_file and owner != source_file:
-            out["target"] = source_file
-            out["reason"] = f"'{missing}' is exported by {owner}; {source_file} must import it"
-            mod = _module_name_from_rel(owner)
-            out["hint"] = (
-                f"В файле {source_file} используется '{missing}', но нет импорта. "
-                f"Добавь: from {mod} import {missing}"
-            )
-        else:
-            # Локальная необъявленная переменная — баг там, где использовалась
-            out["target"] = source_file
-            out["reason"] = f"undefined local name '{missing}' in {source_file}"
-            out["hint"] = (
-                f"В файле {source_file} используется '{missing}' без определения. "
-                f"Объяви переменную/функцию или добавь нужный импорт."
-            )
-        return out
-
-    # 4) Любой traceback с user-frame — чиним последний кадр
-    if source_file:
-        out["kind"] = "traceback"
-        out["target"] = source_file
-        out["reason"] = f"traceback ends in user file {source_file}"
-        return out
-
-    return out
-
-
-def _pick_heal_target(
-    plan: dict,
-    failed: dict,
-    spec: dict | None = None,
-    slug: str | None = None,
-) -> str | None:
-    """P11.4/P11.6: структурный выбор файла для хилинга на основе разбора ошибки.
-
-    Делегирует в _classify_failure (без ключевых слов). Если разбор не дал target —
-    fallback на первый .py из plan.files. P11.6: spec/slug позволяют structural
-    fallback в _classify_failure определить файл по AST-walkу.
-    """
-    info = _classify_failure(plan, failed, spec=spec, slug=slug)
-    if info.get("target"):
-        logger.info(
-            f"[heal.target] kind={info['kind']} target={info['target']} "
-            f"missing={info.get('missing_name')} reason={info.get('reason','')}"
-        )
-        return info["target"]
-
-    # Fallback: первый .py-файл в plan.files (entry point)
-    file_paths = [f["path"] for f in plan.get("files", []) if isinstance(f, dict) and "path" in f]
-    if not file_paths:
-        return None
-    py_files = [p for p in file_paths if p.lower().endswith(".py")]
-    fallback = py_files[0] if py_files else file_paths[0]
-    logger.info(f"[heal.target] kind=fallback target={fallback}")
-    return fallback
-
-
-def _heal_via_aider(slug: str, plan: dict, failed: dict, spec: dict | None = None) -> dict:
-    """P9.4/P11.6: попытаться починить файл через aider_heal.
-
-    Результат — dict с полями ok/target/error/duration. Никогда не бросает исключение.
-
-    P11.4: в error_text включается структурный hint из _classify_failure —
-    aider видит и сырой traceback, и явный диагноз (кто виноват и почему).
-    P11.6: spec пробрасывается в _classify_failure для structural fallback при rc=0.
-    """
-    info = _classify_failure(plan, failed, spec=spec, slug=slug)
-    target = info.get("target") or _pick_heal_target(plan, failed, spec=spec, slug=slug)
-    if not target:
-        return {"ok": False, "target": None, "error": "no candidate file in plan"}
-    raw_err = (failed.get("stderr", "") or failed.get("stdout", "") or "").strip()
-    if not raw_err:
-        raw_err = f"test '{failed.get('name','?')}' failed (rc={failed.get('rc','?')})"
-    # P11.4: добавляем структурный диагноз в error_text
-    if info.get("hint"):
-        error_text = (
-            f"ДИАГНОЗ (kind={info.get('kind')}, target={target}):\n"
-            f"{info.get('hint')}\n\n"
-            f"СЫРОЙ STDERR:\n{raw_err}"
-        )
-    else:
-        error_text = raw_err
-    test_command = failed.get("command", "") or ""
-    try:
-        pdir = project_dir(slug)
-        read_only, _ = _build_neighbor_context(pdir, plan, target)
-        res = aider_runner.aider_heal(pdir, target, error_text, test_command=test_command,
-                                      read_only_files=read_only or None)
-        return {
-            "ok":         bool(res.ok),
-            "target":     target,
-            "error":      res.error if not res.ok else "",
-            "duration_s": res.duration_s,
-            "attempts":   res.attempts,
-        }
+                result[path] = []
     except Exception as e:
-        return {"ok": False, "target": target, "error": f"{type(e).__name__}: {e}"}
+        logger.debug(f"[heal.walk] error: {e}")
+    return result
 
 
-def _heal_loop(slug: str, spec: dict, plan: dict, test_results: list[dict], budget: Budget) -> list[dict]:
+def _classify_failure(slug: str, test_result: dict, plan: dict) -> dict:
+    """Диагностика провала теста структурными методами (без LLM).
+
+    Возвращает {'kind': str, 'target_file': str|None, 'hint': str}.
+    kind in {'import_error', 'syntax_error', 'contract_failure', 'runtime', 'unknown'}.
+
+    Структурно — по stderr/stdout, без keyword-matching по предметной области."""
+    stderr = (test_result.get("stderr") or "").lower()
+    stdout = (test_result.get("stdout") or "").lower()
+    combined = stderr + " " + stdout
+
+    # --- Синтаксическая ошибка ---
+    if "syntaxerror" in combined or "invalid syntax" in combined:
+        # Ищем имя файла в traceback
+        target = None
+        for line in (test_result.get("stderr") or "").splitlines():
+            m = re.search(r'File "([^"]+\.py)"', line)
+            if m:
+                rel = m.group(1).replace("\\", "/")
+                # Берём только файлы из нашего проекта (не stdlib)
+                for f in (plan.get("files") or []):
+                    if isinstance(f, dict) and _norm_path(f.get("path") or "") in rel:
+                        target = f.get("path")
+                        break
+                if target:
+                    break
+        return {"kind": "syntax_error", "target_file": target, "hint": "исправь синтаксическую ошибку"}
+
+    # --- ImportError / ModuleNotFoundError ---
+    if "importerror" in combined or "modulenotfounderror" in combined or "cannot import" in combined:
+        target = None
+        # Пытаемся определить файл с неправильным импортом из traceback
+        for line in (test_result.get("stderr") or "").splitlines():
+            m = re.search(r'File "([^"]+\.py)"', line)
+            if m:
+                rel = m.group(1).replace("\\", "/")
+                for f in (plan.get("files") or []):
+                    if isinstance(f, dict) and _norm_path(f.get("path") or "") in rel:
+                        candidate = f.get("path")
+                        # Не берём entry-point (main.py) — он делает import,
+                        # но ошибка, скорее всего, в модуле который импортируют.
+                        if candidate and not _file_likely_entry_point(f):
+                            target = candidate
+                            break
+        # Fallback: если не нашли — берём не-entry-point файлы с зависимостями
+        if not target:
+            for f in (plan.get("files") or []):
+                if isinstance(f, dict) and not _file_likely_entry_point(f):
+                    deps = f.get("depends_on") or []
+                    if deps and any(d.lower() != "stdlib" for d in deps if isinstance(d, str)):
+                        target = f.get("path")
+                        break
+        # P11.2.d: если ImportError → проверим экспорты модуля на диске
+        hint = "исправь импорт или добавь отсутствующее имя в модуль"
+        if target:
+            defs = _walk_project_top_level_defs(slug)
+            target_defs = defs.get(target) or []
+            # Ищем что пытались импортировать по шаблону "cannot import name 'X'"
+            m2 = re.search(r"cannot import name ['\"]([^'\"]+)['\"]", combined)
+            if m2:
+                missing_name = m2.group(1)
+                hint = (
+                    f"модуль {target} не экспортирует '{missing_name}'. "
+                    f"Реально определено: {target_defs}. "
+                    f"Добавь {missing_name} в {target}."
+                )
+        return {"kind": "import_error", "target_file": target, "hint": hint}
+
+    # --- Contract failure (из build-phase) ---
+    contract_failure_files = [
+        f.get("path") for f in (plan.get("files") or [])
+        if isinstance(f, dict) and f.get("contract_failure")
+    ]
+    if contract_failure_files:
+        target = contract_failure_files[0]
+        return {
+            "kind": "contract_failure",
+            "target_file": target,
+            "hint": f"файл {target} не реализует задекларированные exports из плана",
+        }
+
+    # --- Generic runtime error ---
+    if "traceback" in combined or "error" in combined:
+        # Ищем последний упомянутый файл проекта в traceback
+        target = None
+        for line in reversed((test_result.get("stderr") or "").splitlines()):
+            m = re.search(r'File "([^"]+\.py)"', line)
+            if m:
+                rel = m.group(1).replace("\\", "/")
+                for f in (plan.get("files") or []):
+                    if isinstance(f, dict) and _norm_path(f.get("path") or "") in rel:
+                        target = f.get("path")
+                        break
+                if target:
+                    break
+        return {"kind": "runtime", "target_file": target, "hint": "исправь runtime-ошибку"}
+
+    return {"kind": "unknown", "target_file": None, "hint": "неизвестная ошибка"}
+
+
+def _heal_one(
+    slug: str, spec: dict, plan: dict, test_result: dict, budget: Budget, iter_n: int
+) -> dict:
+    """Один heal-шаг: диагностика → патч → повторный тест.
+
+    Возвращает обновлённый test_result (или исходный при неудаче)."""
+    budget.check(f"heal:iter{iter_n}")
+
+    # 1) Структурная диагностика
+    diag = _classify_failure(slug, test_result, plan)
+    target_file = diag.get("target_file")
+    kind = diag.get("kind", "unknown")
+    hint = diag.get("hint", "")
+
+    logger.info(f"[heal.{iter_n}] kind={kind}, target={target_file}, hint={hint[:80]}")
+
+    # 2) Если структурная диагностика нашла target — пробуем aider напрямую
+    if target_file and kind in ("import_error", "contract_failure", "syntax_error"):
+        target_entry = next(
+            (f for f in (plan.get("files") or [])
+             if isinstance(f, dict) and f.get("path") == target_file), None
+        ) or {"path": target_file}
+        try:
+            build_res = _build_one_file(slug, spec, plan, target_entry, budget)
+            if build_res.get("ok"):
+                test_results_new = _phase_test(slug, plan, spec)
+                if all(r.get("ok") for r in test_results_new):
+                    return test_results_new[0] if test_results_new else test_result
+        except BudgetExceeded:
+            raise
+        except Exception as e:
+            logger.warning(f"[heal.{iter_n}] direct aider patch failed: {e}")
+
+    # 3) LLM-Healer: диагностирует и выбирает target если структурная диагностика не справилась
+    budget.check(f"heal:llm:iter{iter_n}")
+    files_summary = json.dumps([
+        {"path": f.get("path"), "purpose": f.get("purpose", "")[:60]}
+        for f in (plan.get("files") or []) if isinstance(f, dict)
+    ], ensure_ascii=False)
+
+    heal_user = (
+        f"Тест провалился (итерация {iter_n}).\n"
+        f"Структурная диагностика: kind={kind}, target={target_file}, hint={hint}\n\n"
+        f"Файлы проекта:\n{files_summary}\n\n"
+        f"stdout (last 400):\n{test_result.get('stdout', '')[-400:]}\n\n"
+        f"stderr (last 800):\n{test_result.get('stderr', '')[-800:]}\n\n"
+        f"Ответь JSON: {{\"target_file\": \"<путь>\", \"fix_description\": \"<что исправить>\"}}"
+    )
+    raw = _llm(budget, MODEL_HEALER, PROJECT_HEAL_SYSTEM, heal_user,
+               temperature=0.1, num_ctx=4096, where=f"heal:llm:iter{iter_n}")
+    budget.spend(1)
+    heal_plan = _safe_parse(raw)
+    if not isinstance(heal_plan, dict):
+        heal_plan = {}
+
+    llm_target = heal_plan.get("target_file") or target_file
+    fix_desc = heal_plan.get("fix_description") or hint
+
+    if not llm_target:
+        logger.warning(f"[heal.{iter_n}] healer returned no target_file")
+        return test_result
+
+    # 4) Патчим файл через _build_one_file (aider или legacy)
+    target_entry = next(
+        (f for f in (plan.get("files") or [])
+         if isinstance(f, dict) and f.get("path") == llm_target), None
+    ) or {"path": llm_target}
+    # Добавляем подсказку хилера в target чтобы aider её увидел
+    target_with_hint = {**target_entry, "purpose": fix_desc[:300]}
+
+    try:
+        build_res = _build_one_file(slug, spec, plan, target_with_hint, budget)
+    except BudgetExceeded:
+        raise
+    except Exception as e:
+        logger.warning(f"[heal.{iter_n}] patch failed: {e}")
+        return test_result
+
+    if not build_res.get("ok"):
+        logger.info(f"[heal.{iter_n}] patch verdict={build_res.get('verdict')}, continuing")
+        return test_result
+
+    # 5) Повторный тест
+    test_results_new = _phase_test(slug, plan, spec)
+    return test_results_new[0] if test_results_new else test_result
+
+
+def _phase_heal(
+    slug: str, spec: dict, plan: dict, test_results: list[dict], budget: Budget
+) -> list[dict]:
+    """Heal-loop: пытается починить проваленные тесты (до MAX_HEAL_ITERS итераций).
+
+    Прерывается досрочно если все тесты зелёные."""
     if all(r.get("ok") for r in test_results):
         return test_results
-    from core.config import AIDER_ENABLED, AIDER_BIN  # локальный импорт — динамический флаг
-    file_paths = [f["path"] for f in plan["files"] if isinstance(f, dict) and "path" in f]
 
-    for heal_iter in range(1, MAX_HEAL_ITERS + 1):
-        failed = next((r for r in test_results if not r.get("ok")), None)
-        if not failed:
-            break
-
-        # Быстрый путь: ModuleNotFoundError → детерминистический pip install (без LLM)
-        miss = _heal_missing_module(slug, failed)
-        if miss is not None:
-            if miss.get("ok"):
-                add_phase(slug, f"heal:iter{heal_iter}", "ok",
-                          f"deterministic pip install {miss.get('installed_as')} (import {miss.get('missing')})")
-                # Синхронизируем requirements.txt если он есть и пакета там нет
-                try:
-                    existing_files = get_project_files(slug)
-                    if isinstance(existing_files, dict) and "requirements.txt" in existing_files:
-                        cur = existing_files["requirements.txt"]
-                        already = {ln.strip().lower() for ln in cur.splitlines() if ln.strip()}
-                        if miss["installed_as"].lower() not in already:
-                            new_req = (cur.rstrip() + "\n" + miss["installed_as"] + "\n").lstrip("\n")
-                            write_project_file(slug, "requirements.txt", new_req)
-                except Exception as e:
-                    logger.debug(f"[heal] requirements.txt sync skipped: {e}")
-                # Ретест без расхода LLM-бюджета
-                test_results = _test(slug, plan, spec)
-                if all(r.get("ok") for r in test_results):
-                    break
-                continue
-            else:
-                add_phase(slug, f"heal:iter{heal_iter}", "failed",
-                          f"deterministic pip install failed for {miss.get('missing')}: {miss.get('stderr','')[:200]}")
-                # Не выходим — пусть LLM-ветка попробует другой фикс
-
-        # P2: сетевая ошибка → просто пауза+ретест (без LLM, без правки кода)
-        net = _heal_network_retry(slug, failed, plan, attempt=heal_iter)
-        if net is not None:
-            add_phase(slug, f"heal:iter{heal_iter}", "ok",
-                      f"network retry after {net.get('retried_after_s')}s (attempt {net.get('attempt')})")
-            test_results = _test(slug, plan, spec)
-            if all(r.get("ok") for r in test_results):
-                break
-            continue
-
-        # P2: SyntaxError/IndentationError → детерминистическая диагностика без LLM
-        diag: dict | None = _heal_syntax_error(slug, failed, plan)
-        det_category = "syntax" if diag else None
-
-        # P2: JSONDecodeError → фиксированный хинт Coder'у
-        if diag is None:
-            diag = _heal_json_decode(slug, failed, plan)
-            det_category = "json" if diag else None
-
-        # P9.4: aider-ветка — если детерминистические хилеры не помогли и aider включён,
-        # отдаём ему файл и stderr напрямую. Aider сам и диагностирует, и патчит, и сохраняет.
-        # Если aider успешно применил правку — ретестируем; иначе fallthrough в LLM-диагностику.
-        if diag is None and AIDER_ENABLED and aider_runner.is_aider_available(AIDER_BIN):
-            try:
-                # FIX-2: снимаем hash файла до aider для no-change guard
-                _heal_target_pre = _pick_heal_target(plan, failed, spec=spec, slug=slug)
-                if _heal_target_pre:
-                    import hashlib as _hl
-                    try:
-                        _pre_content = read_project_file(slug, _heal_target_pre)
-                        setattr(budget, f"_pre_hash_{heal_iter}",
-                                _hl.md5(_pre_content.encode("utf-8", errors="replace")).hexdigest())
-                    except Exception:
-                        pass
-                budget.check(f"heal:aider:iter{heal_iter}")
-                ah = _heal_via_aider(slug, plan, failed, spec=spec)
-                budget.spend(1)
-            except BudgetExceeded as e:
-                add_phase(slug, f"heal:iter{heal_iter}", "failed", f"budget: {e}")
-                break
-            if ah.get("ok"):
-                # FIX-2: no-change guard — если aider не изменил файл, не ретестируем
-                _target_after = ah.get("target")
-                _changed = True
-                if _target_after:
-                    import hashlib as _hl
-                    try:
-                        _content_after = read_project_file(slug, _target_after)
-                        _hash_after = _hl.md5(_content_after.encode("utf-8", errors="replace")).hexdigest()
-                        _hash_before = getattr(budget, f"_pre_hash_{heal_iter}", None)
-                        if _hash_before and _hash_before == _hash_after:
-                            _changed = False
-                    except Exception:
-                        pass
-                if not _changed:
-                    add_phase(slug, f"heal:iter{heal_iter}", "failed",
-                              f"aider no-change guard: {_target_after} не изменился")
-                    continue
-                add_phase(
-                    slug, f"heal:iter{heal_iter}", "ok",
-                    f"aider heal target={ah.get('target')} duration={ah.get('duration_s')}s"
-                )
-                test_results = _test(slug, plan, spec)
-                if all(r.get("ok") for r in test_results):
-                    break
-                continue
-            else:
-                logger.info(
-                    f"[heal] aider failed (target={ah.get('target')} err={ah.get('error','')[:200]}), "
-                    "fallback to LLM diagnose"
-                )
-                # fallthrough в обычный LLM-путь ниже
-
-        if diag is not None:
-            add_phase(slug, f"heal:iter{heal_iter}", "ok",
-                      f"deterministic diagnosis ({det_category}) target={diag.get('target_file')}")
-        else:
-            try:
-                diag = _diagnose(spec, file_paths, failed, budget)
-            except BudgetExceeded as e:
-                add_phase(slug, f"heal:iter{heal_iter}", "failed", f"budget: {e}")
-                break
-        # diag либо из детерминистического хилера, либо из _diagnose — в обоих случаях
-        # дальше идёт общий patch_file -> ретест.
-
-        target_path = diag.get("target_file")
-        if target_path not in file_paths:
-            add_phase(slug, f"heal:iter{heal_iter}", "failed",
-                      f"healer выбрал несуществующий файл: {target_path!r}")
-            break
-        fix_instr = diag.get("fix_instruction", "")
-        if not fix_instr:
-            add_phase(slug, f"heal:iter{heal_iter}", "failed", "пустая fix_instruction")
-            break
-
-        # Найти target dict в plan.files
-        target_dict = next(f for f in plan["files"] if f.get("path") == target_path)
-        existing = get_project_files(slug)
+    current = test_results
+    for i in range(1, MAX_HEAL_ITERS + 1):
         try:
-            current = read_project_file(slug, target_path)
-        except Exception:
-            current = ""
-        feedback = (
-            f"Тест '{failed.get('name')}' упал.\n"
-            f"Диагноз: {diag.get('diagnosis','')}\n"
-            f"Что нужно сделать: {fix_instr}\n"
-            f"stderr: {failed.get('stderr','')[:600]}"
-        )
-        try:
-            budget.check(f"heal:patch:iter{heal_iter}")
-            new_code = coder_agent.patch_file(spec, plan, target_dict, current, feedback, existing=existing)
-            budget.spend(1)
+            failed = [r for r in current if not r.get("ok")]
+            if not failed:
+                break
+            # Лечим первый провальный тест за итерацию
+            new_result = _heal_one(slug, spec, plan, failed[0], budget, i)
+            # Обновляем список результатов
+            current = [
+                new_result if r["name"] == failed[0]["name"] else r
+                for r in current
+            ]
+            add_phase(slug, f"heal:iter{i}", "ok" if new_result.get("ok") else "failed",
+                      json.dumps(new_result, ensure_ascii=False))
+            if all(r.get("ok") for r in current):
+                logger.info(f"[heal] all tests passed after iter {i}")
+                break
         except BudgetExceeded as e:
-            add_phase(slug, f"heal:iter{heal_iter}", "failed", f"budget: {e}")
+            logger.warning(f"[heal] budget exhausted at iter {i}: {e}")
+            add_phase(slug, f"heal:iter{i}", "budget_exceeded", str(e))
             break
 
-        try:
-            write_project_file(slug, target_path, new_code)
-        except Exception as e:
-            add_phase(slug, f"heal:iter{heal_iter}", "failed", f"write failed: {e}")
-            break
-
-        # перезапуск тестов
-        new_results = _test(slug, plan, spec)
-        test_results = new_results
-        add_phase(slug, f"heal:iter{heal_iter}", "ok",
-                  f"target={target_path} all_ok={all(r['ok'] for r in new_results)}")
-        if all(r.get("ok") for r in new_results):
-            break
-    return test_results
+    return current
 
 
-# ─── PHASE 7: README ────────────────────────────────────────────────────────
-def _generate_readme(slug: str, spec: dict, plan: dict, test_results: list[dict], budget: Budget) -> str:
-    summary_payload = {
-        "title": spec.get("title"),
-        "summary": spec.get("summary"),
-        "requirements": spec.get("requirements", []),
-        "acceptance_criteria": spec.get("acceptance_criteria", []),
-        "files": [{"path": f.get("path"), "purpose": f.get("purpose","")} for f in plan["files"]],
-        "tests": [
-            {"name": r["name"], "command": r["command"], "ok": r["ok"], "expects": r.get("expects","")}
-            for r in test_results
-        ],
-    }
-    user = "Данные проекта в JSON:\n" + json.dumps(summary_payload, ensure_ascii=False, indent=2)
-    try:
-        raw = _llm(budget, MODEL_README, PROJECT_README_SYSTEM, user,
-                   temperature=0.2, num_ctx=4096, where="readme")
-    except BudgetExceeded:
-        raw = ""
-    md = _strip_json_fence(raw) if raw.strip().startswith("```") else (raw or "").strip()
-    if not md:
-        # Детерминированный fallback README — не падаем без LLM
-        lines = [f"# {spec.get('title','Project')}", "", spec.get("summary",""), "", "## Структура"]
-        for f in plan["files"]:
-            lines.append(f"- `{f.get('path')}` — {f.get('purpose','')}")
-        lines += ["", "## Запуск", "```"]
-        for t in (plan.get("tests") or []):
-            lines.append(t.get("command",""))
-        lines += ["```", "", "## Проверки"]
-        for crit in spec.get("acceptance_criteria", []):
-            mark = "✅" if all(r["ok"] for r in test_results) else "⚠️"
-            lines.append(f"- {crit} {mark}")
-        md = "\n".join(lines) + "\n"
-    try:
-        write_project_file(slug, "README.md", md)
-    except Exception as e:
-        logger.warning(f"[project.readme] write failed: {e}")
-    return md
+# ─── PHASE 7: readme ────────────────────────────────────────────────────────
+def _phase_readme(slug: str, spec: dict, plan: dict, budget: Budget) -> str:
+    existing = get_project_files(slug)
+    files_list = ", ".join(existing.keys()) if existing else "нет файлов"
+    readme_user = (
+        f"Проект: {spec.get('title')}\n"
+        f"Описание: {spec.get('summary')}\n"
+        f"Файлы: {files_list}\n"
+        f"Требования: {json.dumps(spec.get('requirements', []), ensure_ascii=False)}\n\n"
+        "Напиши README.md — краткое описание, установка, запуск, примеры."
+    )
+    raw = _llm(budget, MODEL_README, PROJECT_README_SYSTEM, readme_user,
+               temperature=0.3, num_ctx=4096, where="readme")
+    budget.spend(1)
+    if raw and raw.strip():
+        write_project_file(slug, "README.md", raw)
+    return raw
 
 
 # ─── PHASE 8: report ────────────────────────────────────────────────────────
-def _deterministic_report(slug: str, spec: dict, build_results: list[dict],
-                          test_results: list[dict]) -> str:
-    """P5.2: детерминистический отчёт — без LLM, без галлюцинаций, строго по фактам.
-
-    Никогда не выдумывает ошибки. Описывает только то что реально в build_results/test_results.
-    """
-    title = spec.get("title") or slug
-    files_ok = [r["path"] for r in build_results if r.get("ok")]
-    build_ok = len(files_ok)
-    build_total = len(build_results)
-    tests_total = len(test_results)
-    tests_ok = sum(1 for r in test_results if r.get("ok"))
-    failed_tests = [r for r in test_results if not r.get("ok")]
-
-    parts: list[str] = []
-    parts.append(f"Готово, сэр. Проект «{title}» лежит в data/projects/{slug}.")
-
-    # Файлы
-    if files_ok:
-        if len(files_ok) <= 3:
-            files_str = ", ".join(files_ok)
-        else:
-            files_str = f"{len(files_ok)} файлов включая " + ", ".join(files_ok[:3])
-        parts.append(f"Собраны: {files_str}.")
-    else:
-        parts.append("Ни один файл не собрался.")
-
-    # Тесты — только факты
-    if tests_total == 0:
-        parts.append("Тесты не были заданы.")
-    elif tests_ok == tests_total:
-        if tests_total == 1:
-            parts.append("Тест прошёл успешно.")
-        else:
-            parts.append(f"Все {tests_total} тестов прошли успешно.")
-    else:
-        parts.append(f"Тестов прошло {tests_ok} из {tests_total}.")
-        # Короткий фрагмент первой ошибки — только если реально есть.
-        first = failed_tests[0]
-        err = (first.get("stderr") or "").strip()
-        if err:
-            short = err.splitlines()[-1][:120]
-            parts.append(f"Первая ошибка: {short}.")
-
-    # build vs total — если не все файлы собрались, упомянуть
-    if build_ok < build_total:
-        parts.append(f"Собралось {build_ok} из {build_total} файлов.")
-
-    return " ".join(parts)
+def _phase_report(slug: str, spec: dict, test_results: list[dict], budget: Budget) -> str:
+    passed = sum(1 for r in test_results if r.get("ok"))
+    total = len(test_results)
+    status_str = f"{passed}/{total} тестов прошли"
+    report_user = (
+        f"Проект '{spec.get('title')}' завершён. {status_str}.\n"
+        f"Спека: {spec.get('summary')}\n"
+        f"Результаты: {json.dumps(test_results, ensure_ascii=False)}\n\n"
+        "Дай короткий устный отчёт пользователю (2-3 предложения). "
+        "Упомяни что сделано и статус тестов."
+    )
+    raw = _llm(budget, MODEL_REPORT, PROJECT_REPORT_SYSTEM, report_user,
+               temperature=0.3, num_ctx=2048, where="report")
+    budget.spend(1)
+    return raw or f"Проект готов. {status_str}."
 
 
-def _report(slug: str, spec: dict, build_results: list[dict], test_results: list[dict],
-            budget: Budget) -> str:
-    """P5.2: если все тесты ок и все файлы собрались — детерминистика без LLM (врать нечему).
-
-    LLM зовём только когда есть реальные проблемы и нужно объяснить.
-    """
-    all_files_ok = all(r.get("ok") for r in build_results) and len(build_results) > 0
-    all_tests_ok = all(r.get("ok") for r in test_results)
-    has_failed_tests = any(not r.get("ok") for r in test_results)
-
-    # Счастливый путь — без LLM. Невозможно врать.
-    if all_files_ok and all_tests_ok and not has_failed_tests:
-        return _deterministic_report(slug, spec, build_results, test_results)
-
-    # Иначе — пробуем LLM, но fallback на детерминистику при любой ошибке.
-    summary = {
-        "title":       spec.get("title"),
-        "slug":        slug,
-        "files":       [r["path"] for r in build_results if r.get("ok")],
-        "build_ok":    sum(1 for r in build_results if r.get("ok")),
-        "build_total": len(build_results),
-        "tests_ok":    sum(1 for r in test_results if r.get("ok")),
-        "tests_total": len(test_results),
-        "first_test_error": next((r["stderr"] for r in test_results if not r["ok"] and r.get("stderr")), ""),
-    }
-    user = ("Итоги проекта в JSON (опирайся ТОЛЬКО на эти данные):\n"
-            + json.dumps(summary, ensure_ascii=False, indent=2)
-            + f"\n\nПапка проекта: data/projects/{slug}/")
-    try:
-        return _llm(budget, MODEL_REPORT, PROJECT_REPORT_SYSTEM, user,
-                    temperature=0.2, num_ctx=2048, where="report").strip()
-    except (BudgetExceeded, Exception) as e:
-        logger.warning(f"[project.report] LLM unavailable: {e} — using deterministic")
-        return _deterministic_report(slug, spec, build_results, test_results)
-
-
-# ─── PUBLIC: run() ──────────────────────────────────────────────────────────
+# ─── main orchestrator ──────────────────────────────────────────────────────
 def run(query: str, history: list[dict] | None = None,
         *, wall_budget_s: float = PROJECT_WALL_BUDGET_S,
-        llm_budget: int = PROJECT_LLM_BUDGET) -> str:
+        llm_budget: int = PROJECT_LLM_BUDGET,
+        _skip_clarify: bool = False) -> str:
     """Полный цикл: запрос → готовый проект."""
     if not isinstance(query, str) or not query.strip():
         return "Сэр, я не понял какой проект нужно сделать."
 
+    # Уточнение требований — только при первом запросе, не при ответе на вопросы
+    if not _skip_clarify:
+        try:
+            from brain.agents.project_clarify import maybe_start_clarify
+            questions = maybe_start_clarify(query)
+            if questions:
+                return questions
+        except Exception as _exc:
+            logger.warning(f"[project.run] clarify check failed: {_exc}")
+
     # P3: на intake бюджет фиксированный (минимум как XS), потом переоцениваем по spec.
     budget = Budget(wall_s=wall_budget_s, llm=llm_budget)
-
-    # PHASE 1
+    slug = None
     try:
+        # PHASE 1: intake
+        _set_last_phase("_pending", "intake")
         spec = _intake(query, budget)
+        slug = spec["slug"]
+
+        # P3: переоцениваем бюджет по спеке (до architect — нет плана ещё)
+        tier = estimate_complexity(query, spec=spec)
+        tier_params = budget_for_tier(tier)
+        budget = Budget(wall_s=tier_params["wall_s"], llm=tier_params["llm"])
+        _save_metrics(slug, complexity_tier=tier)
+        logger.info(f"[project.run] slug={slug} tier={tier} budget={tier_params}")
+
+        create_project(slug, spec.get("title", slug), query)
+        set_status(slug, "running")
+        add_phase(slug, "intake", "ok", json.dumps(spec, ensure_ascii=False))
+
+        # PHASE 2: architect
+        _set_last_phase(slug, "architect")
+        plan = _architect(spec, budget)
+
+        # P9.10: вписываем heuristic inputs в plan ПЕРЕД нормализацией контрактов
+        plan = _enrich_plan_with_heuristic_inputs(plan, spec)
+
+        # P11.2.e: убираем из plan.files файлы, которые уже в plan.inputs
+        plan = _dedupe_files_vs_inputs(plan)
+
+        # P11.1: нормализуем контракты файлов (exports)
+        plan = _normalize_plan_contracts(plan, spec)
+
+        # P11.6: блокирующий валидатор — при нарушениях просим архитектора переделать
+        plan, violations, revises = _enforce_plan_validity(plan, spec, budget)
+        if violations:
+            logger.warning(f"[project.run] plan violations after {revises} revise(s): "
+                           f"{[v['kind'] for v in violations]}")
+
+        # P3: уточняем бюджет по плану (теперь знаем число файлов)
+        tier2 = estimate_complexity(query, spec=spec, plan=plan)
+        if tier2 != tier:
+            tier_params2 = budget_for_tier(tier2)
+            budget = Budget(wall_s=tier_params2["wall_s"], llm=tier_params2["llm"])
+            _save_metrics(slug, complexity_tier=tier2)
+            logger.info(f"[project.run] budget upgraded: {tier}→{tier2}")
+
+        add_phase(slug, "architect", "ok", json.dumps(plan, ensure_ascii=False))
+
+        # PHASE 3: env (venv + pip)
+        _set_last_phase(slug, "env")
+        env_res = _phase_env(slug, plan)
+        add_phase(slug, "env", "ok" if env_res.get("ok") else "failed",
+                  json.dumps(env_res, ensure_ascii=False))
+
+        # PHASE 4: build
+        _set_last_phase(slug, "build")
+        build_results = _build(slug, spec, plan, budget)
+        build_ok = all(r.get("ok") for r in build_results)
+
+        # PHASE 5: test
+        _set_last_phase(slug, "test")
+        test_results = _phase_test(slug, plan, spec)
+        tests_ok = all(r.get("ok") for r in test_results)
+        add_phase(slug, "test", "ok" if tests_ok else "failed",
+                  json.dumps(test_results, ensure_ascii=False))
+
+        # PHASE 6: heal (если нужно)
+        if not tests_ok or not build_ok:
+            _set_last_phase(slug, "heal")
+            test_results = _phase_heal(slug, spec, plan, test_results, budget)
+            tests_ok = all(r.get("ok") for r in test_results)
+
+        # PHASE 7: readme
+        _set_last_phase(slug, "readme")
+        try:
+            _phase_readme(slug, spec, plan, budget)
+            add_phase(slug, "readme", "ok")
+        except BudgetExceeded:
+            add_phase(slug, "readme", "skipped", "budget")
+        except Exception as e:
+            logger.warning(f"[project] readme failed: {e}")
+            add_phase(slug, "readme", "failed", str(e))
+
+        # PHASE 8: report
+        _set_last_phase(slug, "report")
+        report = _phase_report(slug, spec, test_results, budget)
+
+        final_status = "done" if tests_ok else "done_with_failures"
+        set_status(slug, final_status)
+        _save_metrics(slug, **budget.summary())
+        add_phase(slug, "report", "ok")
+
+        try:
+            append_index_record(slug, spec, test_results, budget.summary())
+        except Exception as e:
+            logger.warning(f"[project] index record failed: {e}")
+
+        return report
+
     except BudgetExceeded as e:
-        return f"Бюджет исчерпан на этапе intake: {e}"
+        logger.error(f"[project] budget exceeded: {e}")
+        if slug:
+            set_status(slug, "failed")
+            add_phase(slug, "budget_exceeded", "failed", str(e))
+        return f"Сэр, проект занял слишком много ресурсов и был остановлен: {e}"
     except Exception as e:
-        logger.error(f"[project.intake] {e}")
-        return f"Не удалось разобрать задачу: {e}"
-
-    # P3: адаптивный бюджет — только если вызвавший не указал явно свои значения.
-    if wall_budget_s == PROJECT_WALL_BUDGET_S and llm_budget == PROJECT_LLM_BUDGET:
-        tier = estimate_complexity(query, spec=spec, plan=None)
-        params = budget_for_tier(tier)
-        # Не урезаем уже потраченное: сохраняем llm_used, обновляем лимиты.
-        spent = budget.llm_used
-        budget = Budget(wall_s=params["wall_s"], llm=params["llm"])
-        budget.llm_used = spent
-        logger.info(f"[project] adaptive budget: tier={tier} llm={params['llm']} wall_s={params['wall_s']}")
-
-    try:
-        manifest = create_project(spec)
-    except Exception as e:
-        logger.error(f"[project.create] {e}")
-        return f"Не удалось создать проект: {e}"
-    slug = manifest.slug
-    # сохранить запрос
-    try:
-        m = load_manifest(slug); m.request = query[:500]; save_manifest(m)
-    except Exception:
-        pass
-    add_phase(slug, "intake", "ok", spec.get("title", "")[:200])
-    _set_last_phase(slug, "intake")
-
-    return _continue(slug, budget, start_phase="architect")
-
-
-def resume(slug: str, *, wall_budget_s: float = PROJECT_WALL_BUDGET_S,
-           llm_budget: int = PROJECT_LLM_BUDGET) -> str:
-    """Продолжить упавший проект с упавшей фазы."""
-    try:
-        m = load_manifest(slug)
-    except Exception as e:
-        return f"Не нашёл проект {slug}: {e}"
-    last = m.last_phase or "intake"
-    order = ["intake", "architect", "env", "build", "test", "heal", "readme", "finalize"]
-    if last not in order:
-        last = "intake"
-    next_phase = order[order.index(last) + 1] if order.index(last) < len(order) - 1 else "finalize"
-    budget = Budget(wall_s=wall_budget_s, llm=llm_budget)
-    add_phase(slug, "resume", "ok", f"from={next_phase}")
-    return _continue(slug, budget, start_phase=next_phase)
-
-
-def _continue(slug: str, budget: Budget, *, start_phase: str) -> str:
-    """Общая часть run() и resume(): фазы 2..8. При BudgetExceeded или фатальной
-    ошибке ранний выход без финализации — чтобы last_phase остался на последней
-    успешной, и resume(slug) мог продолжить."""
-    m = load_manifest(slug)
-    spec = m.spec
-    plan = m.plan or {}
-    build_results: list[dict] = []
-    test_results:  list[dict] = []
-
-    phases = ["architect", "env", "build", "test", "heal", "readme", "finalize"]
-    if start_phase not in phases:
-        start_phase = "architect"
-    skip_until = phases.index(start_phase)
-
-    def _abort_partial(reason: str) -> str:
-        """Ранний выход: status=failed, без finalize-фазы, без _index, без README."""
-        set_status(slug, "failed")
-        _save_metrics(slug, partial=True, abort_reason=reason, **budget.summary())
-        return f"Проект прерван: {reason}. Можно продолжить: resume({slug!r})."
-
-    try:
-        # PHASE 2: ARCHITECT
-        if 0 >= skip_until:
+        logger.exception(f"[project] unexpected error: {e}")
+        if slug:
             try:
-                plan = _architect(spec, budget)
-                # P9.10: обогащаем plan.inputs heuristic-входами из spec.summary,
-                # чтобы coder/aider видели реальные имена файлов, а не придумывали свои.
-                plan = _enrich_plan_with_heuristic_inputs(plan, spec)
-                # P11.1: нормализуем контракты (exports per file, depends_on consistency).
-                # Lossless: ничего не отбрасывает, только заполняет/исправляет поля.
-                plan = _normalize_plan_contracts(plan, spec)
-                # P11.2.e (FM-10): убираем из plan.files файлы, которые уже в plan.inputs.
-                plan = _dedupe_files_vs_inputs(plan)
-                # P11.6: блокирующий валидатор плана — autofill exports из tests +
-                # revise-loop если остались нарушения (FM-16/FM-17).
-                # Ренормализуем контракт-метрики после валидатора.
-                plan, p11_6_violations, p11_6_revises = _enforce_plan_validity(
-                    plan, spec, budget, max_revise=2
-                )
-                if p11_6_violations:
-                    add_phase(
-                        slug, "plan.validate", "failed",
-                        f"violations={[v['kind'] for v in p11_6_violations]} "
-                        f"revises={p11_6_revises} (P11.6)"
-                    )
-                elif p11_6_revises:
-                    add_phase(
-                        slug, "plan.validate", "ok",
-                        f"revises={p11_6_revises} (P11.6)"
-                    )
-                # Пересчитываем метрики, т.к. autofill мог добавить exports.
-                plan = _normalize_plan_contracts(plan, spec)
-                m = load_manifest(slug); m.plan = plan; save_manifest(m)
-                _cm = plan.get("_contract_metrics", {}) or {}
-                add_phase(slug, "architect", "ok",
-                          f"files={len(plan['files'])} tests={len(plan.get('tests',[]))} "
-                          f"inputs={len(plan.get('inputs',[]))} "
-                          f"exports={_cm.get('files_with_exports', 0)}/{_cm.get('py_files', 0)} "
-                          f"dep_unmatched={len(_cm.get('depends_unmatched', []) or [])} "
-                          f"p11_6_revises={p11_6_revises}")
-                _set_last_phase(slug, "architect")
-            except BudgetExceeded as e:
-                add_phase(slug, "architect", "failed", f"budget: {e}")
-                return _abort_partial(f"budget at architect: {e}")
-            except Exception as e:
-                add_phase(slug, "architect", "failed", str(e))
-                _save_metrics(slug, **budget.summary())
                 set_status(slug, "failed")
-                return f"Не получилось спроектировать архитектуру: {e}"
+                add_phase(slug, "error", "failed", str(e))
+            except Exception:
+                pass
+        return f"Сэр, произошла непредвиденная ошибка: {e}"
 
-        # PHASE 3: ENV
-        if 1 >= skip_until:
-            env_res = _phase_env(slug, plan)
-            add_phase(slug, "env", "ok" if env_res["ok"] else "failed",
-                      json.dumps(env_res, ensure_ascii=False)[:400])
-            if env_res["ok"]:
-                _set_last_phase(slug, "env")
-            # env-failure не фатален: project может работать на stdlib
 
-        # PHASE 4: BUILD
-        if 2 >= skip_until:
-            try:
-                build_results = _build(slug, spec, plan, budget)
-            except BudgetExceeded as e:
-                add_phase(slug, "build", "failed", f"budget: {e}")
-                return _abort_partial(f"budget at build: {e}")
-            if build_results and any(r.get("ok") for r in build_results):
-                _set_last_phase(slug, "build")
-            elif build_results and not any(r.get("ok") for r in build_results):
-                # Все файлы упали (обычно при исчерпании бюджета внутри _build) —
-                # выходим без finalize, чтобы last_phase остался на architect/env
-                # и resume(slug) мог корректно продолжить с build.
-                add_phase(slug, "build", "failed", "no successful files")
-                return _abort_partial("build had no successful files")
-
-        # P11.5.C: PHASE 4.5 — блокирующий контракт-линтер между BUILD и TEST.
-        # Если любой файл провалил линт экспортов — синтезируем failed-test-record
-        # и сразу пускаем через _heal_loop. Это даёт heal-loop'у точный target
-        # (файл с missing exports) до того как smoke упадёт на ImportError.
-        contract_failed_files: list[dict] = []
-        if 3 >= skip_until and build_results:
-            for br in build_results:
-                if br.get("contract_failure"):
-                    contract_failed_files.append(br)
-            if contract_failed_files:
-                synthetic_results: list[dict] = []
-                for br in contract_failed_files:
-                    contract = br.get("contract") or {}
-                    missing = contract.get("missing") or []
-                    synthetic_results.append({
-                        "name":    f"contract_lint:{br.get('path','?')}",
-                        "command": "",
-                        "ok":      False,
-                        "rc":      None,
-                        "stdout":  "",
-                        "stderr":  (
-                            f"contract.lint blocked build (P11.5): "
-                            f"file={br.get('path')} missing={missing}"
-                        ),
-                        "expects": "plan.exports satisfied",
-                        # P11.5.C: эти поля читаются _classify_failure'ом
-                        "contract_failure": True,
-                        "contract": contract,
-                        "path":     br.get("path"),
-                    })
-                add_phase(
-                    slug, "contract.block", "failed",
-                    f"files={[r.get('path') for r in contract_failed_files]} "
-                    f"→ heal-loop без smoke (P11.5)"
-                )
-                try:
-                    synthetic_results = _heal_loop(slug, spec, plan, synthetic_results, budget)
-                except BudgetExceeded as e:
-                    add_phase(slug, "contract.block", "failed", f"budget: {e}")
-                # После heal'а всё равно пойдёт PHASE 5 — реальный smoke решит ок/не ок.
-
-        # PHASE 5: TEST
-        if 3 >= skip_until:
-            try:
-                test_results = _test(slug, plan, spec)
-                _set_last_phase(slug, "test")
-            except BudgetExceeded as e:
-                add_phase(slug, "test", "failed", f"budget: {e}")
-                return _abort_partial(f"budget at test: {e}")
-            except Exception as e:
-                add_phase(slug, "test", "failed", str(e))
-                test_results = []
-
-        # PHASE 6: HEAL
-        if 4 >= skip_until and test_results and not all(r.get("ok") for r in test_results):
-            try:
-                test_results = _heal_loop(slug, spec, plan, test_results, budget)
-                _set_last_phase(slug, "heal")
-            except BudgetExceeded as e:
-                add_phase(slug, "heal", "failed", f"budget: {e}")
-                # heal-budget — не фатально, идём в README/finalize с тем что есть
-
-        # PHASE 7: README
-        if 5 >= skip_until:
-            try:
-                _generate_readme(slug, spec, plan, test_results, budget)
-                add_phase(slug, "readme", "ok", "README.md generated")
-                _set_last_phase(slug, "readme")
-            except Exception as e:
-                add_phase(slug, "readme", "failed", str(e))
-
-        # PHASE 8: FINALIZE
-        all_files_ok = all(r.get("ok") for r in build_results) if build_results else False
-        all_tests_ok = all(r.get("ok") for r in test_results)  if test_results  else True
-        final = "done" if (all_files_ok and all_tests_ok) else "failed"
-        set_status(slug, final)
-        _save_metrics(slug, **budget.summary())
-        add_phase(slug, "finalize", "ok", final)
-        _set_last_phase(slug, "finalize")
-
-        append_index_record({
-            "slug":     slug,
-            "title":    spec.get("title"),
-            "status":   final,
-            "files":    len([r for r in build_results if r.get("ok")]),
-            "tests_ok": sum(1 for r in test_results if r.get("ok")),
-            "tests_total": len(test_results),
-            "metrics":  budget.summary(),
-        })
-
-        return _final_report(slug, spec, build_results, test_results, budget)
-
+def resume(slug: str) -> str:
+    """Возобновляет упавший проект с последней сохранённой фазы."""
+    try:
+        manifest = load_manifest(slug)
     except Exception as e:
-        logger.exception(f"[project] unexpected: {e}")
-        set_status(slug, "failed")
-        _save_metrics(slug, **budget.summary())
-        return f"Ошибка проекта: {e}. Можно продолжить через resume({slug})."
+        return f"Не удалось загрузить манифест {slug}: {e}"
+
+    spec = manifest.spec if hasattr(manifest, "spec") and manifest.spec else {}
+    if not spec:
+        return f"Манифест {slug} не содержит spec — невозможно продолжить."
+
+    last = getattr(manifest, "last_phase", None) or "build"
+    query = spec.get("summary") or spec.get("title") or slug
+
+    logger.info(f"[project.resume] slug={slug}, last_phase={last}")
+    # Возобновляем с _skip_clarify=True — пользователь уже подтвердил запрос
+    return run(query, _skip_clarify=True)
 
 
-def _final_report(slug: str, spec: dict, build_results: list[dict],
-                  test_results: list[dict], budget: Budget) -> str:
-    return _report(slug, spec, build_results, test_results, budget)
-
-
-# ─── CLI ────────────────────────────────────────────────────────────────────
 def _main() -> int:
-    p = argparse.ArgumentParser(description="Jarvis ProjectAgent — Level 4")
-    p.add_argument("query", nargs="?", help="запрос на проект")
-    p.add_argument("--resume", metavar="SLUG", help="продолжить упавший проект")
-    p.add_argument("--list",   action="store_true", help="показать все проекты")
-    p.add_argument("--wall",   type=int, default=PROJECT_WALL_BUDGET_S, help="wall-clock budget (s)")
-    p.add_argument("--llm",    type=int, default=PROJECT_LLM_BUDGET, help="LLM-call budget")
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description="Jarvis ProjectAgent CLI")
+    parser.add_argument("query", nargs="?", help="Что создать")
+    parser.add_argument("--resume", metavar="SLUG", help="Возобновить проект")
+    parser.add_argument("--list", action="store_true", help="Список проектов")
+    parser.add_argument("--wall", type=float, default=PROJECT_WALL_BUDGET_S)
+    parser.add_argument("--llm", type=int, default=PROJECT_LLM_BUDGET)
+    args = parser.parse_args()
 
     if args.list:
-        for r in list_projects():
-            print(f"{r['slug']:40s} {r['status']:12s} {r.get('title','')}")
+        projects = list_projects()
+        if not projects:
+            print("Нет проектов.")
+        for p in projects:
+            print(f"  {p.get('slug'):30s}  {p.get('status'):15s}  {p.get('title')}")
         return 0
+
     if args.resume:
-        out = resume(args.resume, wall_budget_s=args.wall, llm_budget=args.llm)
+        out = resume(args.resume)
         print(out)
         return 0
+
     if not args.query:
-        p.print_help(sys.stderr)
-        return 2
-    out = run(args.query, [], wall_budget_s=args.wall, llm_budget=args.llm)
+        parser.print_help()
+        return 1
+
+    out = run(args.query, wall_budget_s=args.wall, llm_budget=args.llm)
     print(out)
     return 0
 
