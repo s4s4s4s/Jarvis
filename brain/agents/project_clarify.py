@@ -11,7 +11,7 @@ Workflow:
   1. project.run(query) вызывает maybe_start_clarify(query).
   2. Если запрос неполный → возвращается список вопросов и сохраняется pending state.
   3. Следующее сообщение пользователя → ask.py видит pending clarify и вызывает provide_clarify_answers().
-  4. Ответы склеиваются с исходным запросом и отправляются обратно в project.run(...).
+  4. Ответы склеиваются с исходным запросом и отправляются обратно в project.run(_skip_clarify=True).
   5. Уже после этого возможен credentials step.
 """
 from __future__ import annotations
@@ -101,7 +101,10 @@ def maybe_start_clarify(query: str) -> str | None:
 
 
 def provide_clarify_answers(answer_text: str) -> str:
-    """Принимает ответы пользователя на уточняющие вопросы и перезапускает ProjectAgent."""
+    """Принимает ответы пользователя на уточняющие вопросы и перезапускает ProjectAgent.
+
+    Передаёт _skip_clarify=True чтобы run() не задал вопросы ещё раз.
+    """
     pending = load_pending_clarify()
     if not pending:
         return "Нет проекта, ожидающего уточнений."
@@ -117,7 +120,8 @@ def provide_clarify_answers(answer_text: str) -> str:
 
     try:
         from brain.agents.project import run
-        return run(merged_query, history=[])
+        # _skip_clarify=True — уже получили ответы, повторно не спрашиваем
+        return run(merged_query, history=[], _skip_clarify=True)
     except Exception as e:
         return f"Уточнения получены, но перезапустить проект не удалось: {e}"
 
