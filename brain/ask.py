@@ -15,18 +15,13 @@ from brain import history as hist
 from brain.logger import log_route
 from brain.router_embed import route_embed, eager_load
 
-# fix H1: два отдельных executor-а — короткие задачи и долгие проекты.
-# ProjectAgent может занимать 10+ минут, забивая все 4 слота _executor
-# и блокируя обработку голосовых запросов. _project_executor изолирует эти задачи.
 _executor         = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jarvis-ask")
 _project_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="jarvis-project")
 atexit.register(lambda: _executor.shutdown(wait=False, cancel_futures=True))
 atexit.register(lambda: _project_executor.shutdown(wait=False, cancel_futures=True))
 
-# fix #14: лок для hist.append
 _hist_lock = threading.Lock()
 
-# fix F6: подогрев embed-router в фоне
 try:
     threading.Thread(target=eager_load, daemon=True, name="jarvis-embed-eager-load").start()
 except Exception:
@@ -36,18 +31,12 @@ logger = logging.getLogger(__name__)
 
 _TOOL_TIMEOUT   = "get_answer"
 _FALLBACK_ERROR = "Сэр, инструмент вернул ошибку: {error}"
-
-# OPT-1: маршруты без личных данных пользователя — пропускаем memory extraction.
-# tool/web/feedback никогда не несут персональной информации — лишний LLM-вызов
-# (200-500ms) на каждый «поставь таймер» или «поищи в интернете».
 _NO_MEMORY_ROUTES = frozenset({"tool", "web", "feedback"})
 
 
 @dataclass
 class AskResult:
     filler: str = ""
-    # fix M1: сохраняем оригинальный текст запроса — если get_answer()
-    # получает timeout, LLM видит реальный запрос (раньше был бессмысленный placeholder).
     text: str = ""
     _future: Future | None = field(default=None, repr=False)
     _answer: str = field(default="", repr=False)
@@ -57,7 +46,6 @@ class AskResult:
             try:
                 self._answer = self._future.result(timeout=timeout)
             except Exception as e:
-                # fix M1: используем реальный текст запроса в сообщении об ошибке
                 self._answer = _format_tool_error(
                     self.text or "запрос",
                     _TOOL_TIMEOUT,
@@ -68,7 +56,6 @@ class AskResult:
 
 
 def _route_llm(text: str) -> dict[str, Any]:
-    """LLM-based routing via qwen2.5:14b. Used as fallback when embed is uncertain."""
     msgs = [
         {"role": "system", "content": ROUTER_SYSTEM},
         {"role": "user", "content": text},
@@ -95,11 +82,6 @@ def _route_llm(text: str) -> dict[str, Any]:
 
 
 def _route_smart(text: str) -> dict[str, Any]:
-    """
-    Two-stage routing:
-    1. Embed router (~30ms) — returns result if confident
-    2. LLM router (~500-1500ms) — fallback for ambiguous queries
-    """
     result = route_embed(text)
     if result is not None:
         logger.debug(f"[router] embed hit: route={result['route']} conf={result['confidence']}")
@@ -179,8 +161,18 @@ def _dispatch(route_data: dict[str, Any], text: str, history: list[dict]) -> tup
 
 
 def ask_llm(text: str) -> AskResult:
-    # ─── credentials pre-check: KEY=VALUE после запроса учётных данных ───
-    # Если проект ждёт токенов и пользователь ввёл KEY=VALUE — не роутим, а сразу принимаем
+    # 1) pending clarify: сначала уточнения проекта
+    try:
+        from brain.agents.project_clarify import has_pending_clarify, looks_like_clarify_answer
+        from brain.agents.project_clarify import provide_clarify_answers as _provide_clarify_answers
+        if has_pending_clarify() and looks_like_clarify_answer(text):
+            clarify_result = AskResult(filler="Уточняю проект...", text=text)
+            clarify_result._future = _project_executor.submit(_provide_clarify_answers, text)
+            return clarify_result
+    except Exception as exc:
+        logger.warning(f"[ask] clarify pre-check failed: {exc}")
+
+    # 2) pending credentials: после уточнений и только если проект уже их запросил
     try:
         from brain.agents.project_creds import has_pending_creds, looks_like_creds
         from brain.agents.project_creds import provide_credentials as _provide_creds
@@ -190,7 +182,6 @@ def ask_llm(text: str) -> AskResult:
             return creds_result
     except Exception as exc:
         logger.warning(f"[ask] credentials pre-check failed: {exc}")
-    # ────────────────────────────────────────────────────────────────
 
     history = hist.snapshot()
 
@@ -209,7 +200,6 @@ def ask_llm(text: str) -> AskResult:
         }
     route_ms = int((time.monotonic() - t_route0) * 1000)
 
-    # fix M1: передаём text в AskResult
     result = AskResult(filler=route_data.get("filler", ""), text=text)
 
     def _run() -> str:
@@ -255,9 +245,6 @@ def ask_llm(text: str) -> AskResult:
             reason=route_data.get("reason", ""),
             answer_ms=elapsed_ms + route_ms,
         )
-        # OPT-1: пропускаем извлечение фактов для маршрутов без личных данных.
-        # tool/web/feedback никогда не несут персональной информации о пользователе —
-        # лишний LLM-вызов (200-500ms) на каждый «поставь таймер» или «поищи в инет».
         if route_data.get("route") not in _NO_MEMORY_ROUTES:
             try:
                 from tools.memory import extract_and_save_async
@@ -266,8 +253,6 @@ def ask_llm(text: str) -> AskResult:
                 logger.error(f"Memory extraction failed: {e}")
         return answer
 
-    # fix H1: ProjectAgent уходит в отдельный executor —
-    # проекты не забивают слоты для голосовых запросов.
     executor = _project_executor if route_data.get("route") == "project" else _executor
     result._future = executor.submit(_run)
     return result
