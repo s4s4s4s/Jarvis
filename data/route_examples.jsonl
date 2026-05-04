@@ -94,7 +94,7 @@
 {"text": "температура inference для llm", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true}
 {"text": "что такое temperature в параметрах ollama", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true}
 {"text": "какой курс у qwen2.5", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "омоним: курс обучения != курс валюты"}
-{"text": "курс по машинному обучению", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "курс как учебная программа, не валюта"}
+{"text": "курс по машинному обучению", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "абстрактный вопрос про дисциплину, не поиск курсов"}
 {"text": "сколько времени займёт обучение модели", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "время как длительность != текущее время"}
 {"text": "сколько стоит обучение в университете", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу в сети", "_hard": true, "_note": "стоит как цена обучения != крипто"}
 {"text": "скорость обучения нейросети", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "learning rate, не погода"}
@@ -171,7 +171,7 @@
 {"text": "нормальная температура тела у взрослого", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "температура тела != погода"}
 {"text": "у меня жар что делать", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "жар = медицина, не погода"}
 {"text": "высокая температура у ребёнка", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "температура тела != погода"}
-{"text": "курс обучения по машинному обучению", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "курс как учебная программа"}
+{"text": "курс обучения по машинному обучению", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "абстрактный вопрос про дисциплину, не поиск курсов"}
 {"text": "курс истории России", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "курс как учебная дисциплина"}
 {"text": "скорость передачи данных в нейросети", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "скорость как ML-параметр"}
 {"text": "переведи 100 долларов в рубли", "route": "tool", "tool": "currency.convert", "tool_args": {"amount": 100, "from_code": "USD", "to_code": "RUB"}, "filler": "Считаю конвертацию"}
@@ -181,5 +181,5 @@
 {"text": "найди новости про ии и запиши в файл", "route": "plan", "tool": null, "tool_args": {}, "filler": "Составляю план", "_hard": true, "_note": "найди + запиши = два действия = plan"}
 {"text": "найди статью про python и сохрани в файл", "route": "plan", "tool": null, "tool_args": {}, "filler": "Составляю план", "_hard": true, "_note": "поиск + сохранение = plan"}
 {"text": "найди новости и запиши результат", "route": "plan", "tool": null, "tool_args": {}, "filler": "Составляю план", "_hard": true, "_note": "два глагола = plan"}
-{"text": "онлайн курс по питону", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "учебный курс != веб-поиск"}
-{"text": "обучающий курс по дата сайенс", "route": "chat", "tool": null, "tool_args": {}, "filler": "", "_hard": true, "_note": "учебный курс != веб-поиск"}
+{"text": "онлайн курс по питону", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу курсы", "_hard": true, "_note": "пользователь ищет реальные курсы со ссылками = web"}
+{"text": "обучающий курс по дата сайенс", "route": "web", "tool": null, "tool_args": {}, "filler": "Ищу курсы", "_hard": true, "_note": "пользователь ищет реальные курсы = web"}
