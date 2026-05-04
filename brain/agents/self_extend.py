@@ -38,6 +38,9 @@ TOOLS_DIR  = ROOT / "tools"
 # fix BUG-3: лок для защиты importlib.reload + call_tool в smoke-тесте.
 # Без него два параллельных вызова extend могут перезагружать registry
 # одновременно, что даёт частичное состояние / ImportError.
+# fix BUG-1: smoke-тест (_ct вызов) теперь тоже выполняется ВНУТРИ этого лока,
+# чтобы _ct не указывал на модуль, который другой поток успел перезагрузить
+# между захватом ссылки и вызовом.
 _reload_lock = threading.Lock()
 
 # fix F4: отдельный лок на чтение/патч/запись tools/registry.py.
@@ -87,7 +90,7 @@ def _strip_comments_and_strings(code: str) -> str:
     Не использует AST (работает до ast.parse), поэтому простая эвристика:
     - Убираем строки, начинающиеся с # (после strip)
     - Убираем тройные строки (docstring)
-    - Убираем однострочные строки в кавычках ("\'...\'" / '"..."')
+    - Убираем однострочные строки в кавычках ("\\'...\\'" / '"..."')
     """
     code = re.sub(r'\"\"\".*?\"\"\"', '', code, flags=re.DOTALL)
     code = re.sub(r"\'\'\'.+?\'\'\'", '', code, flags=re.DOTALL)
@@ -96,7 +99,7 @@ def _strip_comments_and_strings(code: str) -> str:
         stripped = line.strip()
         if stripped.startswith('#'):
             continue
-        no_comment = re.sub(r'(?<![\'\"])#.*$', '', line)
+        no_comment = re.sub(r'(?<![\'\""])#.*$', '', line)
         result_lines.append(no_comment)
     return '\n'.join(result_lines)
 
@@ -385,13 +388,17 @@ def run(query: str, history: list[dict]) -> str:
         _log_result(tool_name, "failed", reg_msg, query)
         return f"Сэр, файл создан, но регистрация не удалась: {reg_msg}"
 
+    # fix BUG-1: smoke_kwargs и вызов _ct выполняются ВНУТРИ _reload_lock.
+    # Ранее _ct захватывалась под локом, но вызывалась снаружи — при параллельном
+    # extend другой поток мог сделать reload между захватом и вызовом, оставляя
+    # _ct указателем на частично-инициализированный модуль.
     try:
         with _reload_lock:
             import tools.registry as _reg_mod
             importlib.reload(_reg_mod)
             from tools.registry import call_tool as _ct
-        smoke_kwargs = _build_smoke_kwargs(design)
-        smoke = _ct(tool_name, smoke_kwargs)
+            smoke_kwargs = _build_smoke_kwargs(design)
+            smoke = _ct(tool_name, smoke_kwargs)
         smoke_ok = True
         smoke_detail = str(smoke.data)[:200] if smoke.ok else smoke.error
     except Exception as e:
